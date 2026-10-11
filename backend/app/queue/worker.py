@@ -6,7 +6,7 @@ Listens to designated Redis queue and dispatches reconstruction jobs.
 import argparse
 import sys
 from redis import Redis
-from rq import Worker, Queue, Connection
+from rq import Worker, Queue
 from app.config import settings
 from app.db.session import init_db
 from app.utils.logging import logger
@@ -35,9 +35,8 @@ def main():
         logger.error(f"Cannot connect to Redis at {settings.SCANFORGE_REDIS_URL}: {e}")
         sys.exit(1)
 
-    with Connection(redis_conn):
-        worker = Worker([args.queue], default_worker_ttl=settings.SCANFORGE_JOB_TIMEOUT)
-        worker.work(with_scheduler=True)
+    worker = Worker([args.queue], connection=redis_conn, worker_ttl=settings.SCANFORGE_JOB_TIMEOUT)
+    worker.work(with_scheduler=True)
 
 
 if __name__ == "__main__":
