@@ -15,7 +15,7 @@ WORKDIR /app
 
 COPY pyproject.toml /app/
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -e .
+    pip install --no-cache-dir -e ".[dev]"
 
 COPY . /app/
 
