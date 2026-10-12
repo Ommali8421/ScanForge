@@ -38,6 +38,8 @@ uploads/
 storage/
 *.db
 *.sqlite3
+*.mp4
+*.mov
 
 # Environment variables
 .env
