@@ -5,6 +5,9 @@ Defines Stage, Pipeline, JobContext, StageResult, and CancelToken.
 
 import hashlib
 import json
+import os
+import signal
+import subprocess
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -21,6 +24,17 @@ class CancelToken:
 
     def cancel(self):
         self._cancelled = True
+        if self._active_pid:
+            try:
+                if os.name == "nt":
+                    subprocess.call(["taskkill", "/F", "/T", "/PID", str(self._active_pid)])
+                else:
+                    os.killpg(os.getpgid(self._active_pid), signal.SIGTERM)
+            except Exception:
+                try:
+                    os.kill(self._active_pid, signal.SIGKILL)
+                except Exception:
+                    pass
 
     def is_cancelled(self) -> bool:
         return self._cancelled

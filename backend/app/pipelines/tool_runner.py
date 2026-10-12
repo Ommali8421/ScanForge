@@ -53,7 +53,8 @@ class ToolRunner:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            start_new_session=(os.name != "nt")
         )
 
         if cancel_token:
