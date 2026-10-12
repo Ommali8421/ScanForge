@@ -88,6 +88,9 @@ class ToolRunner:
                     log_line(line)
 
             exit_code = proc.wait()
+            if cancel_token and cancel_token.is_cancelled():
+                raise RuntimeError("Command terminated due to job cancellation.")
+
             if exit_code != 0:
                 raise ToolExecutionError(command, exit_code, log_lines[-50:])
 
