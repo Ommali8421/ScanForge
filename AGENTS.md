@@ -60,6 +60,12 @@
 - **Mandatory updates**: `progress.md` MUST be updated on every behavior change, milestone completion, bug fix, or verification state change. Never leave it stale.
 - Any agent resuming work must inspect `progress.md` first to orient itself on milestones, verified status, fixed bugs, and next steps before taking action.
 
+### Public GitHub Repository & Backups
+- The repo is public (`https://github.com/Ommali8421/ScanForge.git`).
+- Run `git push` at the end of every milestone or sub-milestone.
+- **Never force-push** (`git push --force`).
+- **Never commit** `.env`, secrets, tokens, personal paths, or test videos.
+
 ---
 
 ## 4. Priority Order (Final)
