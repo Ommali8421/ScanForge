@@ -184,7 +184,7 @@ scanforge/
 │       └── utils/          (zip_safe.py, ffprobe.py, logging.py)
 │   └── tests/              (unit/, integration/, fixtures/)
 ├── frontend/
-│   ├── package.json  vite.config.ts  tailwind.config.ts  Dockerfile
+│   ├── package.json  vite.config.ts  tailwind.config.ts  Dockerfile  nginx.conf
 │   └── src/
 │       ├── main.tsx  App.tsx
 │       ├── api/            (client.ts, types.ts, useJobEvents.ts)
@@ -193,8 +193,7 @@ scanforge/
 │       │                    StageTimeline, LogPanel, MeshViewer, SplatViewer, StatusBadge)
 │       └── lib/            (formatMatrix.ts, format.ts)
 ├── docker/
-│   ├── worker-gpu.Dockerfile    (CUDA base; builds COLMAP, OpenMVS; installs nerfstudio, Blender)
-│   └── nginx.conf
+│   └── worker-gpu.Dockerfile    (CUDA base; builds COLMAP, OpenMVS; installs nerfstudio, Blender)
 ├── scripts/
 │   ├── doctor.py            (checks GPU, CUDA, ffmpeg, colmap, OpenMVS binaries, nerfstudio, Blender; prints fix hints)
 │   ├── make_sample_data.py  (synthetic photo set + synthetic RGB-D capture with known poses)
