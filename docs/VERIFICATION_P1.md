@@ -228,3 +228,25 @@ Three comprehensive integration tests were added in `backend/tests/test_integrat
 5. **Integration Test Suite**:
    - *Additions*: Added comprehensive unit and integration tests covering SSE replay, cancellation child process cleanup, and HTTP 413 upload caps.
    - *Commit*: `9689ef6` (`test(backend): add integration tests for SSE replay, cancel child kill, and upload cap`).
+
+6. **Cross-Container SSE Event Stream & Nginx Buffering**:
+   - *Problem*: In multi-container Docker deployment, `worker-mock` published pipeline progress to Redis, but FastAPI's SSE endpoint relied on an in-process asyncio Queue. Furthermore, Nginx default buffering delayed SSE chunk delivery until connection close.
+   - *Fix*: Refactored `backend/app/api/sse.py` to subscribe via `redis.asyncio` pub/sub channel `job:{job_id}`. Configured `proxy_buffering off;` and `chunked_transfer_encoding on;` in `frontend/nginx.conf`. Added fallback polling in `JobDetail.tsx`.
+   - *Commit*: `1e1bbac` (`fix(sse): stream cross-container events via Redis Pub/Sub and enable nginx chunked transfer`).
+
+7. **Job "Queued 0%" Stalling Regression Guard**:
+   - *Problem*: Jobs submitted through UI or API could remain stalled if workers desynchronized or queues mismatched.
+   - *Fix*: Added regression test `test_job_leaves_queued_status_within_10_seconds` asserting that jobs transition from queued to active progress in the test suite.
+   - *Commit*: `6918eaa` (`test(jobs): add regression test asserting job status leaves queued within 10s`).
+
+8. **Nginx Configuration Deduplication**:
+   - *Problem*: Duplicate configs in `docker/nginx.conf` and `frontend/nginx.conf`.
+   - *Fix*: Removed `docker/nginx.conf`, made `frontend/nginx.conf` canonical, and updated `docs/SPEC.md`.
+   - *Commit*: `1f6b9f7` (`refactor(docker): remove duplicate docker/nginx.conf in favor of frontend/nginx.conf`).
+
+9. **LiDAR Card UI & Capabilities Contract**:
+   - *Problem*: When `ENABLE_LIDAR=false`, LiDAR was omitted from `scan_types`, preventing UI from showing disabled preview card.
+   - *Fix*: Updated `backend/app/api/capabilities.py` to always include `"lidar"` with `lidar_enabled: bool`, and updated `frontend/src/components/ScanTypeCards.tsx` to display disabled card labeled "Beta, needs RGB-D capture".
+
+10. **Automated E2E Smoke Test Target**:
+    - *Additions*: Added `scripts/e2e_smoke.py` and `make smoke` target that runs against the live Compose stack through Nginx port 3000, asserting live SSE delivery, artifact downloads, and cumulative calibration scaling (`1.5 -> 3.0`).

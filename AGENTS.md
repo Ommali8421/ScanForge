@@ -55,6 +55,11 @@
 - If a feature, pipeline stage, or integration has not been executed and verified, mark it as **UNVERIFIED** in the walkthrough and any related documentation.
 - Walkthroughs must clearly separate verified items (with evidence: screenshots, logs, test output) from unverified items.
 
+### Living Status & Progress (progress.md)
+- `progress.md` in the repo root is the **single source of truth** for project status across all agent sessions.
+- **Mandatory updates**: `progress.md` MUST be updated on every behavior change, milestone completion, bug fix, or verification state change. Never leave it stale.
+- Any agent resuming work must inspect `progress.md` first to orient itself on milestones, verified status, fixed bugs, and next steps before taking action.
+
 ---
 
 ## 4. Priority Order (Final)
