@@ -14,9 +14,13 @@ def test_capabilities_structure():
     data = response.json()
 
     assert data["engine"] in ["mock", "real"]
+    assert "scan_types" in data
+    assert "lidar" in data["scan_types"]
+    assert "lidar_enabled" in data
     assert "format_matrix" in data
     assert "photo" in data["format_matrix"]
     assert "gaussian_splat" in data["format_matrix"]
+    assert "lidar" in data["format_matrix"]
     assert "limits" in data
     assert data["limits"]["max_upload_mb"] > 0
 

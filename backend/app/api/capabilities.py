@@ -48,9 +48,7 @@ def get_capabilities():
         "lidar": lidar_formats,
     }
 
-    scan_types = ["photo", "gaussian_splat"]
-    if settings.ENABLE_LIDAR:
-        scan_types.append("lidar")
+    scan_types = ["photo", "gaussian_splat", "lidar"]
 
     return CapabilitiesResponse(
         engine=settings.SCANFORGE_ENGINE,

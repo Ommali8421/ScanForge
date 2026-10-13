@@ -31,7 +31,7 @@ export const ScanTypeCards: React.FC<Props> = ({ selected, onSelect, lidarEnable
       title: "LiDAR Scan",
       desc: "Direct RGB-D and Record3D integration with metric TSDF fusion.",
       icon: Radar,
-      badge: lidarEnabled ? "Beta" : "Disabled (Flag)",
+      badge: lidarEnabled ? "Beta" : "Beta, needs RGB-D capture",
       disabled: !lidarEnabled,
     },
   ];
@@ -45,12 +45,12 @@ export const ScanTypeCards: React.FC<Props> = ({ selected, onSelect, lidarEnable
           <div
             key={opt.id}
             onClick={() => !opt.disabled && onSelect(opt.id)}
-            className={`relative p-4 rounded-2xl border transition-all cursor-pointer ${
+            className={`relative p-4 rounded-2xl border transition-all ${
               opt.disabled
-                ? "opacity-50 cursor-not-allowed border-dark-border bg-dark-card/50"
+                ? "opacity-60 cursor-not-allowed border-dark-border bg-dark-card/40"
                 : isSelected
-                ? "border-brand-500 bg-brand-500/10 shadow-lg shadow-brand-500/10 ring-1 ring-brand-500"
-                : "border-dark-border bg-dark-card hover:border-slate-600 hover:bg-dark-hover"
+                ? "cursor-pointer border-brand-500 bg-brand-500/10 shadow-lg shadow-brand-500/10 ring-1 ring-brand-500"
+                : "cursor-pointer border-dark-border bg-dark-card hover:border-slate-600 hover:bg-dark-hover"
             }`}
           >
             <div className="flex items-center justify-between mb-3">
@@ -62,10 +62,12 @@ export const ScanTypeCards: React.FC<Props> = ({ selected, onSelect, lidarEnable
                 <Icon className="w-4 h-4" />
               </div>
               <span
-                className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+                className={`text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded-full border ${
                   isSelected
-                    ? "bg-brand-500/20 text-brand-300 border-brand-500/30"
-                    : "bg-dark-bg text-dark-muted border-dark-border"
+                    ? "bg-brand-500/20 text-brand-300 border-brand-500/30 uppercase"
+                    : opt.disabled
+                    ? "bg-amber-500/10 text-amber-300/90 border-amber-500/20"
+                    : "bg-dark-bg text-dark-muted border-dark-border uppercase"
                 }`}
               >
                 {opt.badge}
