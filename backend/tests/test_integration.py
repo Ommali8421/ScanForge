@@ -152,3 +152,34 @@ def test_upload_size_cap_enforcement(monkeypatch, tmp_path):
     # Check upload directory for any stray large_video.mp4
     upload_files = list(storage_service.uploads_dir.glob("**/large_video.mp4"))
     assert len(upload_files) == 0, f"Partial upload was not deleted from disk: {upload_files}"
+
+
+def test_job_leaves_queued_status_within_10_seconds():
+    """Regression test: Submit a job through API and assert status transitions out of 'queued' within 10s."""
+    file_bytes = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 500
+    files = {"file": ("regression_tour.mp4", io.BytesIO(file_bytes), "video/mp4")}
+    data = {
+        "scan_type": "photo",
+        "quality": "draft",
+        "output_formats": '["glb"]'
+    }
+
+    response = client.post("/api/jobs", files=files, data=data)
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    # Poll status up to 10 seconds
+    start_time = time.time()
+    left_queued = False
+    current_status = "queued"
+
+    while time.time() - start_time < 10.0:
+        res = client.get(f"/api/jobs/{job_id}")
+        assert res.status_code == 200
+        current_status = res.json().get("status")
+        if current_status != "queued":
+            left_queued = True
+            break
+        time.sleep(0.5)
+
+    assert left_queued, f"Job {job_id} remained stuck in 'queued' status after 10 seconds (status={current_status})."
