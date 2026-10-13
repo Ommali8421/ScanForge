@@ -11,7 +11,8 @@
 |---|---|---|---|
 | **P0** | Repo skeleton, Docker Compose (mock profile), `doctor.py`, AGENTS.md, API contract, versions pinned | **Done** | `cf97f7c` |
 | **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
-| **P2** | Interior-tuned SfM + Route A mesh + mesh post-processing + scale calibration + floor alignment + mesh exporters + 3D mesh viewer | **Not Started** | Awaiting P1 acceptance and user approval of P2 plan |
+| **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch, Open3D) | **In Progress** | Building image with pinned tools |
+| **P2b** | Interior-tuned SfM + Route A mesh + mesh post-processing + scale calibration + floor alignment + mesh exporters + 3D mesh viewer | **Not Started** | Blocked on P2a |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |

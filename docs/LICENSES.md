@@ -9,8 +9,9 @@
 
 | Component | Repository / Source | Claimed License | Status | Compliance Notes |
 |---|---|---|---|---|
-| **COLMAP** | `colmap/colmap` | BSD-2-Clause / BSD-3-Clause | UNVERIFIED | Permissive for commercial and non-commercial usage. |
-| **OpenMVS** | `cdcseacave/openMVS` | AGPL-3.0 | UNVERIFIED | **AGPL-AFFECTED**: Containerization does NOT isolate network-triggered AGPL obligations. Must be evaluated before any hosted, SaaS, or commercial offering. |
+| **COLMAP** | `colmap/colmap` | BSD-3-Clause | VERIFIED (2026-10-14) | Permissive for commercial and non-commercial usage. Verified from LICENSE.txt in 3.9.1. |
+| **OpenMVS** | `cdcseacave/openMVS` | AGPL-3.0 | VERIFIED (2026-10-14) | **AGPL-AFFECTED**: Containerization does NOT isolate network-triggered AGPL obligations. Verified from LICENSE in v2.2.0. Must be evaluated before any hosted, SaaS, or commercial offering. |
+| **VCGLib** | `cdcseacave/VCG` | GPL-3.0 | VERIFIED (2026-10-14) | Copyleft geometry processing library required by OpenMVS. |
 | **nerfstudio** | `nerfstudio-project/nerfstudio` | Apache-2.0 | UNVERIFIED | Permissive; evaluate sub-dependencies (e.g. CUDA kernels). |
 | **gsplat** | `nerfstudio-project/gsplat` | Apache-2.0 | UNVERIFIED | Permissive CUDA rasterizer. |
 | **Depth Anything V2 Small** | `DepthAnything/Depth-Anything-V2` | Apache-2.0 | UNVERIFIED | Permissive. **Note**: Base/Large/Giant models are CC-BY-NC-4.0 and strictly prohibited from ScanForge. |

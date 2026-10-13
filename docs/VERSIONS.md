@@ -22,10 +22,11 @@ Pinned versions for all ScanForge external tools, Docker base images, Python pac
 
 | Component | Pinned Version | Verification Command |
 |---|---|---|
-| COLMAP | `3.9.1` | `colmap --help` |
-| OpenMVS | `v2.2.0` | `InterfaceCOLMAP --help` |
-| FFmpeg | `6.1.1` | `ffmpeg -version` |
-| Blender | `4.1` | `blender --version` |
+| COLMAP | `3.9.1` (CUDA sm_89) | `colmap --help` |
+| OpenMVS | `v2.2.0` (CUDA sm_89) | `InterfaceCOLMAP --help` |
+| VCGLib | `cdcseacave/VCG` | OpenMVS geometry library dependency |
+| FFmpeg | `4.4.2` | `ffmpeg -version` |
+| Blender | `4.1.0` | `blender --version` |
 
 ---
 

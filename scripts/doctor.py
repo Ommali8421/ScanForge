@@ -122,7 +122,10 @@ def main():
     print("\n--- Tooling & Binaries ---")
     check_command("FFmpeg", ["ffmpeg", "-version"], "Install ffmpeg for video frame extraction.")
     check_command("COLMAP", ["colmap", "--help"], "COLMAP is required for real GPU photogrammetry.")
-    check_command("OpenMVS InterfaceCOLMAP", ["InterfaceCOLMAP", "--help"], "OpenMVS binaries are required for real GPU photogrammetry.")
+    check_command("OpenMVS InterfaceCOLMAP", ["InterfaceCOLMAP", "--help"], "OpenMVS InterfaceCOLMAP is required for real GPU photogrammetry.")
+    check_command("OpenMVS DensifyPointCloud", ["DensifyPointCloud", "--help"], "OpenMVS DensifyPointCloud is required for real GPU photogrammetry.")
+    check_command("OpenMVS ReconstructMesh", ["ReconstructMesh", "--help"], "OpenMVS ReconstructMesh is required for real GPU photogrammetry.")
+    check_command("OpenMVS TextureMesh", ["TextureMesh", "--help"], "OpenMVS TextureMesh is required for real GPU photogrammetry.")
     check_command("Blender", ["blender", "--version"], "Blender is required for FBX/USDZ conversions.")
 
     print("\n--- Python Environment ---")
