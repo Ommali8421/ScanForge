@@ -42,8 +42,37 @@ async def event_generator(job_id: str, request: Request) -> AsyncGenerator[str, 
     listener_queue: asyncio.Queue = asyncio.Queue()
     _memory_listeners.setdefault(job_id, []).append(listener_queue)
 
-    # Optional Redis pubsub background reader
+    # Redis pubsub listener for cross-container worker events
+    redis_client = None
+    pubsub = None
     redis_task = None
+
+    try:
+        import redis.asyncio as aioredis
+        redis_client = aioredis.from_url(settings.SCANFORGE_REDIS_URL)
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(f"job:{job_id}")
+
+        async def redis_reader():
+            try:
+                async for message in pubsub.listen():
+                    if message and message.get("type") == "message":
+                        raw_data = message.get("data")
+                        if isinstance(raw_data, bytes):
+                            raw_data = raw_data.decode("utf-8")
+                        parsed = json.loads(raw_data)
+                        ev_type = parsed.get("type")
+                        ev_data = parsed.get("data", {})
+                        await listener_queue.put((ev_type, ev_data))
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+        redis_task = asyncio.create_task(redis_reader())
+    except Exception:
+        pass
+
     try:
         while True:
             # Check client disconnection
@@ -62,7 +91,28 @@ async def event_generator(job_id: str, request: Request) -> AsyncGenerator[str, 
                 yield ": keepalive\n\n"
 
     finally:
-        # Cleanup listener queue
+        # Cleanup Redis pubsub reader
+        if redis_task:
+            redis_task.cancel()
+            try:
+                await redis_task
+            except asyncio.CancelledError:
+                pass
+
+        if pubsub:
+            try:
+                await pubsub.unsubscribe(f"job:{job_id}")
+                await pubsub.aclose()
+            except Exception:
+                pass
+
+        if redis_client:
+            try:
+                await redis_client.aclose()
+            except Exception:
+                pass
+
+        # Cleanup in-memory listener queue
         if job_id in _memory_listeners and listener_queue in _memory_listeners[job_id]:
             _memory_listeners[job_id].remove(listener_queue)
 

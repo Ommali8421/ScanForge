@@ -46,7 +46,13 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
 
   useEffect(() => {
     loadJobData();
-  }, [jobId]);
+    const interval = setInterval(() => {
+      if (job?.status !== "completed" && job?.status !== "failed" && job?.status !== "cancelled") {
+        loadJobData();
+      }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [jobId, job?.status]);
 
   // Sync SSE updates into job state
   useEffect(() => {

@@ -18,7 +18,7 @@ Milestone P1 implementation was subjected to a comprehensive verification pass i
 | **5** | Integration tests (SSE replay, process kill on cancel, upload cap) | **VERIFIED** | Added `backend/tests/test_integration.py`; all passed inside `api` container. |
 | **6** | Environment diagnostics (`scripts/doctor.py`) | **VERIFIED** | Ran on WSL host (native filesystem, 953 GB disk, RTX 4060 8 GB detected) and inside container. |
 
----
+--- 
 
 ## 2. Evidence by Item
 
