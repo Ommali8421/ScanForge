@@ -10,7 +10,7 @@
 | Milestone | Scope | Status | Commit / Reference |
 |---|---|---|---|
 | **P0** | Repo skeleton, Docker Compose (mock profile), `doctor.py`, AGENTS.md, API contract, versions pinned | **Done** | `cf97f7c` |
-| **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Done, awaiting user acceptance** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
+| **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
 | **P2** | Interior-tuned SfM + Route A mesh + mesh post-processing + scale calibration + floor alignment + mesh exporters + 3D mesh viewer | **Not Started** | Awaiting P1 acceptance and user approval of P2 plan |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
@@ -87,7 +87,7 @@
 
 ## 6. Next Steps (Immediate Steps for Milestone P2)
 
-*DO NOT start execution until user explicitly accepts Milestone P1 and approves the P2 Implementation Plan.*
+*P1 officially Accepted by user. Commencing Milestone P2a (GPU worker build & tooling infrastructure).*
 
 1. **Produce P2 Implementation Plan**: Detail the interior-tuned SfM parameters (COLMAP max image size 2000px, radial camera model), OpenMVS Route A stages (Densify, ReconstructMesh, Refine, Texture), plane detection via RANSAC (Open3D), floor leveling, and scale calibration.
 2. **Build ToolRunner & Pipeline Stages for Route A**: Implement `ColmapSfM` and `OpenMVSDense` wrapped with safe arguments, timeout handling, memory checks (resolution level 2 / retry on OOM), and stage caching.
