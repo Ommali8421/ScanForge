@@ -45,14 +45,17 @@ def check_workspace_path():
 
 
 def check_disk_space():
-    total, used, free = shutil.disk_usage(".")
+    host_c = Path("/mnt/c")
+    target_path = host_c if host_c.exists() else Path(".")
+    total, used, free = shutil.disk_usage(target_path)
     free_gb = free / (1024 ** 3)
-    ok = free_gb >= 20.0
+    ok = free_gb >= 40.0
+    label = "Host Disk Space (/mnt/c)" if target_path == host_c else "Disk Space"
     print_status(
-        "Disk Space",
+        label,
         ok,
         f"{free_gb:.1f} GB free",
-        "Free up at least 20 GB of storage for photogrammetry point clouds and intermediate meshes."
+        "Free up at least 40 GB of storage for photogrammetry point clouds and intermediate meshes."
     )
 
 
