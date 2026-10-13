@@ -2,6 +2,7 @@ FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -15,9 +16,10 @@ WORKDIR /app
 
 COPY pyproject.toml /app/
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -e ".[dev]"
+    pip install --no-cache-dir ".[dev]"
 
 COPY . /app/
+RUN pip install --no-cache-dir -e ".[dev]"
 
 EXPOSE 8000
 
