@@ -1,5 +1,6 @@
 # ScanForge Component Licensing & Compliance Audit (docs/LICENSES.md)
 
+> **Repository Status**: This repository is **PUBLIC** (`https://github.com/Ommali8421/ScanForge.git`).
 > **Important**: In accordance with ScanForge Agent Conventions, all licenses below are designated **UNVERIFIED** until the actual repository `LICENSE` file is confirmed directly.
 
 ---
