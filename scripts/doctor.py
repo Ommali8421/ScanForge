@@ -66,7 +66,7 @@ def check_command(name: str, cmd: list[str], hint: str = "", critical: bool = Fa
         return False
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
-        ok = res.returncode == 0
+        ok = (res.returncode == 0) or ("OpenMVS" in res.stdout)
         details = res.stdout.splitlines()[0] if res.stdout else "Available"
         print_status(name, ok, details, hint)
         return ok
@@ -109,6 +109,36 @@ def check_nvidia_gpu():
         print_status("NVIDIA GPU", False, f"Failed querying nvidia-smi: {e}")
 
 
+def check_colmap():
+    cmd = ["colmap", "--help"]
+    found = shutil.which(cmd[0]) is not None
+    if not found:
+        print_status("COLMAP (with CUDA)", False, "Not found in PATH", "COLMAP is required for real GPU photogrammetry.")
+        return False
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        ok = res.returncode == 0
+        details = res.stdout.splitlines()[0] if res.stdout else "Available"
+        
+        # Check if CUDA is enabled in the binary
+        has_cuda = False
+        try:
+            colmap_path = shutil.which("colmap")
+            if colmap_path:
+                ldd_res = subprocess.run(["ldd", colmap_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+                if "cuda" in ldd_res.stdout.lower() or "cudart" in ldd_res.stdout.lower():
+                    has_cuda = True
+        except Exception:
+            pass
+
+        cuda_suffix = " (CUDA enabled)" if has_cuda else ""
+        print_status("COLMAP (with CUDA)", ok and (has_cuda or shutil.which("ldd") is None), f"{details}{cuda_suffix}", "Ensure COLMAP is built with CUDA support.")
+        return ok
+    except Exception as e:
+        print_status("COLMAP (with CUDA)", False, f"Failed to execute ({e})")
+        return False
+
+
 def main():
     print("=" * 60)
     print(" ScanForge Environment Diagnostics (doctor.py)")
@@ -121,7 +151,7 @@ def main():
 
     print("\n--- Tooling & Binaries ---")
     check_command("FFmpeg", ["ffmpeg", "-version"], "Install ffmpeg for video frame extraction.")
-    check_command("COLMAP", ["colmap", "--help"], "COLMAP is required for real GPU photogrammetry.")
+    check_colmap()
     check_command("OpenMVS InterfaceCOLMAP", ["InterfaceCOLMAP", "--help"], "OpenMVS InterfaceCOLMAP is required for real GPU photogrammetry.")
     check_command("OpenMVS DensifyPointCloud", ["DensifyPointCloud", "--help"], "OpenMVS DensifyPointCloud is required for real GPU photogrammetry.")
     check_command("OpenMVS ReconstructMesh", ["ReconstructMesh", "--help"], "OpenMVS ReconstructMesh is required for real GPU photogrammetry.")

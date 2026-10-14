@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.4
 # ScanForge GPU Worker Dockerfile (RTX 4060 / Ada Lovelace compute capability 8.9)
 # Profiles: gpu
 
@@ -29,6 +28,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libceres-dev \
     libglew-dev \
     libgl1-mesa-dev \
+    libflann-dev \
+    liblz4-dev \
+    libcgal-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -129,6 +131,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libcgal-dev \
     libglew-dev \
     libglu1-mesa-dev \
+    libflann-dev \
+    liblz4-dev \
+    libsm6 \
+    libice6 \
+    libegl1 \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
