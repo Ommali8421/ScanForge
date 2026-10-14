@@ -11,8 +11,8 @@
 |---|---|---|---|
 | **P0** | Repo skeleton, Docker Compose (mock profile), `doctor.py`, AGENTS.md, API contract, versions pinned | **Done** | `cf97f7c` |
 | **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
-| **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch, Open3D) | **In Progress** | Building image with pinned tools |
-| **P2b** | Interior-tuned SfM + Route A mesh + mesh post-processing + scale calibration + floor alignment + mesh exporters + 3D mesh viewer | **Not Started** | Blocked on P2a |
+| **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121, Open3D 0.20.0, Trimesh 5.1.1) | **Done** | Verified via `doctor.py` in container & `e2e_smoke.py` |
+| **P2b** | Interior-tuned SfM + Route A mesh + mesh post-processing + scale calibration + floor alignment + mesh exporters + 3D mesh viewer | **Not Started** | Blocked on user review after P2a |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
@@ -35,9 +35,10 @@
 | Scale Calibration Math | **VERIFIED** | Two consecutive calibrations tested, verifying cumulative scale factor `1.5 * 2.0 = 3.0` |
 | Backend Pytest Suite | **VERIFIED** | 15/15 tests passing in container (`test_api.py`, `test_capabilities.py`, `test_integration.py`, `test_zip_safe.py`) |
 | Queued-to-Active Transition | **VERIFIED** | Regression test `test_job_leaves_queued_status_within_10_seconds` passing in CI/Pytest |
-| End-to-End Smoke Test (`make smoke`) | **VERIFIED** | `scripts/e2e_smoke.py` exercises full upload -> live SSE -> artifact download -> 2x calibration (`1e5bf0a`) |
+| End-to-End Smoke Test (`make smoke`) | **VERIFIED** | `scripts/e2e_smoke.py` exercises full upload -> live SSE -> artifact download -> 2x calibration (`1e5bf0a`, re-verified after P2a) |
 | LiDAR Scan Card UI Badge | **VERIFIED** | Card visible in disabled state labeled "Beta, needs RGB-D capture" with `lidar_enabled: false` (`b9ee7ab`) |
-| GPU Reconstruction Pipeline (COLMAP/OpenMVS) | **UNVERIFIED** | GPU worker profile not yet executed on real hardware; mock engine active |
+| GPU Worker Tooling & Binaries | **VERIFIED** | Built `scanforge-worker-gpu:latest`. Verified via `docker compose --profile gpu run --rm worker-gpu python scripts/doctor.py`: COLMAP 3.9.1 (sm_89 CUDA), OpenMVS v2.2.0 (sm_89 CUDA), FFmpeg 4.4.2, Blender 4.1.0, PyTorch 2.5.1+cu121 (CUDA True, RTX 4060 8GB), Open3D 0.20.0, Trimesh 5.1.1 |
+| GPU Reconstruction Pipeline (COLMAP/OpenMVS) | **UNVERIFIED** | Pipeline execution on real room video is P2b scope |
 | Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
