@@ -20,6 +20,7 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      - SCANFORGE_ENGINE=${SCANFORGE_ENGINE:-mock}
     volumes:
       - scanforge-data:/data
     depends_on:
@@ -42,7 +43,7 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - SCANFORGE_ENGINE=mock
+      - SCANFORGE_ENGINE=${SCANFORGE_ENGINE:-mock}
     volumes:
       - scanforge-data:/data
     depends_on:
@@ -62,7 +63,7 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - SCANFORGE_ENGINE=real
+      - SCANFORGE_ENGINE=${SCANFORGE_ENGINE:-real}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
