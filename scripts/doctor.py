@@ -46,17 +46,26 @@ def check_workspace_path():
 
 def check_disk_space():
     host_c = Path("/mnt/c")
-    target_path = host_c if host_c.exists() else Path(".")
-    total, used, free = shutil.disk_usage(target_path)
-    free_gb = free / (1024 ** 3)
-    ok = free_gb >= 40.0
-    label = "Host Disk Space (/mnt/c)" if target_path == host_c else "Disk Space"
-    print_status(
-        label,
-        ok,
-        f"{free_gb:.1f} GB free",
-        "Free up at least 40 GB of storage for photogrammetry point clouds and intermediate meshes."
-    )
+    if host_c.exists():
+        total, used, free = shutil.disk_usage(host_c)
+        free_gb = free / (1024 ** 3)
+        ok = free_gb >= 40.0
+        print_status(
+            "Host Disk Space (/mnt/c)",
+            ok,
+            f"{free_gb:.1f} GB free",
+            "Free up at least 40 GB of storage for photogrammetry point clouds and intermediate meshes."
+        )
+    else:
+        # Inside a container or non-WSL: report overlay/virtual disk, clearly labeled
+        total, used, free = shutil.disk_usage(".")
+        free_gb = free / (1024 ** 3)
+        print_status(
+            "Container/WSL virtual disk (not host free space)",
+            True,  # informational only — cannot assess host disk from inside container
+            f"{free_gb:.1f} GB free on overlay/virtual disk",
+            "Run doctor.py on the WSL host (not inside a container) to check actual host disk space."
+        )
 
 
 def check_command(name: str, cmd: list[str], hint: str = "", critical: bool = False):
