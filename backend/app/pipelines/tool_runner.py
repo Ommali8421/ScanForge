@@ -28,7 +28,8 @@ class ToolRunner:
         timeout: int = 7200,
         log_callback: Optional[Callable[[str], None]] = None,
         cancel_token: Optional[CancelToken] = None,
-        progress_parser: Optional[Callable[[str], Optional[float]]] = None
+        progress_parser: Optional[Callable[[str], Optional[float]]] = None,
+        env: Optional[dict] = None
     ) -> subprocess.CompletedProcess:
         """
         Execute command list without shell interpolation.
@@ -49,6 +50,7 @@ class ToolRunner:
         proc = subprocess.Popen(
             command,
             cwd=cwd,
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

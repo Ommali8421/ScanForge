@@ -43,6 +43,7 @@ Pinned versions for all ScanForge external tools, Docker base images, Python pac
 | `sse-starlette` | `3.5.0` | Real-time SSE streaming |
 | `open3d` | `0.20.0` | Mesh processing / RANSAC / TSDF |
 | `trimesh` | `5.1.1` | 3D format conversion & analysis |
+| `opencv-python-headless` | `4.10.0.84` | Video decoding, sharpness, optical flow & trajectory rendering |
 | `gsplat` | `1.0.0` | 3D Gaussian Splatting rasterizer (planned P3) |
 | `nerfstudio` | `1.1.0` | splatfacto model training (planned P3) |
 

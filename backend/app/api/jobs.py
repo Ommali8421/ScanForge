@@ -190,7 +190,17 @@ def download_artifact(id: str, format: str):
     if not target or not Path(target.file_path).exists():
         raise HTTPException(status_code=404, detail=f"Artifact format '{format}' not found for job {id}")
 
-    media_type = "model/gltf-binary" if format.lower() == "glb" else "application/octet-stream"
+    media_type = "application/octet-stream"
+    fmt = format.lower()
+    if fmt == "glb":
+        media_type = "model/gltf-binary"
+    elif fmt == "png":
+        media_type = "image/png"
+    elif fmt == "json":
+        media_type = "application/json"
+    elif fmt in {"ply", "splat"}:
+        media_type = "application/octet-stream"
+
     return FileResponse(
         path=target.file_path,
         filename=target.filename,
