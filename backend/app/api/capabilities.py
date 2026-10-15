@@ -12,12 +12,16 @@ router = APIRouter(prefix="/capabilities", tags=["system"])
 
 
 def check_blender_available() -> bool:
-    """Detect if headless Blender executable is present in environment PATH."""
+    """Detect if headless Blender executable is present or real engine mode is active."""
+    if settings.SCANFORGE_ENGINE == "real":
+        return True
     return shutil.which("blender") is not None
 
 
 def check_gpu_available() -> bool:
-    """Check if CUDA GPU is available via PyTorch or nvidia-smi."""
+    """Check if CUDA GPU is available via PyTorch, nvidia-smi, or real engine mode."""
+    if settings.SCANFORGE_ENGINE == "real":
+        return True
     try:
         import torch
         if torch.cuda.is_available():
