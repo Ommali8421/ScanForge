@@ -23,6 +23,7 @@ services:
       - SCANFORGE_ENGINE=${SCANFORGE_ENGINE:-mock}
     volumes:
       - scanforge-data:/data
+      - ./backend:/app
     depends_on:
       redis:
         condition: service_healthy
@@ -46,6 +47,7 @@ services:
       - SCANFORGE_ENGINE=${SCANFORGE_ENGINE:-mock}
     volumes:
       - scanforge-data:/data
+      - ./backend:/app
     depends_on:
       redis:
         condition: service_healthy
@@ -68,6 +70,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - scanforge-data:/data
+      - ./backend:/workspace/backend
     depends_on:
       redis:
         condition: service_healthy

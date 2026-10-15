@@ -170,9 +170,10 @@ RUN python3.11 -m venv /opt/venv && \
     ln -sf /opt/venv/bin/pip /usr/local/bin/pip && \
     ln -sf /opt/venv/bin/pip /usr/local/bin/pip3
 
-# Install PyTorch with CUDA 12.1
+# Install PyTorch with CUDA 12.1 and headless OpenCV
 RUN --mount=type=cache,target=/root/.cache/pip \
-    /opt/venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+    /opt/venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
+    /opt/venv/bin/pip install opencv-python-headless
 
 # Install backend dependencies (Open3D, Trimesh, FastAPI, etc. - no nerfstudio yet)
 WORKDIR /workspace
