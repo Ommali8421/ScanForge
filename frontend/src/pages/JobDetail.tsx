@@ -18,6 +18,7 @@ interface Props {
 export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
   const [job, setJob] = useState<Job | null>(null);
   const [report, setReport] = useState<JobReport | null>(null);
+  const [sfmReport, setSfmReport] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Measure points
@@ -36,6 +37,16 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
           const rep = await fetchJobReport(jobId);
           setReport(rep);
         } catch {}
+
+        if (data.artifacts?.some(a => a.filename === "sfm_report.json")) {
+          try {
+            const res = await fetch(getDownloadUrl(jobId, "json"));
+            if (res.ok) {
+              const sfm = await res.json();
+              setSfmReport(sfm);
+            }
+          } catch {}
+        }
       }
     } catch (e) {
       console.error(e);
@@ -212,6 +223,51 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
 
           {/* Room Quality & Metrics Report */}
           <QualityReport report={report} />
+
+          {/* SfM Metrics & Camera Path */}
+          {(sfmReport || job.artifacts?.some(a => a.filename === "camera_path.png")) && (
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-6 shadow-lg space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-white">SfM Camera Trajectory & Metrics</h3>
+                {sfmReport && (
+                  <span className="text-xs text-brand-400 font-mono">
+                    {sfmReport.registered_frames} / {sfmReport.total_frames} registered ({(sfmReport.registration_ratio * 100).toFixed(1)}%)
+                  </span>
+                )}
+              </div>
+
+              {sfmReport && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  <div className="bg-dark-bg border border-dark-border/60 rounded-xl p-3">
+                    <div className="text-dark-muted">Sparse 3D Points</div>
+                    <div className="text-white font-bold text-sm mt-0.5">{sfmReport.point_count?.toLocaleString()}</div>
+                  </div>
+                  <div className="bg-dark-bg border border-dark-border/60 rounded-xl p-3">
+                    <div className="text-dark-muted">Reprojection Error</div>
+                    <div className="text-white font-bold text-sm mt-0.5">{sfmReport.mean_reprojection_error} px</div>
+                  </div>
+                  <div className="bg-dark-bg border border-dark-border/60 rounded-xl p-3">
+                    <div className="text-dark-muted">Peak VRAM / RAM</div>
+                    <div className="text-white font-bold text-sm mt-0.5">{sfmReport.peak_vram_mb} MB / {sfmReport.peak_ram_mb} MB</div>
+                  </div>
+                  <div className="bg-dark-bg border border-dark-border/60 rounded-xl p-3">
+                    <div className="text-dark-muted">Matcher / Duration</div>
+                    <div className="text-white font-bold text-sm mt-0.5">{sfmReport.matcher_used} ({sfmReport.sfm_duration_seconds}s)</div>
+                  </div>
+                </div>
+              )}
+
+              {job.artifacts?.some(a => a.filename === "camera_path.png") && (
+                <div className="border border-dark-border rounded-xl overflow-hidden bg-black flex justify-center">
+                  <img
+                    src={getDownloadUrl(job.id, "png")}
+                    alt="Camera Trajectory"
+                    className="max-h-96 object-contain"
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Download Artifacts Bar */}
           <div className="bg-dark-card border border-dark-border rounded-2xl p-5 shadow-lg space-y-3">
