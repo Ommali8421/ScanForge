@@ -12,7 +12,8 @@
 | **P0** | Repo skeleton, Docker Compose (mock profile), `doctor.py`, AGENTS.md, API contract, versions pinned | **Done** | `cf97f7c` |
 | **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
 | **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121, Open3D 0.20.0, Trimesh 5.1.1) | **Done** | Verified via `doctor.py` in container & `e2e_smoke.py` |
-| **P2b** | Interior-tuned SfM + Route A mesh + mesh post-processing + scale calibration + floor alignment + mesh exporters + 3D mesh viewer | **Not Started** | Blocked on user review after P2a |
+| **P2b** | Video ingest + adaptive frame extraction + interior-tuned COLMAP SfM (GPU) + trajectory plot + real test run | **Done** | Verified on RTX 4060 GPU with real test video (92.9% registration, 7,803 points, 0.671px error) |
+| **P2c** | OpenMVS Route A mesh (Densify, ReconstructMesh, Refine, Texture) + planar repair + floor align + scale calibrate | **Not Started** | Blocked on user review after P2b |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
@@ -27,18 +28,19 @@
 | Component / Feature | State | Evidence / Justification |
 |---|---|---|
 | Mock Engine Execution | **VERIFIED** | Completed multiple simulated reconstructions emitting procedural interior room mesh |
-| Job Submission (Multipart Upload) | **VERIFIED** | Successfully tested via UI and curl/Python uploads creating jobs in SQLite DB |
-| Redis Job Queue (`scanforge_mock`) | **VERIFIED** | Enqueuing validated; worker-mock consumes jobs from `scanforge_mock` queue |
+| Job Submission (Multipart Upload) | **VERIFIED** | Successfully tested via UI and Python script (`scripts/submit_real_run.py`) creating jobs in SQLite DB |
+| Redis Job Queue (`scanforge_gpu` / `scanforge_mock`) | **VERIFIED** | Enqueuing validated; worker-gpu consumes from both queues in priority order |
 | Live SSE Event Streaming | **VERIFIED** | Real-time events received via Redis PubSub through Nginx port 3000 (`1e1bbac`) |
 | Nginx Reverse Proxy (Port 3000) | **VERIFIED** | Reverse-proxies UI (`/`) and API (`/api/`) with chunked transfer and disabled buffering |
-| Artifact Generation & Download | **VERIFIED** | Validated download of generated `.glb` (14.2 KB) and `.obj` (3.7 KB) binary outputs |
+| Artifact Generation & Download | **VERIFIED** | Validated download of generated `.ply` (114.5 KB), `.png` (76.0 KB), and `.json` (0.4 KB) outputs |
 | Scale Calibration Math | **VERIFIED** | Two consecutive calibrations tested, verifying cumulative scale factor `1.5 * 2.0 = 3.0` |
-| Backend Pytest Suite | **VERIFIED** | 15/15 tests passing in container (`test_api.py`, `test_capabilities.py`, `test_integration.py`, `test_zip_safe.py`) |
-| Queued-to-Active Transition | **VERIFIED** | Regression test `test_job_leaves_queued_status_within_10_seconds` passing in CI/Pytest |
-| End-to-End Smoke Test (`make smoke`) | **VERIFIED** | `scripts/e2e_smoke.py` exercises full upload -> live SSE -> artifact download -> 2x calibration (`1e5bf0a`, re-verified after P2a) |
-| LiDAR Scan Card UI Badge | **VERIFIED** | Card visible in disabled state labeled "Beta, needs RGB-D capture" with `lidar_enabled: false` (`b9ee7ab`) |
-| GPU Worker Tooling & Binaries | **VERIFIED** | Built `scanforge-worker-gpu:latest`. Verified via `docker compose --profile gpu run --rm worker-gpu python scripts/doctor.py`: COLMAP 3.9.1 (sm_89 CUDA), OpenMVS v2.2.0 (sm_89 CUDA), FFmpeg 4.4.2, Blender 4.1.0, PyTorch 2.5.1+cu121 (CUDA True, RTX 4060 8GB), Open3D 0.20.0, Trimesh 5.1.1 |
-| GPU Reconstruction Pipeline (COLMAP/OpenMVS) | **UNVERIFIED** | Pipeline execution on real room video is P2b scope |
+| Backend Pytest Suite | **VERIFIED** | 22/22 unit & integration tests passing in container (`test_api_jobs.py`, `test_cancel_sfm.py`, `test_capabilities.py`, `test_frame_selection.py`, `test_integration.py`, `test_mock_pipeline.py`, `test_sfm_failure.py`, `test_zip_safe.py`) |
+| Real Video Ingestion & ffprobe | **VERIFIED** | `IngestStage` probed duration, dimensions (478x850), stripped audio, normalized color, and baked orientation |
+| Adaptive Keyframe Extraction | **VERIFIED** | `FrameExtractionStage` selected 99 keyframes using Laplacian sharpness scoring, Farneback optical flow, and homography rotation check |
+| GPU COLMAP SfM (RTX 4060) | **VERIFIED** | `ColmapSfMStage` executed SIFT GPU extraction, sequential + exhaustive matching, bounded Ceres BA: 92/99 frames registered (92.9%), 7,803 3D points, 0.671 px reprojection error, 415 MB peak VRAM, 367 MB peak RAM in 228.4s |
+| Camera Trajectory Top-Down Plot | **VERIFIED** | `camera_path.png` generated showing 92 camera nodes, Start/End markers, and 3D spatial points |
+| SfM Failure & Cancel Handling | **VERIFIED** | SfM failure under 60% threshold raises typed error; cancel kills active process tree cleanly |
+| OpenMVS Route A Mesh Pipeline | **UNVERIFIED** | Scheduled for Milestone P2c |
 | Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
@@ -55,6 +57,8 @@
 | Missing LiDAR card in UI when flag disabled | `GET /api/capabilities` excluded `"lidar"` from `scan_types` when `ENABLE_LIDAR=false`, preventing frontend from displaying disabled state. | Updated `capabilities.py` to always include `"lidar"` in `scan_types` with `lidar_enabled` boolean; updated `ScanTypeCards.tsx` badge to "Beta, needs RGB-D capture". | `b9ee7ab` |
 | Container pytest import error | `backend/Dockerfile` ran editable pip install before copying source files, leaving `app` module unlinked in fresh builds. | Configured `ENV PYTHONPATH=/app`, added post-copy `pip install -e ".[dev]"`, and added `pythonpath = ["."]` in `pyproject.toml`. | `0ccd635` |
 | Untracked `.env` check | Ensure development secrets and local paths are not committed to git repository. | Verified `.env` in `.gitignore`; confirmed `git ls-files .env` is empty. | *Verified* |
+| COLMAP mapper Ceres BA iteration stall | Exhaustive matching on dense scene graph caused Ceres solver to run unconstrained global BA iterations. | Bounded `--Mapper.ba_global_max_num_iterations 30`, `--Mapper.ba_local_max_num_iterations 20`, `--Mapper.ba_global_max_refinements 2`, `--Mapper.ba_local_max_refinements 1`, and increased sequential overlap to 25. | `3d9ad27` |
+| Multi-queue worker dispatch | GPU profile worker only listened to `scanforge_gpu`, leaving mock and test jobs stalled in `scanforge_mock`. | Enabled worker to listen to both `['scanforge_gpu', 'scanforge_mock']` in priority order. | `3d9ad27` |
 
 ---
 
@@ -69,7 +73,11 @@
 3. **Pluggable Engine Interface**:
    - `SCANFORGE_ENGINE=mock` uses lightweight, fast procedural generators suitable for rapid testing and CI.
    - `SCANFORGE_ENGINE=real` activates external tool wrappers (`ColmapSfM`, `OpenMVSDense`, `NerfstudioSplatfacto`).
-4. **Scale Calibration Pipeline Invariance**:
+4. **Resilient Matcher Fallback & Bounded Bundle Adjustment**:
+   - Sequential matching with overlap 25 is used first.
+   - If registered frames are <90% (for $\le 200$ frames), exhaustive matching is attempted with a 600s timeout. If exhaustive fails or produces fewer frames, the pipeline gracefully falls back to the sequential model.
+   - Ceres BA iterations are bounded to prevent infinite or multi-hour stalls on dense scene graphs.
+5. **Scale Calibration Pipeline Invariance**:
    - Calling `POST /api/jobs/{id}/calibrate` does not restart heavy upstream SfM or meshing stages. It only triggers `ScaleStage` and exporter stages, applying cumulative scaling factor `current_scale * (real_distance / measured_distance)`.
 
 ---
@@ -83,17 +91,21 @@
 - **Containerization**: Docker Desktop with WSL2 backend + NVIDIA Container Toolkit (`nvidia-smi` accessible).
 - **Environment Profiles**:
   - `mock`: default (`COMPOSE_PROFILES=mock`), runs `api`, `worker-mock`, `redis`, `frontend`.
-  - `gpu`: activated via `make up-gpu` (`COMPOSE_PROFILES=gpu`), builds heavy CUDA image with COLMAP, OpenMVS, and nerfstudio.
+  - `gpu`: activated via `make up-gpu` or `SCANFORGE_ENGINE=real COMPOSE_PROFILES=gpu docker compose up -d`, builds and runs heavy CUDA image with COLMAP, OpenMVS, and nerfstudio.
 
 ---
 
-## 6. Next Steps (Immediate Steps for Milestone P2)
+## 6. Next Steps (Immediate Steps for Milestone P2c)
 
-*P1 officially Accepted by user. Commencing Milestone P2a (GPU worker build & tooling infrastructure).*
+*P2b completed and verified on real test video with RTX 4060 GPU. Awaiting user review before proceeding to Milestone P2c.*
 
-1. **Produce P2 Implementation Plan**: Detail the interior-tuned SfM parameters (COLMAP max image size 2000px, radial camera model), OpenMVS Route A stages (Densify, ReconstructMesh, Refine, Texture), plane detection via RANSAC (Open3D), floor leveling, and scale calibration.
-2. **Build ToolRunner & Pipeline Stages for Route A**: Implement `ColmapSfM` and `OpenMVSDense` wrapped with safe arguments, timeout handling, memory checks (resolution level 2 / retry on OOM), and stage caching.
-3. **Integrate Mesh Viewer & Measurement Tool**: Complete `frontend/src/components/MeasureTool.tsx` and Three.js mesh viewer allowing interactive two-point distance measurement and triggering `/api/jobs/{id}/calibrate`.
+1. **User Review on Milestone P2b**: Present reconstruction report, camera trajectory plot, resource metrics (VRAM/RAM), and verified logs from the real room video run.
+2. **Milestone P2c Planning**:
+   - OpenMVS dense point cloud reconstruction (`DensifyPointCloud` at resolution level 2, with auto-retry at resolution level 3 on OOM).
+   - Watertight tetrahedral Delaunay surface mesh reconstruction (`ReconstructMesh`).
+   - Mesh post-processing: non-manifold edge cleanup, RANSAC plane detection and hole repair (Open3D), floor leveling to Y=0, planarity-aware decimation.
+   - OpenMVS texture baking (`TextureMesh`) using undistorted cameras.
+   - Exporters to canonical formats (GLB, OBJ, PLY, STL, XYZ, FBX, USDZ).
 
 ---
 
