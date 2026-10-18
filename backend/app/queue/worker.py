@@ -16,16 +16,17 @@ def main():
     parser = argparse.ArgumentParser(description="ScanForge RQ Worker")
     parser.add_argument(
         "--queue",
-        type=str,
-        default=settings.active_queue,
-        help="Target queue name (e.g. scanforge_mock or scanforge_gpu)"
+        nargs="+",
+        default=[settings.active_queue],
+        help="Target queue name(s) (e.g. scanforge_gpu scanforge_mock)"
     )
     args = parser.parse_args()
+    queues = args.queue if isinstance(args.queue, list) else [args.queue]
 
     # Ensure DB tables exist
     init_db()
 
-    logger.info(f"Starting ScanForge worker listening on queue: '{args.queue}'")
+    logger.info(f"Starting ScanForge worker listening on queues: {queues}")
     logger.info(f"Engine mode: {settings.SCANFORGE_ENGINE}, Job timeout: {settings.SCANFORGE_JOB_TIMEOUT}s")
 
     try:
@@ -35,7 +36,7 @@ def main():
         logger.error(f"Cannot connect to Redis at {settings.SCANFORGE_REDIS_URL}: {e}")
         sys.exit(1)
 
-    worker = Worker([args.queue], connection=redis_conn, worker_ttl=settings.SCANFORGE_JOB_TIMEOUT)
+    worker = Worker(queues, connection=redis_conn, worker_ttl=settings.SCANFORGE_JOB_TIMEOUT)
     worker.work(with_scheduler=True)
 
 

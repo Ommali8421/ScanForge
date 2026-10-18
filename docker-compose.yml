@@ -60,7 +60,7 @@ services:
       context: .
       dockerfile: docker/worker-gpu.Dockerfile
     image: scanforge-worker-gpu:latest
-    command: python3 -m app.queue.worker --queue scanforge_gpu
+    command: python3 -m app.queue.worker --queue scanforge_gpu scanforge_mock
     env_file:
       - .env
     environment:

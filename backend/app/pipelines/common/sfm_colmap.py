@@ -300,7 +300,7 @@ class ColmapSfMStage(Stage):
                         "colmap", "sequential_matcher",
                         "--database_path", str(db_path),
                         "--SiftMatching.use_gpu", "1" if gpu_flag else "0",
-                        "--SequentialMatching.overlap", "15",
+                        "--SequentialMatching.overlap", "25",
                         "--SequentialMatching.quadratic_overlap", "1"
                     ]
                 else:
@@ -325,7 +325,7 @@ class ColmapSfMStage(Stage):
                     else:
                         raise
 
-            def execute_mapper(output_dir: Path):
+            def execute_mapper(output_dir: Path, timeout: int = 1800):
                 output_dir.mkdir(parents=True, exist_ok=True)
                 ctx.log_cb(f"[SfM] Running COLMAP mapper -> {output_dir.name}...")
                 map_cmd = [
@@ -334,7 +334,11 @@ class ColmapSfMStage(Stage):
                     "--image_path", str(frames_dir),
                     "--output_path", str(output_dir),
                     "--Mapper.init_min_tri_angle", "8",
-                    "--Mapper.filter_min_tri_angle", "1.5"
+                    "--Mapper.filter_min_tri_angle", "1.5",
+                    "--Mapper.ba_global_max_num_iterations", "30",
+                    "--Mapper.ba_local_max_num_iterations", "20",
+                    "--Mapper.ba_global_max_refinements", "2",
+                    "--Mapper.ba_local_max_refinements", "1"
                 ]
                 ToolRunner.run(
                     map_cmd,
@@ -342,7 +346,7 @@ class ColmapSfMStage(Stage):
                     env=colmap_env,
                     log_callback=ctx.log_cb,
                     cancel_token=ctx.cancel_token,
-                    timeout=3600
+                    timeout=timeout
                 )
 
             # Initial matching
@@ -364,18 +368,23 @@ class ColmapSfMStage(Stage):
                     f"({(registered_count/total_frames)*100:.1f}% < 90%). Retrying with exhaustive matcher..."
                 )
                 sparse_exh = ctx.workdir / "sparse_exhaustive"
-                execute_matcher("exhaustive", use_gpu_sift)
-                execute_mapper(sparse_exh)
+                try:
+                    execute_matcher("exhaustive", use_gpu_sift)
+                    execute_mapper(sparse_exh, timeout=600)
 
-                exh_model_dir, exh_count = self._find_best_model(sparse_exh)
-                exh_registered = exh_count
-                ctx.log_cb(f"[SfM] Exhaustive matcher registered: {exh_count}/{total_frames} frames.")
+                    exh_model_dir, exh_count = self._find_best_model(sparse_exh)
+                    exh_registered = exh_count
+                    ctx.log_cb(f"[SfM] Exhaustive matcher registered: {exh_count}/{total_frames} frames.")
 
-                if exh_count > registered_count:
-                    ctx.log_cb(f"[SfM] Exhaustive model accepted ({exh_count} > {registered_count} registered frames).")
-                    best_model_dir = exh_model_dir
-                    registered_count = exh_count
-                    matcher_used = "sequential_then_exhaustive"
+                    if exh_count > registered_count:
+                        ctx.log_cb(f"[SfM] Exhaustive model accepted ({exh_count} > {registered_count} registered frames).")
+                        best_model_dir = exh_model_dir
+                        registered_count = exh_count
+                        matcher_used = "sequential_then_exhaustive"
+                    else:
+                        ctx.log_cb(f"[SfM] Exhaustive model had fewer or equal registered frames ({exh_count} vs {registered_count}). Keeping sequential model.")
+                except Exception as e:
+                    ctx.log_cb(f"[SfM] Warning: Exhaustive matcher or mapper failed ({e}). Falling back to sequential model.")
 
             # -------------------------------------------------------------
             # Step 3: Threshold Validation (Minimum 60%)
