@@ -235,3 +235,16 @@ ScanForge is optimised for **interior scanning** (rooms, apartments, houses). Se
 ## 16. Definition of Done
 
 Upload a room walk-through video → get a clean, textured, correctly-scaled interior mesh in several selected formats that open correctly in Blender, plus the splat. LiDAR is documented follow-up if P6 not reached. README has exact setup steps. `docs/LICENSES.md` and `docs/VERSIONS.md` are accurate. Final report lists what was verified on real hardware vs. mock mode, with unverified items clearly marked as **UNVERIFIED**.
+
+---
+
+## 17. Portability Rules
+
+Follow these rules across all pipelines, tools, and runners:
+1. **Tool location resolution**: Never hard-code tool locations like `/opt/...`. Resolve `colmap`, OpenMVS binaries, `ffmpeg`, and `blender` from `PATH` or from config/environment variables (e.g. `SCANFORGE_COLMAP_BIN`, `SCANFORGE_OPENMVS_DIR`, `SCANFORGE_FFMPEG_BIN`, `SCANFORGE_BLENDER_BIN`), so the same stage code runs inside Docker and in a plain Conda/virtual environment.
+2. **Runtime COLMAP version detection**: Detect the installed COLMAP version at runtime (`colmap -h` / `colmap --version`) and map option names with `--help` where they differ (3.9.x vs. 3.12+ renamed several flags). Never assume a single version.
+3. **Stage isolation**: Stages must not depend on the API, Redis, or the database: they take a `workdir` and `parameters` only (via `JobContext`). Return outputs and metadata in `StageResult`; artifact registration and database writes belong in the job runner/queue layer, not inside individual stages. A command-line runner will be added later.
+4. **Dynamic VRAM discovery**: Quality presets read the available GPU memory (env `SCANFORGE_VRAM_GB` or `nvidia-smi`) instead of assuming 8 GB, with the 8 GB preset as default.
+5. **Resource etiquette**: Honour `CUDA_VISIBLE_DEVICES` and a configurable thread count (e.g. `SCANFORGE_NUM_THREADS`), and never assume all CPU cores or GPUs are free.
+6. **Relative workdir paths**: Keep all internal file inputs, outputs, and intermediate scratch paths relative to the job `workdir`.
+
