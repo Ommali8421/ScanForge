@@ -40,6 +40,7 @@
 | GPU COLMAP SfM (RTX 4060) | **VERIFIED** | `ColmapSfMStage` executed SIFT GPU extraction, sequential + exhaustive matching, bounded Ceres BA: 92/99 frames registered (92.9%), 7,803 3D points, 0.671 px reprojection error, 415 MB peak VRAM, 367 MB peak RAM in 228.4s |
 | Camera Trajectory Top-Down Plot | **VERIFIED** | `camera_path.png` generated showing 92 camera nodes, Start/End markers, and 3D spatial points |
 | SfM Failure & Cancel Handling | **VERIFIED** | SfM failure under 60% threshold raises typed error; cancel kills active process tree cleanly |
+| Portability & Dynamic Tool Resolution | **VERIFIED** | Dynamic binary resolution from PATH/env, runtime COLMAP flag filtering via `--help`, VRAM-aware presets, thread budgeting, stage isolation (27/27 tests passing) |
 | OpenMVS Route A Mesh Pipeline | **UNVERIFIED** | Scheduled for Milestone P2c |
 | Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
