@@ -9,13 +9,16 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 
+from app.utils.tool_resolve import resolve_ffprobe
+
+
 def probe_video(video_path: Path) -> Dict[str, Any]:
     """
     Probe video file metadata using ffprobe.
     Returns duration, width, height, fps, and codec information.
     """
-    ffprobe_cmd = shutil.which("ffprobe")
-    if not ffprobe_cmd:
+    ffprobe_cmd = resolve_ffprobe()
+    if not ffprobe_cmd or not shutil.which(ffprobe_cmd) and not Path(ffprobe_cmd).exists():
         return {
             "duration": 0.0,
             "width": 1920,

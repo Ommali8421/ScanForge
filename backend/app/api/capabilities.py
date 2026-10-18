@@ -11,11 +11,15 @@ from app.models.schemas import CapabilitiesResponse
 router = APIRouter(prefix="/capabilities", tags=["system"])
 
 
+from app.utils.tool_resolve import resolve_blender
+
+
 def check_blender_available() -> bool:
     """Detect if headless Blender executable is present or real engine mode is active."""
     if settings.SCANFORGE_ENGINE == "real":
         return True
-    return shutil.which("blender") is not None
+    blender_path = resolve_blender()
+    return shutil.which(blender_path) is not None or (blender_path and shutil.which(blender_path) is not None)
 
 
 def check_gpu_available() -> bool:

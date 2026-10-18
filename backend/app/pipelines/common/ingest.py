@@ -13,6 +13,7 @@ from app.pipelines.base import Stage, JobContext, StageResult
 from app.pipelines.tool_runner import ToolRunner
 from app.services.storage import storage_service
 from app.utils.ffprobe import probe_video
+from app.utils.tool_resolve import resolve_ffmpeg, get_configured_threads
 
 
 class IngestStage(Stage):
@@ -73,12 +74,14 @@ class IngestStage(Stage):
             )
 
         normalized_video = ctx.workdir / "normalized_input.mp4"
-        ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+        ffmpeg_bin = resolve_ffmpeg()
+        threads = str(get_configured_threads())
 
         # Construct ffmpeg command
         # Autorotate is active by default in ffmpeg; we strip audio (-an) and ensure 8-bit yuv420p
         cmd = [
             ffmpeg_bin,
+            "-threads", threads,
             "-y",
             "-i", str(input_path),
             "-an",  # Strip audio

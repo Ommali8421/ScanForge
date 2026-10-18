@@ -3,6 +3,7 @@ Queue Pipeline Task
 Executes reconstruction pipeline stages in background worker.
 """
 
+import shutil
 from pathlib import Path
 from typing import Dict
 from app.pipelines.base import JobContext, CancelToken
@@ -12,6 +13,7 @@ from app.services.job_service import (
     get_job,
     update_job_progress,
     append_job_log,
+    add_artifact,
     set_job_completed,
     set_job_failed,
     set_job_cancelled
@@ -66,11 +68,43 @@ def run_pipeline_task(job_id: str):
 
     try:
         pipeline = pipeline_registry.get_pipeline(job.scan_type)
-        pipeline.run(ctx)
+        stage_results = pipeline.run(ctx)
 
         if cancel_token.is_cancelled():
             set_job_cancelled(job_id)
         else:
+            # Register output artifacts from pipeline stages (Portability Rule 3: stage isolation)
+            art_dir = storage_service.get_job_artifacts_dir(job_id)
+            for res in stage_results or []:
+                for out_file in res.output_files:
+                    if out_file.exists():
+                        dest_file = art_dir / out_file.name
+                        if dest_file.resolve() != out_file.resolve():
+                            shutil.copy2(out_file, dest_file)
+
+                        suffix = out_file.suffix.lower().lstrip(".")
+                        kind = "model"
+                        if suffix in ("ply", "xyz", "las"):
+                            kind = "pointcloud"
+                        elif suffix in ("png", "jpg", "jpeg", "webp"):
+                            kind = "image"
+                        elif suffix in ("json", "txt"):
+                            kind = "report"
+                        elif suffix in ("splat",):
+                            kind = "splat"
+                        elif suffix in ("glb", "obj", "fbx", "stl", "usdz"):
+                            kind = "mesh"
+
+                        add_artifact(
+                            job_id=job_id,
+                            kind=kind,
+                            format_name=suffix,
+                            filename=out_file.name,
+                            size_bytes=dest_file.stat().st_size,
+                            file_path=str(dest_file)
+                        )
+
+            storage_service.create_zip_archive(job_id)
             set_job_completed(job_id)
 
     except Exception as e:

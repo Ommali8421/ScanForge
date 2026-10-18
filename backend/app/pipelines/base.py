@@ -122,15 +122,16 @@ class Pipeline:
         self.scan_type = scan_type
         self.stages = stages
 
-    def run(self, ctx: JobContext):
+    def run(self, ctx: JobContext) -> List[StageResult]:
         """Run all stages sequentially, computing proportional progress."""
         total_weight = sum(s.weight for s in self.stages) or 1.0
         accumulated_weight = 0.0
+        stage_results: List[StageResult] = []
 
         for stage in self.stages:
             if ctx.cancel_token.is_cancelled():
                 ctx.log_cb(f"[Pipeline] Job cancelled before stage '{stage.name}'.")
-                return
+                return stage_results
 
             stage_start_pct = int((accumulated_weight / total_weight) * 100)
             ctx.progress_cb(stage.name, stage_start_pct, f"Starting stage: {stage.name}")
@@ -147,8 +148,11 @@ class Pipeline:
             if not result.success:
                 raise RuntimeError(f"Stage '{stage.name}' failed.")
 
+            stage_results.append(result)
             stage.mark_cached(ctx)
             accumulated_weight += stage.weight
             stage_end_pct = int((accumulated_weight / total_weight) * 100)
             elapsed = time.time() - start_time
             ctx.progress_cb(stage.name, stage_end_pct, f"Completed stage {stage.name} in {elapsed:.1f}s")
+
+        return stage_results

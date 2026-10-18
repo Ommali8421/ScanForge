@@ -18,9 +18,13 @@ import numpy as np
 
 from app.pipelines.base import Stage, JobContext, StageResult
 from app.pipelines.tool_runner import ToolRunner, ToolExecutionError
-from app.services.storage import storage_service
-from app.services.job_service import add_artifact
 from app.utils.resource_monitor import ResourceMonitor
+from app.pipelines.presets import get_preset_config
+from app.utils.tool_resolve import (
+    resolve_colmap,
+    filter_colmap_args,
+    get_configured_threads,
+)
 
 
 def _quaternion_to_rotation_matrix(q: List[float]) -> np.ndarray:
@@ -63,9 +67,10 @@ class ColmapSfMStage(Stage):
             # If model_converter is available, inspect txt
             txt_tmp = model_dir / "_inspect_txt"
             txt_tmp.mkdir(exist_ok=True)
+            colmap_bin = resolve_colmap()
             try:
                 ToolRunner.run([
-                    "colmap", "model_converter",
+                    colmap_bin, "model_converter",
                     "--input_path", str(model_dir),
                     "--output_path", str(txt_tmp),
                     "--output_type", "TXT"
@@ -240,24 +245,37 @@ class ColmapSfMStage(Stage):
         options = ctx.params.get("options", {})
         requested_matcher = options.get("matcher", "sequential")
         camera_model = options.get("camera_model", "SIMPLE_RADIAL")
+        quality = ctx.params.get("quality", "standard")
+
+        preset_cfg = get_preset_config(quality)
+        max_image_size = str(preset_cfg.colmap_max_image_size)
+
+        colmap_bin = resolve_colmap()
+        threads = str(get_configured_threads())
 
         colmap_env = os.environ.copy()
         colmap_env["QT_QPA_PLATFORM"] = "offscreen"
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            colmap_env["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_VISIBLE_DEVICES"]
 
         with ResourceMonitor() as monitor:
             # -------------------------------------------------------------
             # Step 1: Feature Extraction
             # -------------------------------------------------------------
-            ctx.log_cb(f"[SfM] Extracting SIFT features (camera model: {camera_model}, max size: 2000px)...")
-            extract_cmd = [
-                "colmap", "feature_extractor",
+            ctx.log_cb(
+                f"[SfM] Extracting SIFT features (camera model: {camera_model}, "
+                f"max size: {max_image_size}px, VRAM: {preset_cfg.vram_gb:.1f}GB, threads: {threads})..."
+            )
+            extract_args = filter_colmap_args("feature_extractor", [
                 "--database_path", str(db_path),
                 "--image_path", str(frames_dir),
                 "--ImageReader.camera_model", camera_model,
                 "--ImageReader.single_camera", "1",
-                "--SiftExtraction.max_image_size", "2000",
-                "--SiftExtraction.use_gpu", "1"
-            ]
+                "--SiftExtraction.max_image_size", max_image_size,
+                "--SiftExtraction.use_gpu", "1",
+                "--SiftExtraction.num_threads", threads
+            ], colmap_bin)
+            extract_cmd = [colmap_bin, "feature_extractor"] + extract_args
 
             use_gpu_sift = True
             try:
@@ -272,15 +290,16 @@ class ColmapSfMStage(Stage):
             except ToolExecutionError as e:
                 ctx.log_cb("[SfM] Warning: GPU SIFT extraction failed. Falling back to CPU SIFT extraction...")
                 use_gpu_sift = False
-                extract_cmd_cpu = [
-                    "colmap", "feature_extractor",
+                extract_args_cpu = filter_colmap_args("feature_extractor", [
                     "--database_path", str(db_path),
                     "--image_path", str(frames_dir),
                     "--ImageReader.camera_model", camera_model,
                     "--ImageReader.single_camera", "1",
-                    "--SiftExtraction.max_image_size", "2000",
-                    "--SiftExtraction.use_gpu", "0"
-                ]
+                    "--SiftExtraction.max_image_size", max_image_size,
+                    "--SiftExtraction.use_gpu", "0",
+                    "--SiftExtraction.num_threads", threads
+                ], colmap_bin)
+                extract_cmd_cpu = [colmap_bin, "feature_extractor"] + extract_args_cpu
                 ToolRunner.run(
                     extract_cmd_cpu,
                     cwd=str(ctx.workdir),
@@ -294,21 +313,23 @@ class ColmapSfMStage(Stage):
             # Step 2: Feature Matching & Mapping
             # -------------------------------------------------------------
             def execute_matcher(m_type: str, gpu_flag: bool):
-                ctx.log_cb(f"[SfM] Running {m_type} matcher (GPU: {gpu_flag})...")
+                ctx.log_cb(f"[SfM] Running {m_type} matcher (GPU: {gpu_flag}, threads: {threads})...")
                 if m_type == "sequential":
-                    match_cmd = [
-                        "colmap", "sequential_matcher",
+                    match_args = filter_colmap_args("sequential_matcher", [
                         "--database_path", str(db_path),
                         "--SiftMatching.use_gpu", "1" if gpu_flag else "0",
+                        "--SiftMatching.num_threads", threads,
                         "--SequentialMatching.overlap", "25",
                         "--SequentialMatching.quadratic_overlap", "1"
-                    ]
+                    ], colmap_bin)
+                    match_cmd = [colmap_bin, "sequential_matcher"] + match_args
                 else:
-                    match_cmd = [
-                        "colmap", "exhaustive_matcher",
+                    match_args = filter_colmap_args("exhaustive_matcher", [
                         "--database_path", str(db_path),
-                        "--SiftMatching.use_gpu", "1" if gpu_flag else "0"
-                    ]
+                        "--SiftMatching.use_gpu", "1" if gpu_flag else "0",
+                        "--SiftMatching.num_threads", threads
+                    ], colmap_bin)
+                    match_cmd = [colmap_bin, "exhaustive_matcher"] + match_args
                 try:
                     ToolRunner.run(
                         match_cmd,
@@ -328,8 +349,7 @@ class ColmapSfMStage(Stage):
             def execute_mapper(output_dir: Path, timeout: int = 1800):
                 output_dir.mkdir(parents=True, exist_ok=True)
                 ctx.log_cb(f"[SfM] Running COLMAP mapper -> {output_dir.name}...")
-                map_cmd = [
-                    "colmap", "mapper",
+                map_args = filter_colmap_args("mapper", [
                     "--database_path", str(db_path),
                     "--image_path", str(frames_dir),
                     "--output_path", str(output_dir),
@@ -338,8 +358,10 @@ class ColmapSfMStage(Stage):
                     "--Mapper.ba_global_max_num_iterations", "30",
                     "--Mapper.ba_local_max_num_iterations", "20",
                     "--Mapper.ba_global_max_refinements", "2",
-                    "--Mapper.ba_local_max_refinements", "1"
-                ]
+                    "--Mapper.ba_local_max_refinements", "1",
+                    "--Mapper.num_threads", threads
+                ], colmap_bin)
+                map_cmd = [colmap_bin, "mapper"] + map_args
                 ToolRunner.run(
                     map_cmd,
                     cwd=str(ctx.workdir),
@@ -411,14 +433,14 @@ class ColmapSfMStage(Stage):
 
             ctx.log_cb("[SfM] Exporting sparse point cloud to PLY and TXT formats...")
             ToolRunner.run([
-                "colmap", "model_converter",
+                colmap_bin, "model_converter",
                 "--input_path", str(best_model_dir),
                 "--output_path", str(sparse_ply),
                 "--output_type", "PLY"
             ], timeout=120)
 
             ToolRunner.run([
-                "colmap", "model_converter",
+                colmap_bin, "model_converter",
                 "--input_path", str(best_model_dir),
                 "--output_path", str(sparse_txt_dir),
                 "--output_type", "TXT"
@@ -428,7 +450,7 @@ class ColmapSfMStage(Stage):
             undistorted_dir = ctx.workdir / "undistorted"
             ctx.log_cb("[SfM] Running image undistorter for downstream MVS...")
             ToolRunner.run([
-                "colmap", "image_undistorter",
+                colmap_bin, "image_undistorter",
                 "--image_path", str(frames_dir),
                 "--input_path", str(best_model_dir),
                 "--output_path", str(undistorted_dir),
@@ -464,46 +486,6 @@ class ColmapSfMStage(Stage):
         report_file = ctx.workdir / "sfm_report.json"
         with open(report_file, "w") as f:
             json.dump(report, f, indent=2)
-
-        # Copy and register artifacts
-        art_dir = storage_service.get_job_artifacts_dir(ctx.job_id)
-        if sparse_ply.exists():
-            dest_ply = art_dir / "sparse.ply"
-            shutil.copy2(sparse_ply, dest_ply)
-            add_artifact(
-                job_id=ctx.job_id,
-                kind="pointcloud",
-                format_name="ply",
-                filename="sparse.ply",
-                size_bytes=dest_ply.stat().st_size,
-                file_path=str(dest_ply)
-            )
-
-        if camera_path_png.exists():
-            dest_png = art_dir / "camera_path.png"
-            shutil.copy2(camera_path_png, dest_png)
-            add_artifact(
-                job_id=ctx.job_id,
-                kind="image",
-                format_name="png",
-                filename="camera_path.png",
-                size_bytes=dest_png.stat().st_size,
-                file_path=str(dest_png)
-            )
-
-        if report_file.exists():
-            dest_rep = art_dir / "sfm_report.json"
-            shutil.copy2(report_file, dest_rep)
-            add_artifact(
-                job_id=ctx.job_id,
-                kind="report",
-                format_name="json",
-                filename="sfm_report.json",
-                size_bytes=dest_rep.stat().st_size,
-                file_path=str(dest_rep)
-            )
-
-        storage_service.create_zip_archive(ctx.job_id)
 
         ctx.log_cb(
             f"[SfM] Complete! Points: {point_count}, Error: {mean_reproj_error:.3f}px, "
