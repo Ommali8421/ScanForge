@@ -171,31 +171,53 @@ def filter_colmap_args(
 def get_available_vram_gb() -> float:
     """
     Read available GPU memory in GB.
-    Honours SCANFORGE_VRAM_GB environment variable or queries nvidia-smi.
-    Defaults to 8.0 GB baseline.
+    Priority:
+    1. SCANFORGE_VRAM_GB environment variable if set.
+    2. TOTAL memory of the visible device (respecting CUDA_VISIBLE_DEVICES) minus 0.5 GB safety margin.
+    3. Fallback baseline of 8.0 GB.
+    Logs which source was used.
     """
     env_vram = os.environ.get("SCANFORGE_VRAM_GB")
     if env_vram:
         try:
-            return float(env_vram)
+            val = float(env_vram)
+            logger.info(f"[Portability] Detected VRAM: {val:.2f} GB (source: SCANFORGE_VRAM_GB environment variable)")
+            return val
         except ValueError:
             pass
 
+    # Determine visible device from CUDA_VISIBLE_DEVICES if set
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    target_device = "0"
+    if cuda_visible:
+        devices = [d.strip() for d in cuda_visible.split(",") if d.strip()]
+        if devices:
+            target_device = devices[0]
+
     try:
-        # Query total VRAM in MB from nvidia-smi
+        # Query total VRAM in MB from nvidia-smi for the target visible GPU
         res = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", f"--id={target_device}", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             timeout=5
         )
         if res.returncode == 0:
             lines = res.stdout.strip().split("\n")
-            if lines and lines[0].strip().isdigit():
-                return float(lines[0].strip()) / 1024.0
-    except Exception:
-        pass
+            if lines and lines[0].strip().replace(".", "", 1).isdigit():
+                raw_mb = float(lines[0].strip())
+                raw_gb = raw_mb / 1024.0
+                safety_margin_gb = 0.5  # Reserve 512 MB headroom for system, display, and driver
+                effective_vram_gb = max(1.0, raw_gb - safety_margin_gb)
+                logger.info(
+                    f"[Portability] Detected VRAM: {effective_vram_gb:.2f} GB "
+                    f"(source: nvidia-smi device {target_device}, raw {raw_gb:.2f} GB minus {safety_margin_gb:.2f} GB safety margin)"
+                )
+                return effective_vram_gb
+    except Exception as e:
+        logger.debug(f"[Portability] nvidia-smi query failed ({e}); using fallback baseline.")
 
+    logger.info("[Portability] Detected VRAM: 8.00 GB (source: fallback baseline)")
     return 8.0
 
 

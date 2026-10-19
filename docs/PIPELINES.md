@@ -4,18 +4,29 @@ Detailed specifications for ScanForge reconstruction stages, quality presets, an
 
 ---
 
-## 1. Quality Presets (Photo Scan — Route A)
+## 1. Quality Presets & Dynamic VRAM Tiers (Photo Scan — Route A)
 
-| Preset | Max Image Size (px) | OpenMVS Resolution Level | RefineMesh | Texture Size | Target Polycount |
-|---|---|---|---|---|---|
-| **Draft** | 1200 | Level 2 | Off | 1024 × 1024 | ~50,000 |
-| **Standard** | 1600 | Level 2 | Off | 4096 × 4096 | ~200,000 |
-| **High** | 2000 | Level 1 | On | 8192 × 8192 | ~1,000,000 |
+ScanForge dynamically tunes reconstruction parameters based on detected GPU VRAM memory.
 
-### 8 GB VRAM Rules
+### VRAM Detection Precedence
+1. **Explicit Override**: `SCANFORGE_VRAM_GB` environment variable (e.g. `SCANFORGE_VRAM_GB=8.0`).
+2. **Auto-Discovery**: Queries `nvidia-smi` for the first device in `CUDA_VISIBLE_DEVICES` (or GPU 0), and applies a **0.5 GB safety margin** for OS, display, and driver overhead.
+3. **Fallback Baseline**: Assumes 8.0 GB baseline if unparseable or running in mock mode.
+
+### VRAM Tier Table
+
+| VRAM Tier | Effective VRAM | Preset | COLMAP Max Size | OpenMVS Res Level | RefineMesh | Target Faces | Max Splat Gaussians |
+|---|---|---|---|---|---|---|---|
+| **High Tier** | $\ge 11.5\text{ GB}$ (12+ GB raw) | Draft<br>Standard<br>High | 1600 px<br>2400 px<br>3200 px | Level 2<br>Level 1<br>Level 1 | Off<br>Off<br>On | 100k<br>250k<br>500k | 1.0M<br>1.5M<br>2.5M |
+| **8 GB Baseline**<br>*(RTX 4060 Target)* | $6.5\text{ -- }11.4\text{ GB}$ (~7.5 GB effective) | Draft<br>Standard<br>**High** | 1200 px<br>1600 px<br>**2000 px (Capped)** | Level 2<br>Level 2<br>**Level 1** | Off<br>Off<br>On | 100k<br>200k<br>350k | 800k<br>1.2M<br>1.5M |
+| **Constrained Tier** | $< 6.5\text{ GB}$ (4–6 GB raw) | Draft<br>Standard<br>High | 1000 px<br>1200 px<br>1600 px | Level 3<br>Level 2<br>Level 2 | Off<br>Off<br>Off | 50k<br>100k<br>150k | 500k<br>800k<br>1.0M |
+
+### 8 GB VRAM Budget Rules
 - Concurrency limit is **strictly 1 GPU job at a time**.
+- COLMAP feature extraction and mapper image sizes are capped at **$\le 2000\text{ px}$** in the 8 GB tier.
 - Subprocesses exit between pipeline stages to guarantee full CUDA memory deallocation.
 - In case of OpenMVS CUDA out-of-memory errors, an automated retry mechanism falls back to `resolution-level + 1`.
+
 
 ---
 

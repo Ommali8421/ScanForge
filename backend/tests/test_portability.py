@@ -66,15 +66,41 @@ def test_dynamic_vram_presets():
     assert cfg_16.colmap_max_image_size == 2400
     assert cfg_16.openmvs_resolution_level == 1
 
-    # 2. 8 GB Baseline (RTX 4060 target)
-    cfg_8 = get_preset_config("standard", vram_gb=8.0)
-    assert cfg_8.colmap_max_image_size == 2000
-    assert cfg_8.openmvs_resolution_level == 2
+    # 2. 8 GB Baseline (RTX 4060 target: 7.5 GB effective after safety margin)
+    cfg_8_std = get_preset_config("standard", vram_gb=7.5)
+    assert cfg_8_std.colmap_max_image_size == 1600
+    assert cfg_8_std.openmvs_resolution_level == 2
+
+    cfg_8_high = get_preset_config("high", vram_gb=7.5)
+    assert cfg_8_high.colmap_max_image_size == 2000  # Capped at ~2000 px
+    assert cfg_8_high.openmvs_resolution_level == 1
+
+    cfg_8_draft = get_preset_config("draft", vram_gb=7.5)
+    assert cfg_8_draft.colmap_max_image_size == 1200
+    assert cfg_8_draft.openmvs_resolution_level == 2
 
     # 3. Low VRAM (4 GB)
     cfg_4 = get_preset_config("standard", vram_gb=4.0)
-    assert cfg_4.colmap_max_image_size == 1600
+    assert cfg_4.colmap_max_image_size == 1200
     assert cfg_4.openmvs_resolution_level == 2
+
+
+def test_vram_detection_sources():
+    """get_available_vram_gb must respect SCANFORGE_VRAM_GB, CUDA_VISIBLE_DEVICES and apply safety margin."""
+    # 1. Environment variable override
+    with patch.dict(os.environ, {"SCANFORGE_VRAM_GB": "12.0"}):
+        assert get_available_vram_gb() == 12.0
+
+    # 2. nvidia-smi with CUDA_VISIBLE_DEVICES and safety margin (8192 MB raw - 512 MB safety = 7.5 GB)
+    with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1"}, clear=True):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="8192\n", stderr="")
+            vram = get_available_vram_gb()
+            # 8.0 GB raw minus 0.5 GB safety margin = 7.5 GB
+            assert abs(vram - 7.5) < 0.01
+            # Verify --id=1 was queried
+            cmd_called = mock_run.call_args[0][0]
+            assert "--id=1" in cmd_called
 
 
 def test_configured_threads_env_override():

@@ -29,13 +29,13 @@ def get_preset_config(preset: str = "standard", vram_gb: Optional[float] = None)
     vram = vram_gb if vram_gb is not None else get_available_vram_gb()
     p = (preset or "standard").lower()
 
-    if vram >= 12.0:
+    if vram >= 11.5:
         # High-end GPU (12+ GB VRAM)
         if p == "draft":
             return QualityPresetConfig(
                 preset_name="draft",
                 vram_gb=vram,
-                colmap_max_image_size=1800,
+                colmap_max_image_size=1600,
                 openmvs_resolution_level=2,
                 openmvs_max_faces=100000,
                 splat_max_gaussians=1000000,
@@ -62,13 +62,14 @@ def get_preset_config(preset: str = "standard", vram_gb: Optional[float] = None)
                 splat_downscale_factor=1
             )
 
-    elif vram >= 7.5:
-        # 8 GB baseline (RTX 4060 target)
+    elif vram >= 6.5:
+        # 8 GB baseline (RTX 4060 target: ~7.5 GB effective VRAM)
+        # Cap COLMAP at ~2000 px; OpenMVS level 2 for Draft/Standard, level 1 for High
         if p == "draft":
             return QualityPresetConfig(
                 preset_name="draft",
                 vram_gb=vram,
-                colmap_max_image_size=1600,
+                colmap_max_image_size=1200,
                 openmvs_resolution_level=2,
                 openmvs_max_faces=100000,
                 splat_max_gaussians=800000,
@@ -78,7 +79,7 @@ def get_preset_config(preset: str = "standard", vram_gb: Optional[float] = None)
             return QualityPresetConfig(
                 preset_name="high",
                 vram_gb=vram,
-                colmap_max_image_size=2400,
+                colmap_max_image_size=2000,
                 openmvs_resolution_level=1,
                 openmvs_max_faces=350000,
                 splat_max_gaussians=1500000,
@@ -88,7 +89,7 @@ def get_preset_config(preset: str = "standard", vram_gb: Optional[float] = None)
             return QualityPresetConfig(
                 preset_name="standard",
                 vram_gb=vram,
-                colmap_max_image_size=2000,
+                colmap_max_image_size=1600,
                 openmvs_resolution_level=2,
                 openmvs_max_faces=200000,
                 splat_max_gaussians=1200000,
@@ -96,12 +97,12 @@ def get_preset_config(preset: str = "standard", vram_gb: Optional[float] = None)
             )
 
     else:
-        # Constrained GPU (<8 GB VRAM)
+        # Constrained GPU (<8 GB VRAM, e.g. 4-6 GB)
         if p == "draft":
             return QualityPresetConfig(
                 preset_name="draft",
                 vram_gb=vram,
-                colmap_max_image_size=1200,
+                colmap_max_image_size=1000,
                 openmvs_resolution_level=3,
                 openmvs_max_faces=50000,
                 splat_max_gaussians=500000,
@@ -111,7 +112,7 @@ def get_preset_config(preset: str = "standard", vram_gb: Optional[float] = None)
             return QualityPresetConfig(
                 preset_name="high",
                 vram_gb=vram,
-                colmap_max_image_size=1800,
+                colmap_max_image_size=1600,
                 openmvs_resolution_level=2,
                 openmvs_max_faces=150000,
                 splat_max_gaussians=1000000,
@@ -121,7 +122,7 @@ def get_preset_config(preset: str = "standard", vram_gb: Optional[float] = None)
             return QualityPresetConfig(
                 preset_name="standard",
                 vram_gb=vram,
-                colmap_max_image_size=1600,
+                colmap_max_image_size=1200,
                 openmvs_resolution_level=2,
                 openmvs_max_faces=100000,
                 splat_max_gaussians=800000,
