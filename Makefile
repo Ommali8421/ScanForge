@@ -6,17 +6,17 @@ up: up-mock
 # Mock mode: lightweight simulated pipeline
 up-mock:
 	@echo ">>> Stopping any running GPU worker..."
-	-COMPOSE_PROFILES=gpu docker compose stop worker-gpu 2>/dev/null || true
+	-WSLENV=SCANFORGE_ENGINE:COMPOSE_PROFILES/u:$$WSLENV COMPOSE_PROFILES=gpu docker compose stop worker-gpu 2>/dev/null || true
 	@echo ">>> Starting ScanForge in MOCK mode..."
-	SCANFORGE_ENGINE=mock COMPOSE_PROFILES=mock docker compose up -d --build
+	WSLENV=SCANFORGE_ENGINE:COMPOSE_PROFILES/u:$$WSLENV SCANFORGE_ENGINE=mock COMPOSE_PROFILES=mock docker compose up -d --build
 	@echo ">>> Mock mode active. UI at http://localhost:3000"
 
 # GPU mode: real COLMAP/OpenMVS/nerfstudio pipeline
 up-gpu:
 	@echo ">>> Stopping any running mock worker..."
-	-COMPOSE_PROFILES=mock docker compose stop worker-mock 2>/dev/null || true
+	-WSLENV=SCANFORGE_ENGINE:COMPOSE_PROFILES/u:$$WSLENV COMPOSE_PROFILES=mock docker compose stop worker-mock 2>/dev/null || true
 	@echo ">>> Starting ScanForge in GPU (real) mode..."
-	SCANFORGE_ENGINE=real COMPOSE_PROFILES=gpu docker compose up -d --build
+	WSLENV=SCANFORGE_ENGINE:COMPOSE_PROFILES/u:$$WSLENV SCANFORGE_ENGINE=real COMPOSE_PROFILES=gpu docker compose up -d --build
 	@echo ">>> GPU mode active. UI at http://localhost:3000"
 	@echo ">>> Verifying /api/capabilities reports engine=real..."
 	@sleep 5
