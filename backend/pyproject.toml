@@ -28,6 +28,7 @@ dependencies = [
     "scipy>=1.13.0",
     "pillow>=10.3.0",
     "opencv-python-headless>=4.9.0,<4.11.0",
+    "matplotlib>=3.8.0",
 ]
 
 [project.optional-dependencies]

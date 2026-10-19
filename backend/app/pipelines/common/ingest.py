@@ -118,14 +118,68 @@ class IngestStage(Stage):
         if not normalized_video.exists():
             raise RuntimeError(f"FFmpeg failed to produce normalized output: {normalized_video}")
 
+        # Scene-cut detection (warns, does not crash)
+        cuts = self._detect_scene_cuts(normalized_video, ctx)
+        metadata["scene_cuts"] = cuts
+
         # Save metadata JSON
         metadata_path = ctx.workdir / "ingest_metadata.json"
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-        ctx.log_cb("[Ingest] Video normalization complete.")
+        ctx.log_cb("[Ingest] Video normalization and scene-cut analysis complete.")
         return StageResult(
             success=True,
             output_files=[normalized_video, metadata_path],
             metadata=metadata
         )
+
+    def _detect_scene_cuts(self, video_path: Path, ctx: JobContext) -> List[dict]:
+        """Detect potential abrupt scene cuts via HSV histogram correlation."""
+        cuts: List[dict] = []
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                return cuts
+
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            step_frames = max(1, int(fps * 0.5))  # check every 0.5s
+
+            prev_hist = None
+            frame_idx = 0
+
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if frame_idx % step_frames == 0:
+                    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                    hist = cv2.calcHist([hsv], [0, 1], None, [30, 32], [0, 180, 0, 256])
+                    cv2.normalize(hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+
+                    if prev_hist is not None:
+                        corr = float(cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL))
+                        if corr < 0.25:
+                            timestamp = frame_idx / fps
+                            cut_info = {
+                                "timestamp_seconds": round(timestamp, 2),
+                                "frame_index": frame_idx,
+                                "correlation": round(corr, 3)
+                            }
+                            cuts.append(cut_info)
+                            ctx.log_cb(
+                                f"[Ingest Warning] Potential scene-cut detected at t={cut_info['timestamp_seconds']}s "
+                                f"(frame {frame_idx}, correlation: {cut_info['correlation']}). "
+                                f"SfM may produce disconnected models."
+                            )
+                    prev_hist = hist
+
+                frame_idx += 1
+
+            cap.release()
+        except Exception as e:
+            ctx.log_cb(f"[Ingest] Scene-cut analysis skipped ({e}).")
+
+        return cuts
