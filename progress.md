@@ -34,13 +34,14 @@
 | Nginx Reverse Proxy (Port 3000) | **VERIFIED** | Reverse-proxies UI (`/`) and API (`/api/`) with chunked transfer and disabled buffering |
 | Artifact Generation & Download | **VERIFIED** | Validated download of generated `.ply` (114.5 KB), `.png` (76.0 KB), and `.json` (0.4 KB) outputs |
 | Scale Calibration Math | **VERIFIED** | Two consecutive calibrations tested, verifying cumulative scale factor `1.5 * 2.0 = 3.0` |
-| Backend Pytest Suite | **VERIFIED** | 22/22 unit & integration tests passing in container (`test_api_jobs.py`, `test_cancel_sfm.py`, `test_capabilities.py`, `test_frame_selection.py`, `test_integration.py`, `test_mock_pipeline.py`, `test_sfm_failure.py`, `test_zip_safe.py`) |
+| Backend Pytest Suite | **VERIFIED** | 35/35 unit & integration tests passing in container (`test_api_jobs.py`, `test_cancel_sfm.py`, `test_capabilities.py`, `test_colmap_compat.py`, `test_frame_selection.py`, `test_integration.py`, `test_mock_pipeline.py`, `test_portability.py`, `test_sfm_failure.py`, `test_zip_safe.py`) |
 | Real Video Ingestion & ffprobe | **VERIFIED** | `IngestStage` probed duration, dimensions (478x850), stripped audio, normalized color, and baked orientation |
 | Adaptive Keyframe Extraction | **VERIFIED** | `FrameExtractionStage` selected 99 keyframes using Laplacian sharpness scoring, Farneback optical flow, and homography rotation check |
 | GPU COLMAP SfM (RTX 4060) | **VERIFIED** | `ColmapSfMStage` executed SIFT GPU extraction, sequential + exhaustive matching, bounded Ceres BA: 92/99 frames registered (92.9%), 7,803 3D points, 0.671 px reprojection error, 415 MB peak VRAM, 367 MB peak RAM in 228.4s |
 | Camera Trajectory Top-Down Plot | **VERIFIED** | `camera_path.png` generated showing 92 camera nodes, Start/End markers, and 3D spatial points |
 | SfM Failure & Cancel Handling | **VERIFIED** | SfM failure under 60% threshold raises typed error; cancel kills active process tree cleanly |
-| Portability & Dynamic Tool Resolution | **VERIFIED** | Dynamic binary resolution from PATH/env, runtime COLMAP flag filtering via `--help`, VRAM-aware presets, thread budgeting, stage isolation (27/27 tests passing) |
+| Portability & Dynamic Tool Resolution | **VERIFIED** | Dynamic binary resolution from PATH/env, runtime COLMAP flag filtering via `--help`, VRAM-aware presets, thread budgeting, stage isolation (`test_portability.py`) |
+| COLMAP Multi-Version Adaptation | **VERIFIED** | Flag rename maps verified against real help output fixtures (`colmap_help_3.9.1.txt` and `colmap_help_3.13.txt`); asserts thread-limit, GPU, and max-image-size flags never dropped; asserts unmappable critical flags raise `ColmapFlagMappingError`; hang protection via `--Mapper.max_runtime_seconds` (3.13) and `ToolRunner` timeout (3.9.x) with no low Ceres iteration caps; FAISS auto-download loop detection with fallback; `--Mapper.ba_use_gpu` optional documentation in `docs/PIPELINES.md` (`test_colmap_compat.py`) |
 | OpenMVS Route A Mesh Pipeline | **UNVERIFIED** | Scheduled for Milestone P2c |
 | Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
@@ -60,6 +61,7 @@
 | Untracked `.env` check | Ensure development secrets and local paths are not committed to git repository. | Verified `.env` in `.gitignore`; confirmed `git ls-files .env` is empty. | *Verified* |
 | COLMAP mapper Ceres BA iteration stall | Exhaustive matching on dense scene graph caused Ceres solver to run unconstrained global BA iterations. | Bounded `--Mapper.ba_global_max_num_iterations 30`, `--Mapper.ba_local_max_num_iterations 20`, `--Mapper.ba_global_max_refinements 2`, `--Mapper.ba_local_max_refinements 1`, and increased sequential overlap to 25. | `3d9ad27` |
 | Multi-queue worker dispatch | GPU profile worker only listened to `scanforge_gpu`, leaving mock and test jobs stalled in `scanforge_mock`. | Enabled worker to listen to both `['scanforge_gpu', 'scanforge_mock']` in priority order. | `3d9ad27` |
+| Mock worker RQ task import failure | `worker-mock` container crashed on task execution with `ValueError: Invalid attribute name: run_pipeline_task` due to missing `app.queue.__init__.py` and eager top-level imports in `registry.py` importing `cv2` in the slim mock container. | Created `app/queue/__init__.py` and changed `create_real_pipeline` in `registry.py` to lazily import real pipeline stages (`IngestStage`, `FrameExtractionStage`, `ColmapSfMStage`). | *Verified* |
 
 ---
 
@@ -80,6 +82,13 @@
    - Ceres BA iterations are bounded to prevent infinite or multi-hour stalls on dense scene graphs.
 5. **Scale Calibration Pipeline Invariance**:
    - Calling `POST /api/jobs/{id}/calibrate` does not restart heavy upstream SfM or meshing stages. It only triggers `ScaleStage` and exporter stages, applying cumulative scaling factor `current_scale * (real_distance / measured_distance)`.
+6. **COLMAP Multi-Version Portability & Hang Protection**:
+   - `colmap_compat.py` provides dynamic CLI adaptation between COLMAP 3.9.x and 3.13.0+ based on real help fixtures.
+   - SIFT extraction flags (`--SiftExtraction.use_gpu/num_threads` vs `--FeatureExtraction.use_gpu/num_threads`) and matching flags (`--SiftMatching.*` vs `--FeatureMatching.*`) are mapped dynamically.
+   - On 3.13+, sequential and vocab-tree matchers set **both** `--FeatureMatching.num_threads` and `--SequentialMatching.num_threads` / `--VocabTreeMatching.num_threads`.
+   - Hang protection uses native `--Mapper.max_runtime_seconds` on 3.13+ and `ToolRunner(timeout=...)` on 3.9.x, eliminating artificial low Ceres iteration caps to preserve full interior reconstruction quality.
+   - Loop detection uses auto-download on 3.13+ and checks for local vocab trees on 3.9.x, falling back with a warning if unavailable.
+
 
 ---
 

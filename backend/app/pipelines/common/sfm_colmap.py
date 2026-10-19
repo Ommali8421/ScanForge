@@ -24,6 +24,14 @@ from app.utils.tool_resolve import (
     resolve_colmap,
     filter_colmap_args,
     get_configured_threads,
+    get_colmap_version,
+)
+from app.utils.colmap_compat import (
+    build_feature_extractor_args,
+    build_sequential_matcher_args,
+    build_exhaustive_matcher_args,
+    build_mapper_args,
+    configure_loop_detection,
 )
 
 
@@ -262,19 +270,21 @@ class ColmapSfMStage(Stage):
             # -------------------------------------------------------------
             # Step 1: Feature Extraction
             # -------------------------------------------------------------
+            version = get_colmap_version(colmap_bin)
             ctx.log_cb(
-                f"[SfM] Extracting SIFT features (camera model: {camera_model}, "
+                f"[SfM] Extracting SIFT features (COLMAP v{version[0]}.{version[1]}.{version[2]}, camera model: {camera_model}, "
                 f"max size: {max_image_size}px, VRAM: {preset_cfg.vram_gb:.1f}GB, threads: {threads})..."
             )
-            extract_args = filter_colmap_args("feature_extractor", [
-                "--database_path", str(db_path),
-                "--image_path", str(frames_dir),
-                "--ImageReader.camera_model", camera_model,
-                "--ImageReader.single_camera", "1",
-                "--SiftExtraction.max_image_size", max_image_size,
-                "--SiftExtraction.use_gpu", "1",
-                "--SiftExtraction.num_threads", threads
-            ], colmap_bin)
+            extract_args = build_feature_extractor_args(
+                version=version,
+                database_path=str(db_path),
+                image_path=str(frames_dir),
+                camera_model=camera_model,
+                single_camera=True,
+                max_image_size=preset_cfg.colmap_max_image_size,
+                use_gpu=True,
+                threads=int(threads),
+            )
             extract_cmd = [colmap_bin, "feature_extractor"] + extract_args
 
             use_gpu_sift = True
@@ -287,18 +297,19 @@ class ColmapSfMStage(Stage):
                     cancel_token=ctx.cancel_token,
                     timeout=1800
                 )
-            except ToolExecutionError as e:
+            except ToolExecutionError:
                 ctx.log_cb("[SfM] Warning: GPU SIFT extraction failed. Falling back to CPU SIFT extraction...")
                 use_gpu_sift = False
-                extract_args_cpu = filter_colmap_args("feature_extractor", [
-                    "--database_path", str(db_path),
-                    "--image_path", str(frames_dir),
-                    "--ImageReader.camera_model", camera_model,
-                    "--ImageReader.single_camera", "1",
-                    "--SiftExtraction.max_image_size", max_image_size,
-                    "--SiftExtraction.use_gpu", "0",
-                    "--SiftExtraction.num_threads", threads
-                ], colmap_bin)
+                extract_args_cpu = build_feature_extractor_args(
+                    version=version,
+                    database_path=str(db_path),
+                    image_path=str(frames_dir),
+                    camera_model=camera_model,
+                    single_camera=True,
+                    max_image_size=preset_cfg.colmap_max_image_size,
+                    use_gpu=False,
+                    threads=int(threads),
+                )
                 extract_cmd_cpu = [colmap_bin, "feature_extractor"] + extract_args_cpu
                 ToolRunner.run(
                     extract_cmd_cpu,
@@ -312,23 +323,35 @@ class ColmapSfMStage(Stage):
             # -------------------------------------------------------------
             # Step 2: Feature Matching & Mapping
             # -------------------------------------------------------------
-            def execute_matcher(m_type: str, gpu_flag: bool):
+            def execute_matcher(m_type: str, gpu_flag: bool, enable_loop_detection: bool = True):
                 ctx.log_cb(f"[SfM] Running {m_type} matcher (GPU: {gpu_flag}, threads: {threads})...")
                 if m_type == "sequential":
-                    match_args = filter_colmap_args("sequential_matcher", [
-                        "--database_path", str(db_path),
-                        "--SiftMatching.use_gpu", "1" if gpu_flag else "0",
-                        "--SiftMatching.num_threads", threads,
-                        "--SequentialMatching.overlap", "25",
-                        "--SequentialMatching.quadratic_overlap", "1"
-                    ], colmap_bin)
+                    loop_enabled = False
+                    vocab_path = None
+                    if enable_loop_detection:
+                        loop_enabled, vocab_path, loop_msg = configure_loop_detection(
+                            version=version,
+                            custom_vocab_path=options.get("vocab_tree_path"),
+                            log_cb=ctx.log_cb,
+                        )
+                    match_args = build_sequential_matcher_args(
+                        version=version,
+                        database_path=str(db_path),
+                        use_gpu=gpu_flag,
+                        threads=int(threads),
+                        overlap=25,
+                        quadratic_overlap=True,
+                        loop_detection=loop_enabled,
+                        vocab_tree_path=vocab_path,
+                    )
                     match_cmd = [colmap_bin, "sequential_matcher"] + match_args
                 else:
-                    match_args = filter_colmap_args("exhaustive_matcher", [
-                        "--database_path", str(db_path),
-                        "--SiftMatching.use_gpu", "1" if gpu_flag else "0",
-                        "--SiftMatching.num_threads", threads
-                    ], colmap_bin)
+                    match_args = build_exhaustive_matcher_args(
+                        version=version,
+                        database_path=str(db_path),
+                        use_gpu=gpu_flag,
+                        threads=int(threads),
+                    )
                     match_cmd = [colmap_bin, "exhaustive_matcher"] + match_args
                 try:
                     ToolRunner.run(
@@ -340,27 +363,34 @@ class ColmapSfMStage(Stage):
                         timeout=1800
                     )
                 except ToolExecutionError:
+                    if m_type == "sequential" and enable_loop_detection:
+                        ctx.log_cb(
+                            "[SfM] Warning: Sequential matching failed with loop detection. "
+                            "Retrying without loop detection..."
+                        )
+                        execute_matcher("sequential", gpu_flag, enable_loop_detection=False)
+                        return
+
                     if gpu_flag:
                         ctx.log_cb(f"[SfM] Warning: GPU {m_type} matching failed. Falling back to CPU...")
-                        execute_matcher(m_type, False)
+                        execute_matcher(m_type, False, enable_loop_detection=False)
                     else:
                         raise
 
             def execute_mapper(output_dir: Path, timeout: int = 1800):
                 output_dir.mkdir(parents=True, exist_ok=True)
                 ctx.log_cb(f"[SfM] Running COLMAP mapper -> {output_dir.name}...")
-                map_args = filter_colmap_args("mapper", [
-                    "--database_path", str(db_path),
-                    "--image_path", str(frames_dir),
-                    "--output_path", str(output_dir),
-                    "--Mapper.init_min_tri_angle", "8",
-                    "--Mapper.filter_min_tri_angle", "1.5",
-                    "--Mapper.ba_global_max_num_iterations", "30",
-                    "--Mapper.ba_local_max_num_iterations", "20",
-                    "--Mapper.ba_global_max_refinements", "2",
-                    "--Mapper.ba_local_max_refinements", "1",
-                    "--Mapper.num_threads", threads
-                ], colmap_bin)
+                map_args, map_timeout = build_mapper_args(
+                    version=version,
+                    database_path=str(db_path),
+                    image_path=str(frames_dir),
+                    output_path=str(output_dir),
+                    threads=int(threads),
+                    timeout_seconds=timeout,
+                    init_min_tri_angle=8.0,
+                    filter_min_tri_angle=1.5,
+                    ba_use_gpu=False,
+                )
                 map_cmd = [colmap_bin, "mapper"] + map_args
                 ToolRunner.run(
                     map_cmd,
@@ -368,7 +398,7 @@ class ColmapSfMStage(Stage):
                     env=colmap_env,
                     log_callback=ctx.log_cb,
                     cancel_token=ctx.cancel_token,
-                    timeout=timeout
+                    timeout=map_timeout
                 )
 
             # Initial matching

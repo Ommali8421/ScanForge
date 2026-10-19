@@ -46,3 +46,34 @@ Pipeline stage sequence:
   $$\text{scale\_factor} = \frac{\text{real\_distance}}{\|\mathbf{p}_a - \mathbf{p}_b\|}$$
   $$\text{cumulative\_scale} = \text{current\_scale} \times \text{scale\_factor}$$
 - The job is re-enqueued starting from `ScaleStage`. Upstream stages (1 through 8) are cached and skipped instantly.
+
+---
+
+## 4. COLMAP Version Adaptation & Hang Protection
+
+ScanForge supports both COLMAP 3.9.x (baseline container image) and COLMAP 3.13.x+ dynamically via `colmap_compat.py`.
+
+### Option Renaming Map
+- **Feature Extraction**:
+  * 3.9.x: `--SiftExtraction.use_gpu`, `--SiftExtraction.num_threads`
+  * 3.13+: `--FeatureExtraction.use_gpu`, `--FeatureExtraction.num_threads`
+  * Both: `--SiftExtraction.max_image_size` (unchanged)
+- **Feature Matching**:
+  * 3.9.x: `--SiftMatching.use_gpu`, `--SiftMatching.num_threads`, `--SiftMatching.guided_matching`, `--SiftMatching.max_num_matches`
+  * 3.13+: `--FeatureMatching.use_gpu`, `--FeatureMatching.num_threads`, `--FeatureMatching.guided_matching`, `--FeatureMatching.max_num_matches`
+  * 3.13+ Matcher-Specific Threads: sets **both** `--FeatureMatching.num_threads` and `--SequentialMatching.num_threads` / `--VocabTreeMatching.num_threads`.
+
+### Hang Protection & Ceres Quality
+- **COLMAP 3.13+**: Protected against infinite bundle adjustment loops via `--Mapper.max_runtime_seconds <timeout>` directly passed to COLMAP.
+- **COLMAP 3.9.x**: Protected via `ToolRunner(timeout=<timeout>)` process-level timeout.
+- **Ceres Iteration Caps**: Artificial low iteration caps (e.g. 30/20 iterations) are avoided to maintain full interior reconstruction quality. Default COLMAP convergence criteria (50 global / 25 local iterations) run unimpeded under runtime timeout enforcement.
+
+### Loop Detection
+- **COLMAP 3.13+**: Automatically downloads the FAISS vocabulary tree (`vocab_tree_faiss_flickr100K_words256K.bin`) when network access is available.
+- **COLMAP 3.9.x**: Requires a local vocabulary tree file (configured via `SCANFORGE_VOCAB_TREE_PATH` or job options). If unavailable, falls back gracefully to sequential matching without loop detection with a warning logged.
+
+### Optional GPU Bundle Adjustment (`--Mapper.ba_use_gpu`)
+- COLMAP 3.13 introduces the `--Mapper.ba_use_gpu` flag for Ceres GPU bundle adjustment.
+- **Default Status**: **Disabled** by default in ScanForge to strictly stay within the 8 GB VRAM budget on consumer GPUs (RTX 4060) and avoid memory thrashing during mapper point triangulation.
+- **Server Testing Note**: Configured as an optional toggle in `build_mapper_args(ba_use_gpu=True)` for future evaluation on multi-GPU or high-VRAM server instances (>= 16 GB VRAM).
+

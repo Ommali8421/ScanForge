@@ -125,11 +125,20 @@ def get_colmap_supported_flags(subcommand: str, colmap_bin: Optional[str] = None
     return flags
 
 
-def filter_colmap_args(subcommand: str, args_list: List[str], colmap_bin: Optional[str] = None) -> List[str]:
+def filter_colmap_args(
+    subcommand: str,
+    args_list: List[str],
+    colmap_bin: Optional[str] = None,
+    critical_flags: Optional[Set[str]] = None,
+) -> List[str]:
     """
     Filter and adapt argument list for colmap subcommand based on runtime supported flags.
     Prevents crashing on flags renamed or removed between COLMAP versions.
+    If critical_flags is provided and any requested flag matching critical_flags
+    is not supported, raises ColmapFlagMappingError.
     """
+    from app.utils.colmap_compat import ColmapFlagMappingError
+
     supported = get_colmap_supported_flags(subcommand, colmap_bin)
     if not supported:
         # If unable to parse help flags, pass args as-is
@@ -146,6 +155,10 @@ def filter_colmap_args(subcommand: str, args_list: List[str], colmap_bin: Option
                     filtered.append(args_list[i + 1])
                     i += 1
             else:
+                if critical_flags and item in critical_flags:
+                    raise ColmapFlagMappingError(
+                        f"Critical flag '{item}' is not supported by COLMAP for subcommand '{subcommand}'"
+                    )
                 logger.debug(f"[Portability] Omitted unsupported COLMAP flag: {item}")
                 if i + 1 < len(args_list) and not args_list[i + 1].startswith("--"):
                     i += 1
