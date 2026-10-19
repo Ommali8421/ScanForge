@@ -257,32 +257,23 @@ class ColmapSfMStage(Stage):
             "points_per_image": None,
         }
         try:
+            import re
             cmd = [colmap_bin, "model_analyzer", "--path", str(model_dir)]
-            out = ToolRunner.run(cmd, timeout=60)
-            result["raw_output"] = out
-            for line in out.splitlines():
-                line_str = line.strip()
-                if "Mean track length" in line_str:
-                    parts = line_str.split(":")
-                    if len(parts) > 1:
-                        try:
-                            result["mean_track_length"] = round(float(parts[1].strip()), 3)
-                        except ValueError:
-                            pass
-                elif "Mean observations per image" in line_str or "Observations per image" in line_str:
-                    parts = line_str.split(":")
-                    if len(parts) > 1:
-                        try:
-                            result["observations_per_image"] = round(float(parts[1].strip()), 3)
-                        except ValueError:
-                            pass
-                elif "Mean points per image" in line_str or "Points per image" in line_str:
-                    parts = line_str.split(":")
-                    if len(parts) > 1:
-                        try:
-                            result["points_per_image"] = round(float(parts[1].strip()), 3)
-                        except ValueError:
-                            pass
+            proc = ToolRunner.run(cmd, timeout=60)
+            raw_text = proc.stdout if hasattr(proc, "stdout") else str(proc)
+            result["raw_output"] = raw_text
+
+            m_track = re.search(r"Mean track length:\s*([0-9.]+)", raw_text)
+            if m_track:
+                result["mean_track_length"] = round(float(m_track.group(1)), 3)
+
+            m_obs = re.search(r"Mean observations per image:\s*([0-9.]+)", raw_text)
+            if m_obs:
+                result["observations_per_image"] = round(float(m_obs.group(1)), 3)
+
+            m_pts = re.search(r"Mean points per image:\s*([0-9.]+)", raw_text)
+            if m_pts:
+                result["points_per_image"] = round(float(m_pts.group(1)), 3)
         except Exception as e:
             result["raw_output"] = f"model_analyzer execution failed: {e}"
         return result
@@ -888,20 +879,13 @@ class ColmapSfMStage(Stage):
                     ctx.log_cb(f"[SfM] Warning: Exhaustive matcher or mapper failed ({e}). Keeping sequential model.")
 
             # -------------------------------------------------------------
-            # Step 3: Threshold Validation (Minimum 60%)
+            # Step 3: Model Conversion, Undistortion & Diagnostics
             # -------------------------------------------------------------
             if best_model_dir is None or registered_count == 0:
                 raise RuntimeError("COLMAP reconstruction failed: no valid 3D sparse model could be created.")
 
             registration_ratio = registered_count / total_frames
             ctx.log_cb(f"[SfM] Final registration ratio: {registered_count}/{total_frames} ({registration_ratio*100:.1f}%)")
-
-            if registration_ratio < 0.60:
-                raise RuntimeError(
-                    f"Reconstruction failed: only {registered_count}/{total_frames} frames "
-                    f"({registration_ratio*100:.1f}%) were registered during SfM. Minimum required is 60%. "
-                    f"Please ensure the scene has sufficient texture and gradual, overlapping motion."
-                )
 
             # Sub-model inspection
             active_sparse_dir = ctx.workdir / ("sparse_exhaustive" if matcher_used == "sequential_then_exhaustive" else "sparse")
@@ -1010,6 +994,24 @@ class ColmapSfMStage(Stage):
         report_file = ctx.workdir / "sfm_report.json"
         with open(report_file, "w") as f:
             json.dump(report, f, indent=2)
+
+        min_registration_ratio = float(options.get("min_registration_ratio", 0.60))
+        fail_on_low_registration = options.get("fail_on_low_registration", False)
+        threshold_met = (registration_ratio >= min_registration_ratio)
+        report["registration_threshold_met"] = threshold_met
+
+        if not threshold_met:
+            warning_msg = (
+                f"Registration ratio {registration_ratio*100:.1f}% ({registered_count}/{total_frames} frames) "
+                f"is below the target {min_registration_ratio*100:.0f}% threshold. "
+                f"Diagnostic plots and SfM reports were preserved."
+            )
+            ctx.log_cb(f"[SfM Warning] {warning_msg}")
+            report["warning"] = warning_msg
+            with open(report_file, "w") as f:
+                json.dump(report, f, indent=2)
+            if fail_on_low_registration:
+                raise RuntimeError(warning_msg)
 
         ctx.log_cb(
             f"[SfM] Complete! Registered: {registered_count}/{total_frames}, Points: {point_count}, "

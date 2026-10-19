@@ -16,7 +16,14 @@ import urllib.request
 from pathlib import Path
 
 
-def submit_video_job(api_base: str, video_path: Path, camera_model: str = "SIMPLE_RADIAL", matcher: str = "sequential") -> str:
+def submit_video_job(
+    api_base: str,
+    video_path: Path,
+    camera_model: str = "SIMPLE_RADIAL",
+    matcher: str = "sequential",
+    filter_low_texture: bool = True,
+    min_sift_keypoints: int = 100
+) -> str:
     """Submit video reconstruction job via multipart/form-data."""
     if not video_path.exists():
         raise FileNotFoundError(f"Test video not found: {video_path}")
@@ -34,7 +41,9 @@ def submit_video_job(api_base: str, video_path: Path, camera_model: str = "SIMPL
         "output_formats": json.dumps(["glb", "ply"]),
         "options": json.dumps({
             "camera_model": camera_model,
-            "matcher": matcher
+            "matcher": matcher,
+            "filter_low_texture": filter_low_texture,
+            "min_sift_keypoints": min_sift_keypoints
         })
     }
 
@@ -129,6 +138,8 @@ def main():
     parser.add_argument("--api", default="http://localhost:3000", help="ScanForge frontend/proxy API base URL")
     parser.add_argument("--matcher", default="sequential", choices=["sequential", "exhaustive"], help="COLMAP matcher")
     parser.add_argument("--camera", default="SIMPLE_RADIAL", help="Camera model")
+    parser.add_argument("--no-filter", action="store_true", help="Disable low-texture frame filtering")
+    parser.add_argument("--min-sift-keypoints", type=int, default=100, help="Minimum SIFT keypoints threshold")
     args = parser.parse_args()
 
     video_path = Path(args.video)
@@ -136,10 +147,12 @@ def main():
         print(f"ERROR: Video file not found: {video_path}", file=sys.stderr)
         sys.exit(1)
 
+    filter_low_texture = not args.no_filter
     print("=================================================================")
     print(" ScanForge Real Video Pipeline Run (P2b Milestone)")
     print(f" Video: {video_path.name} ({video_path.stat().st_size / (1024*1024):.2f} MB)")
     print(f" Camera Model: {args.camera}, Matcher: {args.matcher}")
+    print(f" Low-Texture Filter: {filter_low_texture} (threshold: {args.min_sift_keypoints})")
     print("=================================================================")
 
     # 1. Check API and engine mode
@@ -154,7 +167,14 @@ def main():
         sys.exit(1)
 
     # 2. Submit job
-    job_id = submit_video_job(args.api, video_path, camera_model=args.camera, matcher=args.matcher)
+    job_id = submit_video_job(
+        args.api,
+        video_path,
+        camera_model=args.camera,
+        matcher=args.matcher,
+        filter_low_texture=filter_low_texture,
+        min_sift_keypoints=args.min_sift_keypoints
+    )
 
     # 3. Stream SSE
     success = stream_sse_progress(args.api, job_id)
