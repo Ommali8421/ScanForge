@@ -866,7 +866,7 @@ class ColmapSfMStage(Stage):
                         database_path=str(db_path),
                         use_gpu=gpu_flag,
                         threads=int(threads),
-                        overlap=25,
+                        overlap=int(options.get("sequential_overlap", 20)),
                         quadratic_overlap=True,
                         loop_detection=loop_enabled,
                         vocab_tree_path=vocab_path,

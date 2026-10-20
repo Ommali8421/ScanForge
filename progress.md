@@ -52,44 +52,66 @@
 
 ## 3. Real Hardware Verification Results (Milestone P2b)
 
-### Side-by-Side Comparison: Clip 1 vs Clip 2 (Filtered vs Unfiltered)
+### Reference Result (Milestone P2b Target)
+> **P2b Reference Result**: `house_test_30s.mp4` (Job `bcaa88f4-2ffa-4e56-998b-76c6f15dbf7d`):
+> - **Registered Frames**: 92 / 99 (92.9%)
+> - **Reprojection Error**: 0.662 px
+> - **Sparse 3D Points**: 8,214 points
+> - **Trajectory Jumps**: 0 flagged jumps (max consecutive step ratio 2.12x)
+> - **Mapper Runtime**: 54.0s (Timeout: 1800s, did NOT fire)
 
-| Metric | Clip 1 (`house_test_30s.mp4`) — Earlier Run | Clip 1 (`house_test_30s.mp4`) — Uncapped Ceres (Run 1) | Clip 2 (`bedroom_vid.mp4`) — With SIFT Filter (Run 2) | Clip 2 (`bedroom_vid.mp4`) — No SIFT Filter (Run 3) |
-|---|---|---|---|---|
-| **Job ID** | `e113930...` | `bcaa88f4-2ffa-4e56-998b-76c6f15dbf7d` | `4179ece6-fd3d-4eef-b432-3474fedb858c` | `65a6fc3e-31b5-4e9b-9299-965b39035b1b` |
-| **Duration / Res** | 30.0 s, 478x850, 60 fps | 30.0 s, 478x850, 60 fps | 90.5 s, 478x850, 30 fps | 90.5 s, 478x850, 30 fps |
-| **Frames Extracted** | 99 | 99 | 180 | 180 |
-| **Low-Texture Filter** | Disabled | Enabled (0 dropped) | Enabled (11 dropped: idx 47, 92, 154, 155, 156, 159, 162, 163, 164, 165, 172) | Disabled (0 dropped) |
-| **Active Match Frames** | 99 | 99 | 169 | 180 |
-| **Scene Cuts Detected** | 0 | 0 | 5 (t=24.0s, 24.5s, 66.5s, 87.0s, 89.0s) | 5 (t=24.0s, 24.5s, 66.5s, 87.0s, 89.0s) |
-| **Sequential Reg.** | 68 / 99 | 68 / 99 (auto exhaustive triggered) | 12 / 180 (auto exhaustive triggered) | 12 / 180 (auto exhaustive triggered) |
-| **Final Registered** | 92 / 99 (92.9%) | **92 / 99 (92.9%)** | **61 / 180 (33.9%)** | **64 / 180 (35.6%)** |
-| **3D Sparse Points** | 7,803 | **8,214 (+5.3%)** | **7,444** | **8,431** |
-| **Reprojection Error** | 0.671 px | **0.662 px (-1.3%)** | **0.553 px** | **0.546 px** |
-| **Mean Track Length** | N/A | **4.676** | **4.313** | **4.258** |
-| **Obs / Points per Img** | N/A | 417.489 obs / 89.3 pts | 526.344 obs / 122.0 pts | 559.906 obs / 131.7 pts |
-| **Sub-models Found** | 2 | 2 (submodel_0: 2 imgs, 572 pts; submodel_1: 92 imgs, 8,214 pts) | 2 (submodel_0: 61 imgs, 7,444 pts; submodel_1: 2 imgs, 442 pts) | 3 (submodel_0: 64 imgs, 8,431 pts; submodel_1: 2 imgs; submodel_2: 2 imgs) |
-| **Unregistered Frames** | [14-18, 97-98] | [14, 15, 16, 17, 18, 97, 98] | 119 frames | 116 frames |
-| **Trajectory Jumps (>5x)**| N/A | **0 flagged** (max ratio: 2.12x) | **6 flagged** (max ratio: 13.43x) | **6 flagged** (max ratio: 13.43x) |
-| **Mapper Runtime** | Bounded (~90s) | **54.0s** (Timeout: 1800s, did NOT fire) | **150.8s** (Timeout: 1800s, did NOT fire) | **176.7s** (Timeout: 1800s, did NOT fire) |
-| **Total SfM Duration** | 228.4 s | **159.6 s (30.1% faster)** | **345.1 s** | **377.9 s** |
+---
 
-### Key Observations & Diagnostic Findings
+### Comparative Evaluation Matrix across Videos, Presets & Sampling Frequencies
 
-1. **Ceres Iteration Uncapping (Item 3)**:
-   - Removing the earlier artificial Ceres BA iteration caps (`--Mapper.ba_global_max_num_iterations 30`, etc.) did **not** hang on RTX 4060 with COLMAP 3.9.1.
-   - Mapper runtime was **54.0s**, and the timeout (1800s) did **not** fire.
-   - Point count increased by +411 points (8,214 vs 7,803), reprojection error improved from 0.671 px to 0.662 px, and total SfM runtime was 30% faster (159.6s vs 228.4s).
-2. **SIFT Low-Texture Filter Performance (Addendum)**:
-   - On `bedroom_vid.mp4`, the low-texture filter automatically dropped **11 frames** whose SIFT keypoints were below the conservative threshold of 100 (featureless ceiling/wall sweeps: idx 47, 92, 154, 155, 156, 159, 162, 163, 164, 165, 172).
-   - Comparing Run 2 (filtered) against Run 3 (unfiltered):
-     - SfM duration decreased from 377.9s to 345.1s (**32.8s saved / 8.7% faster**).
-     - Reprojection error and track length remained virtually identical (0.553 px vs 0.546 px; 4.313 vs 4.258 track length).
-     - Dropped frames prevented matching noise without degrading the reconstructed cluster.
-3. **Scene-Cut & Trajectory Analysis on `bedroom_vid.mp4` (Items 4 & 5)**:
-   - Ingest detected **5 abrupt scene cuts** at timestamps 24.0s, 24.5s, 66.5s, 87.0s, and 89.0s.
-   - Because of non-overlapping scene cuts, COLMAP split the sequence into disjoint clusters; the primary continuous cluster registered 61-64 frames (~34-36%).
-   - The consecutive-camera jump metric flagged **6 distinct jumps exceeding 5x the median distance** (reaching up to 13.43x median distance). These jump indices line up directly with the detected cut timestamps and the dropped frames.
+| Metric | Reference Clip (`house_test_30s.mp4`) | Bedroom Baseline (`bedroom_vid.mp4`) — Partial Model (0.30 Threshold) | Bedroom Filtered (Run 2) | Bedroom Unfiltered (Run 3) | Bedroom 4 fps Experiment (361 frames, overlap 20) | Bedroom 6 fps Experiment (542 frames, overlap 20) |
+|---|---|---|---|---|---|---|
+| **Job ID** | `bcaa88f4...` | `0d9060a5...` | `4179ece6...` | `65a6fc3e...` | `bac945fd...` | `5a1eeaa9...` |
+| **Duration / Res** | 30.0s, 478x850, 60 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps |
+| **Sampling Mode** | Adaptive (~3.3 fps) | Adaptive (2.0 fps) | Adaptive (2.0 fps) | Adaptive (2.0 fps) | Uniform 4.0 fps | Uniform 6.0 fps |
+| **Frames Extracted**| 99 | 180 | 180 | 180 | 361 | 542 |
+| **Low-Texture Drop**| 0 | 10 | 11 | 0 (Disabled) | 28 | 38 |
+| **Active Match Frames**| 99 | 170 | 169 | 180 | 333 | 504 |
+| **Cuts Validated** | 0 | 0 of 5 survived (all 5 rejected as continuous pans) | 5 candidates | 5 candidates | 0 confirmed | 0 confirmed |
+| **Sequential Reg.** | 68 / 99 | 12 / 170 | 12 / 169 | 12 / 180 | 45 / 333 (145 across 6 submodels) | 70 / 504 (312 across 10 submodels) |
+| **Exhaustive Reg.** | 92 / 99 | 72 / 170 | 61 / 169 | 64 / 180 | N/A (Sequential only) | N/A (Sequential only) |
+| **Final Registered**| **92 / 99 (92.9%)** | **72 / 180 (40.0%)** | **61 / 180 (33.9%)** | **64 / 180 (35.6%)** | **45 / 361 (12.5%)** | **70 / 542 (12.9%)** |
+| **Sparse 3D Points**| 8,214 | 8,872 | 7,444 | 8,431 | 5,618 | 14,649 |
+| **Reprojection Err** | 0.662 px | 0.542 px | 0.553 px | 0.546 px | 0.601 px | 0.585 px |
+| **Sub-models Found** | 2 (92, 2) | 1 (72) | 2 (61, 2) | 3 (64, 2, 2) | 6 (45, 27, 22, 22, 18, 11) | 10 (70, 50, 39, 34, 34, 24, 17, 17, 16, 11) |
+| **Trajectory Jumps** | 0 flagged | **0 flagged (7 gaps tracked)** | 6 flagged across gaps | 6 flagged across gaps | 0 flagged (consecutive checked) | 0 flagged (consecutive checked) |
+| **Status Badge** | Completed | Partial Model (40.0%) | Failed (<60%) | Failed (<60%) | Failed (<30%) | Partial Model (12.9%) |
+| **Mapper Runtime** | 54.0s | 127.9s | 150.8s | 176.7s | 260.2s | 507.2s |
+| **Total SfM Duration**| 159.6s | 266.7s | 345.1s | 377.9s | 315.4s | 583.3s |
+
+---
+
+### Detailed Findings & Engineering Rationale
+
+1. **Scene Cut Dual-Validation & Rejection of False Positives**:
+   - The 5 candidate cuts detected on `bedroom_vid.mp4` (at timestamps ~24.0s, 24.5s, 66.5s, 87.0s, 89.0s) were investigated.
+   - Root cause: During a rapid camera pan past a dark doorway (t=23.5s to 25.0s), the frame brightness dropped abruptly (<30 mean pixel intensity), causing the HSV histogram correlation to drop sharply (`corr = 0.003` and `0.189`), while darkness and motion blur temporarily starved FAST/ORB features.
+   - Refined detector logic: Added dual validation requiring significant histogram change (`corr < 0.15`), verified RANSAC inlier collapse (`inliers < 10`), adequate illumination (`mean_brightness >= 35`), and sufficient texture (`keypoints >= 20`).
+   - Result: **0 of the 5 false positive cuts survived**. All 5 were properly classified as continuous motion past dark zones, preventing unnecessary sequence splitting. Before/after and comparison composite images are automatically saved to `cuts/` for visual verification on the job page.
+
+2. **Gap Separation vs. Camera Trajectory Jumps**:
+   - The previously reported "13.4x jump between frames 46 and 58" was an artifact of computing distances across an unmodelled gap of 11 unregistered frames.
+   - Fixed motion jump detector: Now strictly tests consecutive registered frames (`frame_b == frame_a + 1`). Unregistered stretches are tracked and reported separately as `registration_gaps` (e.g., "Registration gap: frames 22..47 missing (26 frames)").
+   - Borderline jumps (4x to 5x median step) are categorized separately as fast camera pans rather than discontinuities. Trajectory plot axes are explicitly labeled in "SfM units (arbitrary scale, not metres)".
+
+3. **Low-Texture Filtering Accuracy**:
+   - Accurate reporting: Filtering low-texture frames on `bedroom_vid.mp4` resulted in a slight loss of registered frames (61 vs 64) and points (7,444 vs 8,431) while reducing SfM runtime from 377.9s to 345.1s. It is documented accurately as a performance-for-coverage tradeoff rather than "no quality loss".
+
+4. **Configurable Registration Threshold (`min_registration_ratio`)**:
+   - Added `min_registration_ratio` (default 0.60) in backend options, API, and frontend NewScan slider (10% to 100%).
+   - Partial models (`min_registration_ratio <= ratio < 0.60`) are accepted and highlighted with an amber "Partial Model" badge in the UI and `sfm_report.json`.
+   - Re-running `bedroom_vid.mp4` with `min_registration_ratio=0.30` yielded an accepted 72-frame partial model with 8,872 points, 0.542 px error, 0 jumps, and downloadable diagnostics.
+
+5. **Sampling Density Experiment (Uniform 4 fps vs 6 fps)**:
+   - Evaluated 4 fps (361 frames) and 6 fps (542 frames) with sequential overlap 20 on `bedroom_vid.mp4`.
+   - Increasing sampling density significantly improved sequential matching tracking: primary submodel registration increased from **12 frames (at 2 fps)** to **45 frames (at 4 fps, 3.75x)** and **70 frames (at 6 fps, 5.8x)**. Total registered frames across all submodels reached 145 frames (4 fps) and 312 frames (6 fps).
+   - However, sequential matching fragmented the walkthrough into **6 submodels (at 4 fps)** and **10 submodels (at 6 fps)** because rapid rotation sweeps past blank doors broke visual tracking without cross-loop matching.
+   - **Conclusion**: Sampling rate is a significant factor in consecutive frame tracking, but **not the sole root cause** of walkthrough fragmentation. Per user directive, the `low_texture_indoor` preset, adaptive sampler, and pre-flight check are deferred until after Milestone P2c.
 
 ---
 

@@ -87,11 +87,54 @@ class FrameExtractionStage(Stage):
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         duration = total_video_frames / video_fps if video_fps > 0 else 30.0
 
-        # Calculate target frame count (adaptive: ~3.0 - 4.0 fps, bounded between 60 and 180)
-        # For a 30s clip, 30 * 3.3 ≈ 100 frames
-        target_fps = 3.3
-        target_frames = int(max(60, min(180, duration * target_fps)))
-        # Sample candidate frames at 2x rate
+        options = ctx.params.get("options", {})
+        target_fps = float(options.get("target_fps", 3.3))
+        uniform_sampling = bool(options.get("uniform_sampling", False))
+        max_frames_bound = int(options.get("max_frames", 600 if options.get("target_fps") else 180))
+        target_frames = int(max(60, min(max_frames_bound, round(duration * target_fps))))
+
+        frames_dir = ctx.workdir / "frames"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+        if uniform_sampling:
+            sample_step = video_fps / target_fps
+            target_indices = [int(round(i * sample_step)) for i in range(target_frames) if int(round(i * sample_step)) < total_video_frames]
+            ctx.log_cb(f"[FrameExtraction] Uniform sampling enabled: extracting {len(target_indices)} frames at {target_fps:.1f} fps.")
+            target_set = set(target_indices)
+            saved_count = 0
+            curr_idx = 0
+            while True:
+                if ctx.cancel_token.is_cancelled():
+                    cap.release()
+                    raise RuntimeError("Frame extraction cancelled by user.")
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if curr_idx in target_set:
+                    out_path = frames_dir / f"frame_{saved_count:04d}.jpg"
+                    cv2.imwrite(str(out_path), frame)
+                    saved_count += 1
+                curr_idx += 1
+            cap.release()
+            ctx.log_cb(f"[FrameExtraction] Uniform extraction complete: saved {saved_count} frames.")
+            report = {
+                "total_video_frames": total_video_frames,
+                "video_fps": round(video_fps, 2),
+                "duration_seconds": round(duration, 2),
+                "sampling_mode": "uniform",
+                "target_fps": target_fps,
+                "extracted_frames": saved_count
+            }
+            report_path = ctx.workdir / "frame_extraction_report.json"
+            with open(report_path, "w") as f:
+                json.dump(report, f, indent=2)
+            return StageResult(
+                success=True,
+                output_files=[frames_dir, report_path],
+                metadata=report
+            )
+
+        # Sample candidate frames at 2x rate for adaptive windowing
         candidate_interval = max(1, int(round(video_fps / (target_fps * 2.0))))
 
         ctx.log_cb(
