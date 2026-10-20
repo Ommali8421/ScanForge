@@ -118,8 +118,8 @@ class IngestStage(Stage):
         if not normalized_video.exists():
             raise RuntimeError(f"FFmpeg failed to produce normalized output: {normalized_video}")
 
-        # Scene-cut detection (warns, does not crash)
-        cuts = self._detect_scene_cuts(normalized_video, ctx)
+        # Scene-cut detection (warns, does not crash; validates with verified feature matches)
+        cuts, cuts_dir = self._detect_scene_cuts(normalized_video, ctx)
         metadata["scene_cuts"] = cuts
 
         # Save metadata JSON
@@ -128,26 +128,45 @@ class IngestStage(Stage):
             json.dump(metadata, f, indent=2)
 
         ctx.log_cb("[Ingest] Video normalization and scene-cut analysis complete.")
+        output_files = [normalized_video, metadata_path]
+        if cuts_dir and cuts_dir.exists() and any(cuts_dir.iterdir()):
+            output_files.append(cuts_dir)
+
         return StageResult(
             success=True,
-            output_files=[normalized_video, metadata_path],
+            output_files=output_files,
             metadata=metadata
         )
 
-    def _detect_scene_cuts(self, video_path: Path, ctx: JobContext) -> List[dict]:
-        """Detect potential abrupt scene cuts via HSV histogram correlation."""
+    def _detect_scene_cuts(self, video_path: Path, ctx: JobContext) -> Tuple[List[dict], Optional[Path]]:
+        """
+        Detect scene cuts with dual validation:
+        1. Large histogram change (HSV correlation < 0.20)
+        2. Verified feature matches collapse (< 15 RANSAC inliers) between adjacent frames.
+        Saves before/after frames under cuts/ folder for UI inspection.
+        Warns only; does not split the sequence unless confirmed.
+        """
         cuts: List[dict] = []
+        cuts_dir = ctx.workdir / "cuts"
         try:
             import cv2
+            import numpy as np
+
             cap = cv2.VideoCapture(str(video_path))
             if not cap.isOpened():
-                return cuts
+                return cuts, None
 
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             step_frames = max(1, int(fps * 0.5))  # check every 0.5s
 
+            orb = cv2.ORB_create(nfeatures=500)
+            bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+
             prev_hist = None
+            prev_frame = None
+            prev_frame_idx = 0
             frame_idx = 0
+            cut_idx = 0
 
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -159,22 +178,90 @@ class IngestStage(Stage):
                     hist = cv2.calcHist([hsv], [0, 1], None, [30, 32], [0, 180, 0, 256])
                     cv2.normalize(hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
 
-                    if prev_hist is not None:
+                    if prev_hist is not None and prev_frame is not None:
                         corr = float(cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL))
                         if corr < 0.25:
+                            cut_idx += 1
                             timestamp = frame_idx / fps
+                            cuts_dir.mkdir(parents=True, exist_ok=True)
+
+                            # Verify feature matches between adjacent frames using ORB + RANSAC homography
+                            gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+                            gray_curr = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                            kp1, des1 = orb.detectAndCompute(gray_prev, None)
+                            kp2, des2 = orb.detectAndCompute(gray_curr, None)
+
+                            verified_matches = 0
+                            if des1 is not None and des2 is not None and len(kp1) >= 8 and len(kp2) >= 8:
+                                knn_matches = bf.knnMatch(des1, des2, k=2)
+                                good = [m for m, n in knn_matches if len(knn_matches) > 1 and m.distance < 0.75 * n.distance]
+                                if len(good) >= 8:
+                                    src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+                                    dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+                                    _, inlier_mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                                    if inlier_mask is not None:
+                                        verified_matches = int(np.sum(inlier_mask))
+
+                            # Dual validation: true cut only if both histogram change is large AND matches collapse
+                            is_confirmed_cut = (corr < 0.20 and verified_matches < 15)
+
+                            # Save before/after frames
+                            before_name = f"cut_{cut_idx:02d}_f{prev_frame_idx}_before.jpg"
+                            after_name = f"cut_{cut_idx:02d}_f{frame_idx}_after.jpg"
+                            comp_name = f"cut_{cut_idx:02d}_comparison.jpg"
+
+                            before_path = cuts_dir / before_name
+                            after_path = cuts_dir / after_name
+                            comp_path = cuts_dir / comp_name
+
+                            cv2.imwrite(str(before_path), prev_frame)
+                            cv2.imwrite(str(after_path), frame)
+
+                            # Create side-by-side comparison image with status banner
+                            h_p, w_p = prev_frame.shape[:2]
+                            h_c, w_c = frame.shape[:2]
+                            max_h = max(h_p, h_c)
+                            comp_w = w_p + w_c
+                            composite = np.zeros((max_h + 50, comp_w, 3), dtype=np.uint8)
+                            composite[50:50+h_p, 0:w_p] = prev_frame
+                            composite[50:50+h_c, w_p:w_p+w_c] = frame
+
+                            verdict_text = "CONFIRMED CUT (DISCONTINUITY)" if is_confirmed_cut else "FALSE POSITIVE (FAST PAN / CONTINUOUS)"
+                            verdict_color = (0, 0, 255) if is_confirmed_cut else (0, 255, 128)
+                            info_text = f"t={timestamp:.1f}s | Hist Corr: {corr:.3f} | RANSAC Inliers: {verified_matches} | {verdict_text}"
+                            cv2.putText(composite, info_text, (15, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.65, verdict_color, 2)
+                            cv2.imwrite(str(comp_path), composite)
+
                             cut_info = {
+                                "cut_id": cut_idx,
                                 "timestamp_seconds": round(timestamp, 2),
-                                "frame_index": frame_idx,
-                                "correlation": round(corr, 3)
+                                "frame_index_before": prev_frame_idx,
+                                "frame_index_after": frame_idx,
+                                "histogram_correlation": round(corr, 3),
+                                "verified_feature_matches": verified_matches,
+                                "confirmed_cut": is_confirmed_cut,
+                                "verdict": "confirmed_cut" if is_confirmed_cut else "rejected_pan",
+                                "before_file": before_name,
+                                "after_file": after_name,
+                                "comparison_file": comp_name
                             }
                             cuts.append(cut_info)
-                            ctx.log_cb(
-                                f"[Ingest Warning] Potential scene-cut detected at t={cut_info['timestamp_seconds']}s "
-                                f"(frame {frame_idx}, correlation: {cut_info['correlation']}). "
-                                f"SfM may produce disconnected models."
-                            )
+
+                            if is_confirmed_cut:
+                                ctx.log_cb(
+                                    f"[Ingest Warning] Confirmed scene-cut detected at t={timestamp:.1f}s "
+                                    f"(corr: {corr:.3f}, inliers: {verified_matches} < 15). "
+                                    f"Saved before/after preview -> cuts/{comp_name}"
+                                )
+                            else:
+                                ctx.log_cb(
+                                    f"[Ingest] Scene-cut candidate at t={timestamp:.1f}s rejected (fast pan): "
+                                    f"verified inliers ({verified_matches} >= 15) confirm visual continuity."
+                                )
+
                     prev_hist = hist
+                    prev_frame = frame.copy()
+                    prev_frame_idx = frame_idx
 
                 frame_idx += 1
 
@@ -182,4 +269,4 @@ class IngestStage(Stage):
         except Exception as e:
             ctx.log_cb(f"[Ingest] Scene-cut analysis skipped ({e}).")
 
-        return cuts
+        return cuts, (cuts_dir if cuts else None)

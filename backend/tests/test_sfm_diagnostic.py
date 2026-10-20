@@ -143,7 +143,7 @@ def test_motion_and_jump_analysis(tmp_path):
         "cam_center": np.array([1.9, 0.0, 0.0])  # jump: 1.0m vs 0.1m (10x median!)
     })
 
-    motion_summary, jumps_flagged, sift_map = stage._analyze_motion_and_matches(cameras, db_path)
+    motion_summary, jumps_flagged, jumps_borderline, sift_map = stage._analyze_motion_and_matches(cameras, db_path, total_frames=10)
 
     assert sift_map["f_001.jpg"] == 1200
     assert len(motion_summary["consecutive_pairs"]) == 9
@@ -151,3 +151,19 @@ def test_motion_and_jump_analysis(tmp_path):
     assert jumps_flagged[0]["frame_a"] == "f_009.jpg"
     assert jumps_flagged[0]["frame_b"] == "f_010.jpg"
     assert jumps_flagged[0]["median_multiple"] > 5.0
+    assert len(jumps_borderline) == 0
+
+    # Test registration gaps separated from consecutive motion jumps
+    cameras_with_gap = [
+        {"image_id": 1, "name": "f_001.jpg", "frame_index": 1, "rotation_matrix": np.eye(3), "cam_center": np.array([0.0, 0.0, 0.0])},
+        {"image_id": 2, "name": "f_002.jpg", "frame_index": 2, "rotation_matrix": np.eye(3), "cam_center": np.array([0.1, 0.0, 0.0])},
+        {"image_id": 15, "name": "f_015.jpg", "frame_index": 15, "rotation_matrix": np.eye(3), "cam_center": np.array([1.5, 0.0, 0.0])},
+    ]
+    gap_summary, gap_flagged, gap_borderline, _ = stage._analyze_motion_and_matches(cameras_with_gap, db_path, total_frames=20)
+    assert len(gap_summary["registration_gaps"]) == 1
+    assert gap_summary["registration_gaps"][0]["from_frame_index"] == 2
+    assert gap_summary["registration_gaps"][0]["to_frame_index"] == 15
+    assert gap_summary["registration_gaps"][0]["unregistered_frame_count"] == 12
+    # Ensure distance across gap was NOT counted as a consecutive motion jump
+    assert len(gap_flagged) == 0
+

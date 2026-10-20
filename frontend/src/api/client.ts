@@ -120,3 +120,22 @@ export function getDownloadUrl(jobId: string, format: string): string {
 export function getDownloadAllUrl(jobId: string): string {
   return `${API_BASE}/jobs/${jobId}/download-all`;
 }
+
+export function getDownloadLogUrl(jobId: string): string {
+  return `${API_BASE}/jobs/${jobId}/log`;
+}
+
+export async function fetchJobCuts(jobId: string): Promise<{ cuts?: any[]; files?: string[] }> {
+  try {
+    const res = await fetch(`${API_BASE}/jobs/${jobId}/cuts`);
+    if (!res.ok) return { cuts: [] };
+    return res.json();
+  } catch {
+    return { cuts: [] };
+  }
+}
+
+export function getCutImageUrl(jobId: string, filename: string): string {
+  return `${API_BASE}/jobs/${jobId}/cuts/${filename}`;
+}
+

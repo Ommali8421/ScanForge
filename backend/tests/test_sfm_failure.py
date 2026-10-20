@@ -70,5 +70,5 @@ def test_sfm_registration_below_threshold(tmp_path: Path):
         dummy_model_dir = tmp_path / "sparse" / "0"
         dummy_model_dir.mkdir(parents=True)
         with patch.object(stage, "_find_best_model", return_value=(dummy_model_dir, 4)):
-            with pytest.raises(RuntimeError, match="Minimum required is 60%"):
+            with pytest.raises(RuntimeError, match="Registration check failed at stage 'sfm'"):
                 stage.run(ctx)

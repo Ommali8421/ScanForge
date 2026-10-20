@@ -355,8 +355,9 @@ class ColmapSfMStage(Stage):
     def _analyze_motion_and_matches(
         self,
         registered_cameras: List[Dict[str, Any]],
-        db_path: Path
-    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, int]]:
+        db_path: Path,
+        total_frames: int = 0
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
         """
         Analyze consecutive camera pairs:
         - Euclidean inter-camera distance
@@ -385,17 +386,46 @@ class ColmapSfMStage(Stage):
                 conn.close()
 
         if len(registered_cameras) < 2:
-            return {"median_distance": 0.0, "consecutive_pairs": []}, [], per_frame_sift
+            return {
+                "median_distance": 0.0,
+                "consecutive_pairs": [],
+                "registration_gaps": [],
+                "unregistered_ranges": [],
+                "registered_ranges": [],
+                "borderline_jumps_count": 0,
+                "flagged_jumps_count": 0
+            }, [], [], per_frame_sift
 
         pairs_data = []
-        distances = []
+        consecutive_distances = []
+        registration_gaps = []
+
+        registered_indices = sorted([c["frame_index"] for c in registered_cameras])
+        unregistered_ranges = []
+        registered_ranges = []
+        if registered_indices:
+            start_r = registered_indices[0]
+            end_r = registered_indices[0]
+            for idx in registered_indices[1:]:
+                if idx == end_r + 1:
+                    end_r = idx
+                else:
+                    registered_ranges.append([start_r, end_r])
+                    unregistered_ranges.append([end_r + 1, idx - 1])
+                    start_r = idx
+                    end_r = idx
+            registered_ranges.append([start_r, end_r])
+            if registered_indices[0] > 0:
+                unregistered_ranges.insert(0, [0, registered_indices[0] - 1])
+            if total_frames > 0 and registered_indices[-1] < total_frames - 1:
+                unregistered_ranges.append([registered_indices[-1] + 1, total_frames - 1])
 
         for k in range(len(registered_cameras) - 1):
             cam_a = registered_cameras[k]
             cam_b = registered_cameras[k + 1]
 
             d = float(np.linalg.norm(cam_b["cam_center"] - cam_a["cam_center"]))
-            distances.append(d)
+            is_gap = (cam_b["frame_index"] != cam_a["frame_index"] + 1)
 
             r_rel = cam_b["rotation_matrix"] @ cam_a["rotation_matrix"].T
             trace_val = float(np.trace(r_rel))
@@ -406,7 +436,16 @@ class ColmapSfMStage(Stage):
 
             p_id = _image_ids_to_pair_id(cam_a["image_id"], cam_b["image_id"])
             inliers = verified_matches_lookup.get(p_id, 0)
-            is_gap = (cam_b["frame_index"] != cam_a["frame_index"] + 1)
+
+            if is_gap:
+                registration_gaps.append({
+                    "from_frame_index": cam_a["frame_index"],
+                    "to_frame_index": cam_b["frame_index"],
+                    "unregistered_frame_count": cam_b["frame_index"] - cam_a["frame_index"] - 1,
+                    "distance_across_gap": round(d, 4)
+                })
+            else:
+                consecutive_distances.append(d)
 
             pairs_data.append({
                 "frame_a": cam_a["name"],
@@ -420,15 +459,24 @@ class ColmapSfMStage(Stage):
                 "is_gap": is_gap
             })
 
-        median_dist = float(np.median(distances)) if distances else 1.0
+        # Calculate median step ONLY across truly consecutive frame pairs (do not skew with gap jumps)
+        median_dist = float(np.median(consecutive_distances)) if consecutive_distances else 1.0
         if median_dist < 1e-6:
             median_dist = 1e-6
 
         jumps_flagged = []
+        jumps_borderline = []
         for pair in pairs_data:
+            if pair["is_gap"]:
+                pair["median_multiple"] = None
+                pair["is_jump"] = False
+                pair["is_borderline"] = False
+                continue
+
             multiple = pair["distance"] / median_dist
             pair["median_multiple"] = round(multiple, 2)
-            pair["is_jump"] = (multiple > 5.0)
+            pair["is_jump"] = (multiple >= 5.0)
+            pair["is_borderline"] = (4.0 <= multiple < 5.0)
             if pair["is_jump"]:
                 jumps_flagged.append({
                     "frame_a": pair["frame_a"],
@@ -437,14 +485,31 @@ class ColmapSfMStage(Stage):
                     "frame_index_b": pair["frame_index_b"],
                     "distance": pair["distance"],
                     "median_multiple": pair["median_multiple"],
-                    "rotation_deg": pair["rotation_deg"]
+                    "rotation_deg": pair["rotation_deg"],
+                    "classification": "flagged_jump"
+                })
+            elif pair["is_borderline"]:
+                jumps_borderline.append({
+                    "frame_a": pair["frame_a"],
+                    "frame_b": pair["frame_b"],
+                    "frame_index_a": pair["frame_index_a"],
+                    "frame_index_b": pair["frame_index_b"],
+                    "distance": pair["distance"],
+                    "median_multiple": pair["median_multiple"],
+                    "rotation_deg": pair["rotation_deg"],
+                    "classification": "borderline_jump"
                 })
 
         motion_summary = {
             "median_distance": round(median_dist, 4),
-            "consecutive_pairs": pairs_data
+            "consecutive_pairs": pairs_data,
+            "registration_gaps": registration_gaps,
+            "unregistered_ranges": unregistered_ranges,
+            "registered_ranges": registered_ranges,
+            "borderline_jumps_count": len(jumps_borderline),
+            "flagged_jumps_count": len(jumps_flagged)
         }
-        return motion_summary, jumps_flagged, per_frame_sift
+        return motion_summary, jumps_flagged, jumps_borderline, per_frame_sift
 
     def _render_camera_path(
         self,
@@ -452,16 +517,18 @@ class ColmapSfMStage(Stage):
         point_coords: List[np.ndarray],
         motion_summary: Dict[str, Any],
         jumps_flagged: List[Dict[str, Any]],
+        jumps_borderline: List[Dict[str, Any]],
         per_frame_sift: Dict[str, int],
         dropped_frames: List[Dict[str, Any]],
+        total_frames: int,
         output_path: Path
     ):
         """
         Render comprehensive 4-panel diagnostic figure:
-        - Panel 1: Top-Down Trajectory (X-Z) with equal axes, high-contrast points, colored by frame index, broken at gaps/jumps.
-        - Panel 2: Side Elevation Trajectory (X vs Elevation -Y) with equal axes, broken at gaps/jumps.
-        - Panel 3: Consecutive camera distance (x median, >5x flagged) & relative rotation vs frame index.
-        - Panel 4: SIFT keypoints, verified inlier matches, and rotation-vs-translation measure vs frame index.
+        - Panel 1: Top-Down Trajectory (X-Z) with equal axes, arbitrary SfM units, broken at gaps/jumps.
+        - Panel 2: Side Elevation Trajectory (X vs Elevation -Y) with equal axes, arbitrary SfM units.
+        - Panel 3: Consecutive camera distance (x median, 4x borderline & 5x flagged) & rotation vs frame index.
+        - Panel 4: SIFT keypoints across ALL frames, verified inlier matches, shaded unregistered stretches.
         """
         if not registered_cameras:
             fig, ax = plt.subplots(figsize=(8, 6), facecolor="#12151e")
@@ -475,18 +542,20 @@ class ColmapSfMStage(Stage):
         plt.style.use("dark_background")
         fig, axes = plt.subplots(2, 2, figsize=(16, 12), facecolor="#12151e")
         fig.suptitle(
-            f"ScanForge SfM Diagnostic & Trajectory Analysis ({len(registered_cameras)} Cameras Registered)",
+            f"ScanForge SfM Diagnostic & Trajectory Analysis ({len(registered_cameras)}/{total_frames} Cameras Registered)",
             fontsize=15, color="#f8fafc", fontweight="bold", y=0.98
         )
 
         n_cams = len(registered_cameras)
         f_indices = [c["frame_index"] for c in registered_cameras]
-        min_f, max_f = min(f_indices), max(f_indices)
-        norm = Normalize(vmin=min_f, vmax=max_f if max_f > min_f else min_f + 1)
+        min_f, max_f = (min(f_indices), max(f_indices)) if f_indices else (0, 1)
+        norm = Normalize(vmin=0, vmax=max(total_frames - 1, max_f, 1))
         cmap = plt.cm.turbo
 
         cam_lookup = {c["frame_index"]: c for c in registered_cameras}
         pairs_data = motion_summary.get("consecutive_pairs", [])
+        unregistered_ranges = motion_summary.get("unregistered_ranges", [])
+        registered_ranges = motion_summary.get("registered_ranges", [])
 
         # Subsample point coordinates if large
         pts = np.array(point_coords) if point_coords else np.zeros((0, 3))
@@ -532,8 +601,8 @@ class ColmapSfMStage(Stage):
         cbar1 = plt.colorbar(sc1, ax=ax1, fraction=0.046, pad=0.04)
         cbar1.set_label("Frame Index", color="#94a3b8", fontsize=9)
         cbar1.ax.tick_params(colors="#94a3b8", labelsize=8)
-        ax1.set_xlabel("X (m)", color="#94a3b8", fontsize=9)
-        ax1.set_ylabel("Z (m)", color="#94a3b8", fontsize=9)
+        ax1.set_xlabel("X (SfM units: arbitrary scale, not metres)", color="#94a3b8", fontsize=9)
+        ax1.set_ylabel("Z (SfM units: arbitrary scale, not metres)", color="#94a3b8", fontsize=9)
         ax1.tick_params(colors="#94a3b8", labelsize=8)
         ax1.set_aspect("equal", adjustable="datalim")
         ax1.grid(True, color="#334155", ls=":", alpha=0.5)
@@ -570,8 +639,8 @@ class ColmapSfMStage(Stage):
         cbar2 = plt.colorbar(sc2, ax=ax2, fraction=0.046, pad=0.04)
         cbar2.set_label("Frame Index", color="#94a3b8", fontsize=9)
         cbar2.ax.tick_params(colors="#94a3b8", labelsize=8)
-        ax2.set_xlabel("X (m)", color="#94a3b8", fontsize=9)
-        ax2.set_ylabel("Elevation -Y (m)", color="#94a3b8", fontsize=9)
+        ax2.set_xlabel("X (SfM units: arbitrary scale, not metres)", color="#94a3b8", fontsize=9)
+        ax2.set_ylabel("Elevation -Y (SfM units: arbitrary scale, not metres)", color="#94a3b8", fontsize=9)
         ax2.tick_params(colors="#94a3b8", labelsize=8)
         ax2.set_aspect("equal", adjustable="datalim")
         ax2.grid(True, color="#334155", ls=":", alpha=0.5)
@@ -582,12 +651,22 @@ class ColmapSfMStage(Stage):
         ax3 = axes[1, 0]
         ax3.set_facecolor("#191e2b")
         ax3.set_title("Consecutive Camera Motion & Jumps vs Frame", color="#38bdf8", fontsize=11, pad=8)
-        pair_idxs = [p["frame_index_a"] for p in pairs_data]
-        multiples = [p["median_multiple"] for p in pairs_data]
-        rot_angles = [p["rotation_deg"] for p in pairs_data]
 
-        l1 = ax3.plot(pair_idxs, multiples, color="#38bdf8", marker="o", ms=3.5, lw=1.6, label="Distance (x Median)")
-        ax3.axhline(5.0, color="#ef4444", ls="--", lw=1.4, label="5x Median Threshold")
+        # Shade unregistered stretches across Panel 3
+        for u_start, u_end in unregistered_ranges:
+            ax3.axvspan(u_start - 0.4, u_end + 0.4, color="#ef4444", alpha=0.15, zorder=1)
+
+        consec_pairs = [p for p in pairs_data if not p["is_gap"]]
+        c_idxs = [p["frame_index_a"] for p in consec_pairs]
+        c_multiples = [p["median_multiple"] for p in consec_pairs]
+        c_rot_angles = [p["rotation_deg"] for p in consec_pairs]
+
+        l1 = ax3.plot(c_idxs, c_multiples, color="#38bdf8", marker="o", ms=3.5, lw=1.6, label="Distance (x Median)")
+        ax3.axhline(4.0, color="#f59e0b", ls="--", lw=1.2, label="4x Borderline Threshold")
+        ax3.axhline(5.0, color="#ef4444", ls="--", lw=1.4, label="5x Flagged Threshold")
+
+        for j in jumps_borderline:
+            ax3.scatter([j["frame_index_a"]], [j["median_multiple"]], color="#f59e0b", s=55, marker="^", lw=2.0, zorder=6)
         for j in jumps_flagged:
             ax3.scatter([j["frame_index_a"]], [j["median_multiple"]], color="#ef4444", s=65, marker="x", lw=2.2, zorder=6)
 
@@ -597,28 +676,42 @@ class ColmapSfMStage(Stage):
         ax3.grid(True, color="#334155", ls=":", alpha=0.5)
 
         ax3_twin = ax3.twinx()
-        l2 = ax3_twin.plot(pair_idxs, rot_angles, color="#f59e0b", marker="s", ms=3.0, lw=1.4, ls="-.", label="Relative Rotation (deg)")
+        l2 = ax3_twin.plot(c_idxs, c_rot_angles, color="#f59e0b", marker="s", ms=3.0, lw=1.4, ls="-.", label="Relative Rotation (deg)")
         ax3_twin.set_ylabel("Rotation (deg)", color="#f59e0b", fontsize=9)
         ax3_twin.tick_params(colors="#f59e0b", labelsize=8)
 
-        all_lines3 = l1 + [ax3.lines[1]] + l2
+        all_lines3 = l1 + [ax3.lines[1], ax3.lines[2]] + l2
         all_labels3 = [l.get_label() for l in all_lines3]
         ax3.legend(all_lines3, all_labels3, loc="upper right", facecolor="#1e293b", edgecolor="#475569", fontsize=8)
 
         # -------------------------------------------------------------
-        # Panel 4: Feature Extraction, Inliers & Motion Ratio vs Frame
+        # Panel 4: Feature Extraction across ALL Frames & Inlier Matches
         # -------------------------------------------------------------
         ax4 = axes[1, 1]
         ax4.set_facecolor("#191e2b")
-        ax4.set_title("Feature Extraction, Inliers & Motion Ratio vs Frame", color="#38bdf8", fontsize=11, pad=8)
+        ax4.set_title("Feature Extraction across All Frames & Inlier Matches", color="#38bdf8", fontsize=11, pad=8)
 
-        sift_counts = [per_frame_sift.get(c["name"], 0) for c in registered_cameras]
-        l_kp = ax4.plot(f_indices, sift_counts, color="#22c55e", marker="o", ms=3.0, lw=1.5, label="SIFT Keypoints")
-        inliers = [p["verified_matches"] for p in pairs_data]
-        l_inl = ax4.plot(pair_idxs, inliers, color="#06b6d4", marker="^", ms=3.0, lw=1.4, ls="--", label="Verified Matches")
+        # Shade unregistered stretches across Panel 4
+        for u_start, u_end in unregistered_ranges:
+            ax4.axvspan(u_start - 0.4, u_end + 0.4, color="#ef4444", alpha=0.18, zorder=1)
+
+        all_frame_indices = list(range(total_frames))
+        all_kps = [per_frame_sift.get(f"frame_{i:04d}.jpg", 0) for i in all_frame_indices]
+        l_kp = ax4.plot(all_frame_indices, all_kps, color="#22c55e", marker="o", ms=2.5, lw=1.4, label="SIFT Keypoints (All Frames)")
+
+        # Plot verified inliers for continuous segments without connecting across gaps
+        l_inl_plotted = False
+        for r_start, r_end in registered_ranges:
+            sub_pairs = [p for p in pairs_data if not p["is_gap"] and r_start <= p["frame_index_a"] <= r_end]
+            if sub_pairs:
+                s_idxs = [p["frame_index_a"] for p in sub_pairs]
+                s_inls = [p["verified_matches"] for p in sub_pairs]
+                lbl = "Verified Matches" if not l_inl_plotted else ""
+                ax4.plot(s_idxs, s_inls, color="#06b6d4", marker="^", ms=2.5, lw=1.3, ls="--", label=lbl)
+                l_inl_plotted = True
 
         for d in dropped_frames:
-            ax4.axvline(d["frame_index"], color="#dc2626", ls=":", lw=1.6, label=f"Dropped (f{d['frame_index']})")
+            ax4.axvline(d["frame_index"], color="#dc2626", ls=":", lw=1.6)
 
         ax4.set_xlabel("Frame Index", color="#94a3b8", fontsize=9)
         ax4.set_ylabel("Keypoint / Inlier Count", color="#22c55e", fontsize=9)
@@ -626,12 +719,12 @@ class ColmapSfMStage(Stage):
         ax4.grid(True, color="#334155", ls=":", alpha=0.5)
 
         ax4_twin = ax4.twinx()
-        rot_trans_vals = [p["rot_vs_trans"] for p in pairs_data]
-        l_rt = ax4_twin.plot(pair_idxs, rot_trans_vals, color="#a855f7", ls=":", lw=1.5, label="Rot/Trans Ratio (deg/m)")
-        ax4_twin.set_ylabel("Rot/Trans (deg/m)", color="#a855f7", fontsize=9)
+        c_rt_vals = [p["rot_vs_trans"] for p in consec_pairs]
+        l_rt = ax4_twin.plot(c_idxs, c_rt_vals, color="#a855f7", ls=":", lw=1.5, label="Rot/Trans Ratio")
+        ax4_twin.set_ylabel("Rot/Trans Ratio", color="#a855f7", fontsize=9)
         ax4_twin.tick_params(colors="#a855f7", labelsize=8)
 
-        all_lines4 = l_kp + l_inl + l_rt
+        all_lines4 = l_kp + (ax4.lines[1:2] if len(ax4.lines) > 1 else []) + l_rt
         all_labels4 = [l.get_label() for l in all_lines4]
         ax4.legend(all_lines4, all_labels4, loc="upper right", facecolor="#1e293b", edgecolor="#475569", fontsize=8)
 
@@ -846,7 +939,19 @@ class ColmapSfMStage(Stage):
             seq_mapper_dur = execute_mapper(sparse_out, timeout=1800)
 
             best_model_dir, registered_count = self._find_best_model(sparse_out)
-            ctx.log_cb(f"[SfM] Initial {requested_matcher} run registered: {registered_count}/{active_frame_count} frames.")
+            seq_submodels = self._inspect_all_submodels(sparse_out)
+            seq_submodel_summary = ", ".join([f"submodel {sm['submodel_index']}: {sm['image_count']} images" for sm in seq_submodels]) if seq_submodels else "0 submodels"
+
+            if requested_matcher == "sequential":
+                ctx.log_cb(
+                    f"[SfM] Sequential matching result: {registered_count}/{active_frame_count} frames registered "
+                    f"({len(seq_submodels)} sub-models: {seq_submodel_summary})."
+                )
+            else:
+                ctx.log_cb(
+                    f"[SfM] Exhaustive matching result: {registered_count}/{active_frame_count} frames registered "
+                    f"({len(seq_submodels)} sub-models: {seq_submodel_summary})."
+                )
 
             seq_registered = registered_count if requested_matcher == "sequential" else None
             exh_registered = registered_count if requested_matcher == "exhaustive" else None
@@ -857,7 +962,7 @@ class ColmapSfMStage(Stage):
             if requested_matcher == "sequential" and active_frame_count <= 200 and (registered_count / active_frame_count) < 0.90:
                 ctx.log_cb(
                     f"[SfM] Sequential matching registered {registered_count}/{active_frame_count} "
-                    f"({(registered_count/active_frame_count)*100:.1f}% < 90%). Retrying with exhaustive matcher..."
+                    f"({(registered_count/active_frame_count)*100:.1f}% < 90% threshold). Retrying with exhaustive matcher..."
                 )
                 sparse_exh = ctx.workdir / "sparse_exhaustive"
                 try:
@@ -866,17 +971,32 @@ class ColmapSfMStage(Stage):
 
                     exh_model_dir, exh_count = self._find_best_model(sparse_exh)
                     exh_registered = exh_count
-                    ctx.log_cb(f"[SfM] Exhaustive matcher registered: {exh_count}/{active_frame_count} frames.")
+                    exh_submodels = self._inspect_all_submodels(sparse_exh)
+                    exh_submodel_summary = ", ".join([f"submodel {sm['submodel_index']}: {sm['image_count']} images" for sm in exh_submodels]) if exh_submodels else "0 submodels"
+                    ctx.log_cb(
+                        f"[SfM] Exhaustive matching result: {exh_count}/{active_frame_count} frames registered "
+                        f"({len(exh_submodels)} sub-models: {exh_submodel_summary})."
+                    )
 
                     if exh_count > registered_count:
-                        ctx.log_cb(f"[SfM] Exhaustive model accepted ({exh_count} > {registered_count} registered frames).")
+                        ctx.log_cb(
+                            f"[SfM] Decision: Exhaustive model chosen because it registered more frames "
+                            f"({exh_count} vs {registered_count} frames, +{exh_count - registered_count} gain)."
+                        )
                         best_model_dir = exh_model_dir
                         registered_count = exh_count
                         matcher_used = "sequential_then_exhaustive"
                     else:
-                        ctx.log_cb(f"[SfM] Exhaustive model had fewer or equal registered frames ({exh_count} vs {registered_count}). Keeping sequential model.")
+                        ctx.log_cb(
+                            f"[SfM] Decision: Sequential model chosen because exhaustive did not improve registration "
+                            f"({exh_count} <= {registered_count} frames)."
+                        )
                 except Exception as e:
                     ctx.log_cb(f"[SfM] Warning: Exhaustive matcher or mapper failed ({e}). Keeping sequential model.")
+            elif requested_matcher == "sequential":
+                ctx.log_cb(f"[SfM] Decision: Sequential model chosen (reached {(registered_count/active_frame_count)*100:.1f}% >= 90% threshold).")
+            else:
+                ctx.log_cb(f"[SfM] Decision: Exhaustive model chosen as configured in request.")
 
             # -------------------------------------------------------------
             # Step 3: Model Conversion, Undistortion & Diagnostics
@@ -935,12 +1055,18 @@ class ColmapSfMStage(Stage):
             )
 
             # Consecutive camera motion & verified inlier matches
-            motion_summary, jumps_flagged, per_frame_sift = self._analyze_motion_and_matches(
-                registered_cameras, db_path
+            motion_summary, jumps_flagged, jumps_borderline, per_frame_sift = self._analyze_motion_and_matches(
+                registered_cameras, db_path, total_frames=total_frames
             )
 
             if jumps_flagged:
-                ctx.log_cb(f"[SfM] Motion analysis flagged {len(jumps_flagged)} camera trajectory jumps (>5x median distance).")
+                ctx.log_cb(f"[SfM] Motion analysis flagged {len(jumps_flagged)} consecutive camera trajectory jumps (>5x median distance).")
+            if jumps_borderline:
+                ctx.log_cb(f"[SfM] Motion analysis noted {len(jumps_borderline)} borderline camera trajectory jumps (4x-5x median distance).")
+            if motion_summary.get("registration_gaps"):
+                ctx.log_cb(f"[SfM] Registration gaps detected: {len(motion_summary['registration_gaps'])} unregistered stretches.")
+                for g in motion_summary["registration_gaps"]:
+                    ctx.log_cb(f"[SfM]   Registration gap: frames {g['from_frame_index'] + 1}..{g['to_frame_index'] - 1} missing ({g['unregistered_frame_count']} frames)")
 
             # -------------------------------------------------------------
             # Step 5: Render 4-Panel Trajectory & Diagnostic Figure
@@ -951,8 +1077,10 @@ class ColmapSfMStage(Stage):
                 point_coords=point_coords,
                 motion_summary=motion_summary,
                 jumps_flagged=jumps_flagged,
+                jumps_borderline=jumps_borderline,
                 per_frame_sift=per_frame_sift,
                 dropped_frames=dropped_frames,
+                total_frames=total_frames,
                 output_path=camera_path_png
             )
             ctx.log_cb(f"[SfM] Saved 4-panel trajectory & diagnostic plot -> {camera_path_png.name}")
@@ -963,10 +1091,18 @@ class ColmapSfMStage(Stage):
         if points_per_image is None and registered_count > 0:
             points_per_image = round(point_count / registered_count, 1)
 
+        min_registration_ratio = float(options.get("min_registration_ratio", 0.60))
+        fail_on_low_registration = options.get("fail_on_low_registration", True)
+        threshold_met = (registration_ratio >= min_registration_ratio)
+        is_partial = (registration_ratio < 0.60)
+
         report = {
             "total_frames": total_frames,
             "registered_frames": registered_count,
             "registration_ratio": round(registration_ratio, 3),
+            "min_registration_ratio": min_registration_ratio,
+            "registration_threshold_met": threshold_met,
+            "is_partial": is_partial,
             "point_count": point_count,
             "mean_reprojection_error": round(mean_reproj_error, 3),
             "camera_model": camera_model,
@@ -983,6 +1119,8 @@ class ColmapSfMStage(Stage):
             "unregistered_frame_indices": unregistered_frame_indices,
             "dropped_low_texture_frames": dropped_frames,
             "jumps_flagged": jumps_flagged,
+            "jumps_borderline": jumps_borderline,
+            "registration_gaps": motion_summary.get("registration_gaps", []),
             "model_analyzer_output": analyzer_metrics.get("raw_output"),
             "motion_analysis": motion_summary,
             "per_frame_sift_keypoints": per_frame_sift,
@@ -992,26 +1130,31 @@ class ColmapSfMStage(Stage):
         }
 
         report_file = ctx.workdir / "sfm_report.json"
-        with open(report_file, "w") as f:
-            json.dump(report, f, indent=2)
-
-        min_registration_ratio = float(options.get("min_registration_ratio", 0.60))
-        fail_on_low_registration = options.get("fail_on_low_registration", False)
-        threshold_met = (registration_ratio >= min_registration_ratio)
-        report["registration_threshold_met"] = threshold_met
 
         if not threshold_met:
-            warning_msg = (
-                f"Registration ratio {registration_ratio*100:.1f}% ({registered_count}/{total_frames} frames) "
-                f"is below the target {min_registration_ratio*100:.0f}% threshold. "
-                f"Diagnostic plots and SfM reports were preserved."
+            error_msg = (
+                f"Registration check failed at stage 'sfm': "
+                f"{registered_count}/{total_frames} frames registered ({registration_ratio*100:.1f}%), "
+                f"which is below the threshold of {min_registration_ratio*100:.0f}%. "
+                f"Hint: The scene may contain low texture, rapid pans, or motion blur. "
+                f"Try recording with slower, smoother motion or lowering the 'Minimum Registration Ratio' under Advanced Settings."
             )
-            ctx.log_cb(f"[SfM Warning] {warning_msg}")
-            report["warning"] = warning_msg
+            ctx.log_cb(f"[SfM Error] {error_msg}")
+            report["error"] = error_msg
             with open(report_file, "w") as f:
                 json.dump(report, f, indent=2)
             if fail_on_low_registration:
-                raise RuntimeError(warning_msg)
+                raise RuntimeError(error_msg)
+        elif is_partial:
+            warn_msg = (
+                f"Partial model accepted: {registered_count}/{total_frames} frames registered "
+                f"({registration_ratio*100:.1f}% >= threshold {min_registration_ratio*100:.0f}%, but below recommended 60%)."
+            )
+            ctx.log_cb(f"[SfM Warning] {warn_msg}")
+            report["partial_warning"] = warn_msg
+
+        with open(report_file, "w") as f:
+            json.dump(report, f, indent=2)
 
         ctx.log_cb(
             f"[SfM] Complete! Registered: {registered_count}/{total_frames}, Points: {point_count}, "

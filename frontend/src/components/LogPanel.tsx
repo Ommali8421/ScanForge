@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Terminal, Copy, Check } from "lucide-react";
+import { Terminal, Copy, Check, Download } from "lucide-react";
 
 interface Props {
   logs: string[];
+  jobId?: string;
 }
 
-export const LogPanel: React.FC<Props> = ({ logs }) => {
+export const LogPanel: React.FC<Props> = ({ logs, jobId }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
 
@@ -29,13 +30,26 @@ export const LogPanel: React.FC<Props> = ({ logs }) => {
           <span className="font-semibold text-white tracking-wide">Live Process Output</span>
           <span className="text-[11px] text-dark-muted">({logs.length} lines)</span>
         </div>
-        <button
-          onClick={handleCopy}
-          className="flex items-center space-x-1.5 px-2 py-1 rounded bg-dark-bg border border-dark-border hover:bg-dark-hover text-dark-muted hover:text-white transition-colors"
-        >
-          {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-          <span className="text-[11px]">{copied ? "Copied" : "Copy"}</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          {jobId && (
+            <a
+              href={`/api/jobs/${jobId}/log`}
+              download={`scanforge_${jobId.slice(0, 8)}_full.log`}
+              className="flex items-center space-x-1.5 px-2 py-1 rounded bg-dark-bg border border-dark-border hover:bg-dark-hover text-dark-muted hover:text-white transition-colors"
+              title="Download full unredacted process log file"
+            >
+              <Download className="w-3.5 h-3.5 text-brand-400" />
+              <span className="text-[11px]">Full Log</span>
+            </a>
+          )}
+          <button
+            onClick={handleCopy}
+            className="flex items-center space-x-1.5 px-2 py-1 rounded bg-dark-bg border border-dark-border hover:bg-dark-hover text-dark-muted hover:text-white transition-colors"
+          >
+            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            <span className="text-[11px]">{copied ? "Copied" : "Copy"}</span>
+          </button>
+        </div>
       </div>
 
       <div

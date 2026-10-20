@@ -208,6 +208,29 @@ def download_artifact(id: str, format: str):
     )
 
 
+@router.get("/{id}/log")
+def get_job_log_file(id: str):
+    """Retrieve the full unredacted pipeline log file."""
+    job = get_job(id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {id} not found")
+
+    workdir = storage_service.get_job_workdir(id)
+    log_file = workdir / "pipeline.log"
+    if not log_file.exists():
+        art_dir = storage_service.get_job_artifacts_dir(id)
+        if (art_dir / "pipeline.log").exists():
+            log_file = art_dir / "pipeline.log"
+        else:
+            raise HTTPException(status_code=404, detail=f"Log file not found for job {id}")
+
+    return FileResponse(
+        path=str(log_file),
+        filename=f"scanforge_{id[:8]}_pipeline.log",
+        media_type="text/plain"
+    )
+
+
 @router.get("/{id}/download-all")
 def download_all_artifacts(id: str):
     job = get_job(id)
@@ -223,6 +246,52 @@ def download_all_artifacts(id: str):
         filename=f"scanforge_{id[:8]}_all.zip",
         media_type="application/zip"
     )
+
+
+@router.get("/{id}/cuts")
+def get_job_cuts(id: str):
+    """Retrieve detected scene cuts inspection manifest."""
+    job = get_job(id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {id} not found")
+
+    cuts_dir = storage_service.get_job_workdir(id) / "cuts"
+    if not cuts_dir.exists():
+        cuts_dir = storage_service.get_job_artifacts_dir(id) / "cuts"
+
+    if not cuts_dir.exists():
+        return {"cuts": []}
+
+    manifest_file = cuts_dir / "cuts_manifest.json"
+    if manifest_file.exists():
+        try:
+            with open(manifest_file, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    images = [f.name for f in cuts_dir.glob("*.jpg")]
+    return {"cuts": [], "files": sorted(images)}
+
+
+@router.get("/{id}/cuts/{filename}")
+def get_job_cut_image(id: str, filename: str):
+    """Serve a scene cut comparison or frame image."""
+    job = get_job(id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {id} not found")
+
+    safe_name = Path(filename).name
+    cuts_dir = storage_service.get_job_workdir(id) / "cuts"
+    file_path = cuts_dir / safe_name
+    if not file_path.exists():
+        cuts_dir = storage_service.get_job_artifacts_dir(id) / "cuts"
+        file_path = cuts_dir / safe_name
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Cut image '{safe_name}' not found")
+
+    return FileResponse(path=str(file_path), media_type="image/jpeg")
 
 
 @router.post("/{id}/calibrate", response_model=CalibrateResponse, status_code=202)

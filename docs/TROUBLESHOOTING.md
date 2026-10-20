@@ -38,3 +38,19 @@ Common operational issues, diagnosis steps, and remediation strategies.
    proxy_request_buffering off;
    ```
 2. ScanForge SSE endpoints replay recent progress and logs upon reconnection, ensuring zero state loss on network hiccup.
+
+---
+
+## 4. Docker CLI and WSL2 Integration Pitfall: Never Wrapper docker.exe
+
+**Symptom**: `docker` commands hang, fail to pass environment variables (`SCANFORGE_ENGINE`, `COMPOSE_PROFILES`), or corrupt WSL file path translations.
+
+**Root Cause**:
+Creating a wrapper script (e.g. `~/.local/bin/docker`) that invokes Windows `docker.exe` (`/mnt/c/.../docker.exe "$@"`) shadows the native Linux Docker client. Because Windows executables running under WSL cannot natively interpret POSIX signal trees, Linux file descriptors, or Linux environment variables without explicit `WSLENV` declarations, compose commands and container management become brittle.
+
+**Rules & Resolution**:
+1. **Never create a wrapper script for `docker.exe` inside WSL.**
+2. Native Docker CLI in WSL is provided directly by Docker Desktop's WSL integration via `/usr/bin/docker -> /mnt/wsl/docker-desktop/cli-tools/usr/bin/docker`.
+3. If `/usr/bin/docker` reports `No such file or directory`, **Docker Desktop is not running** or the WSL distro integration is disabled in Docker Desktop settings (*Settings -> Resources -> WSL Integration*). Launch Docker Desktop on Windows; the integration mount will appear automatically.
+4. Ensure `which docker` resolves strictly to `/usr/bin/docker`. If any wrapper was placed in `~/.local/bin/docker` or `~/bin/docker`, remove or back it up (`mv ~/.local/bin/docker ~/.local/bin/docker.wrapper.bak`).
+
