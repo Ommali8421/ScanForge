@@ -940,7 +940,7 @@ class ColmapSfMStage(Stage):
 
             best_model_dir, registered_count = self._find_best_model(sparse_out)
             seq_submodels = self._inspect_all_submodels(sparse_out)
-            seq_submodel_summary = ", ".join([f"submodel {sm['submodel_index']}: {sm['image_count']} images" for sm in seq_submodels]) if seq_submodels else "0 submodels"
+            seq_submodel_summary = ", ".join([f"submodel {sm.get('submodel_id', '0')}: {sm.get('registered_images', 0)} images" for sm in seq_submodels]) if seq_submodels else "0 submodels"
 
             if requested_matcher == "sequential":
                 ctx.log_cb(
@@ -972,7 +972,7 @@ class ColmapSfMStage(Stage):
                     exh_model_dir, exh_count = self._find_best_model(sparse_exh)
                     exh_registered = exh_count
                     exh_submodels = self._inspect_all_submodels(sparse_exh)
-                    exh_submodel_summary = ", ".join([f"submodel {sm['submodel_index']}: {sm['image_count']} images" for sm in exh_submodels]) if exh_submodels else "0 submodels"
+                    exh_submodel_summary = ", ".join([f"submodel {sm.get('submodel_id', '0')}: {sm.get('registered_images', 0)} images" for sm in exh_submodels]) if exh_submodels else "0 submodels"
                     ctx.log_cb(
                         f"[SfM] Exhaustive matching result: {exh_count}/{active_frame_count} frames registered "
                         f"({len(exh_submodels)} sub-models: {exh_submodel_summary})."

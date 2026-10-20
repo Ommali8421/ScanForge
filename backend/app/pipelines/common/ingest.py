@@ -7,7 +7,7 @@ strips audio, tone-maps HDR/10-bit inputs, and normalizes video orientation.
 import json
 import shutil
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from app.config import settings
 from app.pipelines.base import Stage, JobContext, StageResult
 from app.pipelines.tool_runner import ToolRunner
@@ -188,13 +188,21 @@ class IngestStage(Stage):
                             # Verify feature matches between adjacent frames using ORB + RANSAC homography
                             gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
                             gray_curr = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                            mean_b_prev = float(np.mean(gray_prev))
+                            mean_b_curr = float(np.mean(gray_curr))
+
                             kp1, des1 = orb.detectAndCompute(gray_prev, None)
                             kp2, des2 = orb.detectAndCompute(gray_curr, None)
 
                             verified_matches = 0
                             if des1 is not None and des2 is not None and len(kp1) >= 8 and len(kp2) >= 8:
                                 knn_matches = bf.knnMatch(des1, des2, k=2)
-                                good = [m for m, n in knn_matches if len(knn_matches) > 1 and m.distance < 0.75 * n.distance]
+                                good = []
+                                for pair in knn_matches:
+                                    if len(pair) == 2:
+                                        m, n = pair
+                                        if m.distance < 0.75 * n.distance:
+                                            good.append(m)
                                 if len(good) >= 8:
                                     src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
                                     dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
@@ -202,8 +210,17 @@ class IngestStage(Stage):
                                     if inlier_mask is not None:
                                         verified_matches = int(np.sum(inlier_mask))
 
-                            # Dual validation: true cut only if both histogram change is large AND matches collapse
-                            is_confirmed_cut = (corr < 0.20 and verified_matches < 15)
+                            # Dual validation: true cut only if both histogram change is large AND matches collapse,
+                            # AND neither frame is underexposed/dark (e.g. panning past a dark door/shadow),
+                            # AND both frames had adequate visual texture to establish correspondence.
+                            is_dark_pan = (mean_b_prev < 35.0 or mean_b_curr < 35.0)
+                            has_adequate_texture = (len(kp1) >= 20 and len(kp2) >= 20)
+                            is_confirmed_cut = (
+                                (corr < 0.15)
+                                and (verified_matches < 10)
+                                and not is_dark_pan
+                                and has_adequate_texture
+                            )
 
                             # Save before/after frames
                             before_name = f"cut_{cut_idx:02d}_f{prev_frame_idx}_before.jpg"
@@ -241,6 +258,7 @@ class IngestStage(Stage):
                                 "verified_feature_matches": verified_matches,
                                 "confirmed_cut": is_confirmed_cut,
                                 "verdict": "confirmed_cut" if is_confirmed_cut else "rejected_pan",
+                                "reason": "genuine_discontinuity" if is_confirmed_cut else ("dark_door_pan" if is_dark_pan else "continuous_motion"),
                                 "before_file": before_name,
                                 "after_file": after_name,
                                 "comparison_file": comp_name
@@ -250,13 +268,14 @@ class IngestStage(Stage):
                             if is_confirmed_cut:
                                 ctx.log_cb(
                                     f"[Ingest Warning] Confirmed scene-cut detected at t={timestamp:.1f}s "
-                                    f"(corr: {corr:.3f}, inliers: {verified_matches} < 15). "
+                                    f"(corr: {corr:.3f}, inliers: {verified_matches} < 10). "
                                     f"Saved before/after preview -> cuts/{comp_name}"
                                 )
                             else:
+                                reason_desc = "dark frame/exposure swing during pan" if is_dark_pan else f"inliers ({verified_matches}) confirm continuity"
                                 ctx.log_cb(
                                     f"[Ingest] Scene-cut candidate at t={timestamp:.1f}s rejected (fast pan): "
-                                    f"verified inliers ({verified_matches} >= 15) confirm visual continuity."
+                                    f"{reason_desc}."
                                 )
 
                     prev_hist = hist
@@ -266,6 +285,10 @@ class IngestStage(Stage):
                 frame_idx += 1
 
             cap.release()
+            if cuts_dir.exists():
+                manifest_file = cuts_dir / "cuts_manifest.json"
+                with open(manifest_file, "w") as f:
+                    json.dump({"cuts": cuts, "files": [f.name for f in sorted(cuts_dir.glob("*.jpg"))]}, f, indent=2)
         except Exception as e:
             ctx.log_cb(f"[Ingest] Scene-cut analysis skipped ({e}).")
 

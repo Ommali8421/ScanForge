@@ -29,6 +29,7 @@ export const NewScan: React.FC<Props> = ({ capabilities, onJobCreated }) => {
   const [polyTarget, setPolyTarget] = useState<number>(200000);
   const [textureSize, setTextureSize] = useState<number>(4096);
   const [upAxis, setUpAxis] = useState<"y" | "z">("y");
+  const [minRegistrationRatio, setMinRegistrationRatio] = useState<number>(0.60);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,6 +50,7 @@ export const NewScan: React.FC<Props> = ({ capabilities, onJobCreated }) => {
         texture_size: textureSize,
         up_axis: upAxis,
         units: "m",
+        min_registration_ratio: minRegistrationRatio,
       };
 
       const res = await createJob(
@@ -204,6 +206,34 @@ export const NewScan: React.FC<Props> = ({ capabilities, onJobCreated }) => {
                     <option value="y">Y-Up (OpenGL / Three.js standard)</option>
                     <option value="z">Z-Up (Blender / Unreal standard)</option>
                   </select>
+                </div>
+
+                <div className="sm:col-span-2 border-t border-dark-border/60 pt-3 mt-1">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-dark-muted font-medium">
+                      Minimum Registration Ratio:
+                    </label>
+                    <span className="font-mono text-brand-400 font-bold text-xs">
+                      {(minRegistrationRatio * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.10"
+                    max="1.00"
+                    step="0.05"
+                    value={minRegistrationRatio}
+                    onChange={(e) => setMinRegistrationRatio(parseFloat(e.target.value))}
+                    className="w-full accent-brand-500 cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[10px] text-dark-muted mt-1">
+                    <span>10% (Permissive / Partial)</span>
+                    <span className="text-white font-medium">60% (Default Target)</span>
+                    <span>90% (Strict)</span>
+                  </div>
+                  <p className="text-[11px] text-dark-muted/80 mt-1.5">
+                    Reconstruction aborts with diagnostics if registered frames fall below this threshold. Set to 30% to accept partial models for low-texture or fast-panned rooms.
+                  </p>
                 </div>
               </div>
             </div>

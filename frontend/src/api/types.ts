@@ -10,6 +10,7 @@ export interface JobOptions {
   up_axis?: "y" | "z";
   units?: "m" | "cm" | "mm";
   mask_background?: boolean;
+  min_registration_ratio?: number;
 }
 
 export interface Artifact {
