@@ -73,6 +73,39 @@ class IngestStage(Stage):
                 f"{settings.SCANFORGE_MAX_VIDEO_SECONDS}s. Please trim your video to under 3 minutes."
             )
 
+        # Detect and log letterbox/pillarbox bars via ffmpeg cropdetect
+        orig_w = metadata.get("width")
+        orig_h = metadata.get("height")
+        crop_info = self._detect_crop(input_path, ctx)
+        crop_filter = None
+        if crop_info and orig_w and orig_h:
+            w, h, x, y = crop_info["w"], crop_info["h"], crop_info["x"], crop_info["y"]
+            if w < orig_w or h < orig_h:
+                top_bar = y
+                bottom_bar = orig_h - (h + y)
+                left_bar = x
+                right_bar = orig_w - (w + x)
+                ctx.log_cb(
+                    f"[Ingest] Auto-crop detected letterbox bars: {w}x{h} at x={x}, y={y} "
+                    f"(top={top_bar}px, bottom={bottom_bar}px, left={left_bar}px, right={right_bar}px). "
+                    f"Applying crop filter '{crop_info['crop_filter']}'."
+                )
+                crop_filter = crop_info["crop_filter"]
+                metadata["cropped"] = True
+                metadata["crop"] = {
+                    "w": w, "h": h, "x": x, "y": y,
+                    "top_bar": top_bar, "bottom_bar": bottom_bar,
+                    "left_bar": left_bar, "right_bar": right_bar,
+                    "filter": crop_filter
+                }
+                metadata["effective_width"] = w
+                metadata["effective_height"] = h
+            else:
+                ctx.log_cb(f"[Ingest] Cropdetect checked ({w}x{h}): full frame active (no letterbox bars).")
+                metadata["cropped"] = False
+        else:
+            metadata["cropped"] = False
+
         normalized_video = ctx.workdir / "normalized_input.mp4"
         ffmpeg_bin = resolve_ffmpeg()
         threads = str(get_configured_threads())
@@ -87,17 +120,18 @@ class IngestStage(Stage):
             "-an",  # Strip audio
         ]
 
+        # Build video filterchain
+        vf_filters = []
+        if crop_filter:
+            vf_filters.append(crop_filter)
+
         # Handle HDR / 10-bit tone mapping
         if metadata.get("is_hdr"):
             ctx.log_cb("[Ingest] Applying HDR/10-bit SDR tone-mapping to standard BT.709 color space...")
-            # Using tonemap and zscale filterchain
-            cmd.extend([
-                "-vf", "zscale=transfer=bt709:matrix=bt709,format=yuv420p"
-            ])
-        else:
-            cmd.extend([
-                "-vf", "format=yuv420p"
-            ])
+            vf_filters.append("zscale=transfer=bt709:matrix=bt709")
+
+        vf_filters.append("format=yuv420p")
+        cmd.extend(["-vf", ",".join(vf_filters)])
 
         cmd.extend([
             "-c:v", "libx264",
@@ -137,6 +171,41 @@ class IngestStage(Stage):
             output_files=output_files,
             metadata=metadata
         )
+
+    def _detect_crop(self, input_path: Path, ctx: JobContext) -> Optional[dict]:
+        """
+        Run ffmpeg cropdetect on first 2 seconds to check for letterbox/pillarbox bars.
+        Returns dict with w, h, x, y, crop_filter if cropping needed, else None.
+        """
+        ffmpeg_bin = resolve_ffmpeg()
+        threads = str(get_configured_threads())
+        cmd = [
+            ffmpeg_bin,
+            "-threads", threads,
+            "-i", str(input_path),
+            "-t", "2",
+            "-vf", "cropdetect=24:2:0",
+            "-f", "null",
+            "-"
+        ]
+        try:
+            res = ToolRunner.run(
+                cmd,
+                cwd=str(ctx.workdir),
+                log_callback=lambda line: None,  # don't spam live log with cropdetect frame lines
+                cancel_token=ctx.cancel_token,
+                timeout=30
+            )
+            combined_output = res.stdout if isinstance(res.stdout, str) else ""
+            import re
+            matches = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", combined_output)
+            if not matches:
+                return None
+            w, h, x, y = map(int, matches[-1])
+            return {"w": w, "h": h, "x": x, "y": y, "crop_filter": f"crop={w}:{h}:{x}:{y}"}
+        except Exception as e:
+            ctx.log_cb(f"[Ingest] Cropdetect check skipped ({e}).")
+            return None
 
     def _detect_scene_cuts(self, video_path: Path, ctx: JobContext) -> Tuple[List[dict], Optional[Path]]:
         """
@@ -210,17 +279,41 @@ class IngestStage(Stage):
                                     if inlier_mask is not None:
                                         verified_matches = int(np.sum(inlier_mask))
 
-                            # Dual validation: true cut only if both histogram change is large AND matches collapse,
-                            # AND neither frame is underexposed/dark (e.g. panning past a dark door/shadow),
-                            # AND both frames had adequate visual texture to establish correspondence.
-                            is_dark_pan = (mean_b_prev < 35.0 or mean_b_curr < 35.0)
-                            has_adequate_texture = (len(kp1) >= 20 and len(kp2) >= 20)
+                            # Multi-criteria validation:
+                            # 1. Blur check (Laplacian variance): motion blur during fast movement collapses matches
+                            blur_prev = float(cv2.Laplacian(gray_prev, cv2.CV_64F).var())
+                            blur_curr = float(cv2.Laplacian(gray_curr, cv2.CV_64F).var())
+                            is_motion_blur = (blur_prev < 25.0 or blur_curr < 25.0)
+
+                            # 2. Texture / keypoint sufficiency: featureless surfaces (blank walls, ceilings) have 0 matches
+                            has_adequate_texture = (len(kp1) >= 40 and len(kp2) >= 40)
+
+                            # 3. Sudden exposure swing check
+                            exposure_diff = abs(mean_b_curr - mean_b_prev)
+                            is_exposure_jump = (exposure_diff > 40.0)
+
+                            # Dual validation: true cut requires BOTH histogram collapse AND verified match collapse,
+                            # AND neither frame is motion-blurred,
+                            # AND neither frame is textureless (blank wall),
+                            # AND not explained by an exposure jump.
                             is_confirmed_cut = (
                                 (corr < 0.15)
-                                and (verified_matches < 10)
-                                and not is_dark_pan
+                                and (verified_matches < 8)
+                                and not is_motion_blur
                                 and has_adequate_texture
+                                and not is_exposure_jump
                             )
+
+                            if is_confirmed_cut:
+                                rejection_reason = "genuine_discontinuity"
+                            elif is_motion_blur:
+                                rejection_reason = f"motion_blur (blur: {blur_prev:.1f}, {blur_curr:.1f} < 25.0)"
+                            elif not has_adequate_texture:
+                                rejection_reason = f"low_texture_surface (kp: {len(kp1)}, {len(kp2)} < 40)"
+                            elif is_exposure_jump:
+                                rejection_reason = f"exposure_swing (|diff|: {exposure_diff:.1f} > 40.0)"
+                            else:
+                                rejection_reason = f"continuous_motion (inliers: {verified_matches})"
 
                             # Save before/after frames
                             before_name = f"cut_{cut_idx:02d}_f{prev_frame_idx}_before.jpg"
@@ -243,10 +336,10 @@ class IngestStage(Stage):
                             composite[50:50+h_p, 0:w_p] = prev_frame
                             composite[50:50+h_c, w_p:w_p+w_c] = frame
 
-                            verdict_text = "CONFIRMED CUT (DISCONTINUITY)" if is_confirmed_cut else "FALSE POSITIVE (FAST PAN / CONTINUOUS)"
+                            verdict_text = "CONFIRMED CUT (DISCONTINUITY)" if is_confirmed_cut else f"FALSE POSITIVE ({rejection_reason})"
                             verdict_color = (0, 0, 255) if is_confirmed_cut else (0, 255, 128)
-                            info_text = f"t={timestamp:.1f}s | Hist Corr: {corr:.3f} | RANSAC Inliers: {verified_matches} | {verdict_text}"
-                            cv2.putText(composite, info_text, (15, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.65, verdict_color, 2)
+                            info_text = f"t={timestamp:.1f}s | Corr: {corr:.3f} | Inliers: {verified_matches} | {verdict_text}"
+                            cv2.putText(composite, info_text, (15, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.55, verdict_color, 2)
                             cv2.imwrite(str(comp_path), composite)
 
                             cut_info = {
@@ -258,7 +351,7 @@ class IngestStage(Stage):
                                 "verified_feature_matches": verified_matches,
                                 "confirmed_cut": is_confirmed_cut,
                                 "verdict": "confirmed_cut" if is_confirmed_cut else "rejected_pan",
-                                "reason": "genuine_discontinuity" if is_confirmed_cut else ("dark_door_pan" if is_dark_pan else "continuous_motion"),
+                                "reason": rejection_reason,
                                 "before_file": before_name,
                                 "after_file": after_name,
                                 "comparison_file": comp_name
@@ -268,14 +361,12 @@ class IngestStage(Stage):
                             if is_confirmed_cut:
                                 ctx.log_cb(
                                     f"[Ingest Warning] Confirmed scene-cut detected at t={timestamp:.1f}s "
-                                    f"(corr: {corr:.3f}, inliers: {verified_matches} < 10). "
+                                    f"(corr: {corr:.3f}, inliers: {verified_matches} < 8, kp: {len(kp1)}/{len(kp2)}, blur: {blur_prev:.1f}/{blur_curr:.1f}). "
                                     f"Saved before/after preview -> cuts/{comp_name}"
                                 )
                             else:
-                                reason_desc = "dark frame/exposure swing during pan" if is_dark_pan else f"inliers ({verified_matches}) confirm continuity"
                                 ctx.log_cb(
-                                    f"[Ingest] Scene-cut candidate at t={timestamp:.1f}s rejected (fast pan): "
-                                    f"{reason_desc}."
+                                    f"[Ingest] Scene-cut candidate at t={timestamp:.1f}s rejected: {rejection_reason}."
                                 )
 
                     prev_hist = hist

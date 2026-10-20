@@ -29,6 +29,7 @@ export const NewScan: React.FC<Props> = ({ capabilities, onJobCreated }) => {
   const [polyTarget, setPolyTarget] = useState<number>(200000);
   const [textureSize, setTextureSize] = useState<number>(4096);
   const [upAxis, setUpAxis] = useState<"y" | "z">("y");
+  const [cameraModel, setCameraModel] = useState<string>("SIMPLE_RADIAL");
   const [minRegistrationRatio, setMinRegistrationRatio] = useState<number>(0.60);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -49,6 +50,7 @@ export const NewScan: React.FC<Props> = ({ capabilities, onJobCreated }) => {
         poly_target: polyTarget,
         texture_size: textureSize,
         up_axis: upAxis,
+        camera_model: cameraModel,
         units: "m",
         min_registration_ratio: minRegistrationRatio,
       };
@@ -205,6 +207,20 @@ export const NewScan: React.FC<Props> = ({ capabilities, onJobCreated }) => {
                   >
                     <option value="y">Y-Up (OpenGL / Three.js standard)</option>
                     <option value="z">Z-Up (Blender / Unreal standard)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-dark-muted mb-1.5 font-medium">Camera Model:</label>
+                  <select
+                    value={cameraModel}
+                    onChange={(e) => setCameraModel(e.target.value)}
+                    className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white focus:outline-none focus:border-brand-500 font-mono text-[11px]"
+                  >
+                    <option value="SIMPLE_RADIAL">SIMPLE_RADIAL (Default — 1 focal, 1 radial)</option>
+                    <option value="OPENCV">OPENCV (8 params — fx, fy, cx, cy, k1, k2, p1, p2)</option>
+                    <option value="RADIAL">RADIAL (1 focal, 2 radial)</option>
+                    <option value="PINHOLE">PINHOLE (fx, fy, cx, cy — no distortion)</option>
                   </select>
                 </div>
 
