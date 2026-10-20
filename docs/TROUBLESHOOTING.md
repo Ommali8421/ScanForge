@@ -54,3 +54,24 @@ Creating a wrapper script (e.g. `~/.local/bin/docker`) that invokes Windows `doc
 3. If `/usr/bin/docker` reports `No such file or directory`, **Docker Desktop is not running** or the WSL distro integration is disabled in Docker Desktop settings (*Settings -> Resources -> WSL Integration*). Launch Docker Desktop on Windows; the integration mount will appear automatically.
 4. Ensure `which docker` resolves strictly to `/usr/bin/docker`. If any wrapper was placed in `~/.local/bin/docker` or `~/bin/docker`, remove or back it up (`mv ~/.local/bin/docker ~/.local/bin/docker.wrapper.bak`).
 
+---
+
+## 5. Web UI Upload Error: "Network error during upload" (Nginx 502 Bad Gateway)
+
+**Symptom**: When attempting to upload a video or photo archive from the web UI (`/new`), the upload fails immediately or during transmission with the red banner error: `"Network error during upload"`.
+
+**Root Cause**:
+The frontend container uses Nginx to reverse-proxy `/api/*` requests to the `api` container (`http://api:8000`). By default, Nginx evaluates static upstream hostnames (`proxy_pass http://api:8000;`) only once at container startup. When the `api` container is restarted or recreated by Docker Compose, Docker assigns it a new internal IP address on the bridge network. Because Nginx retains the defunct IP in its internal cache, upstream connections fail with `502 Bad Gateway (111: Connection refused)`. The browser's `XMLHttpRequest` connection is reset/severed, triggering `xhr.onerror` which the UI surfaces as `"Network error during upload"`.
+
+**Resolution**:
+1. `frontend/nginx.conf` is configured with Docker's internal DNS resolver (`resolver 127.0.0.11 valid=10s ipv6=off;`) and dynamic upstream variable binding (`set $api_backend http://api:8000; proxy_pass $api_backend;`). This forces Nginx to periodically re-resolve the container IP.
+2. If encountering this in a modified environment, reload or restart the frontend container:
+   ```bash
+   docker compose restart frontend
+   ```
+3. Verify backend connectivity through the proxy:
+   ```bash
+   curl -i http://localhost:3000/api/health
+   ```
+
+
