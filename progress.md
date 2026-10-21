@@ -34,15 +34,16 @@
 | Nginx Reverse Proxy (Port 3000) | **VERIFIED** | Reverse-proxies UI (`/`) and API (`/api/`) with chunked transfer and disabled buffering. Configured with dynamic Docker DNS resolver (`127.0.0.11 valid=10s`) and dynamic upstream variable binding to prevent 502 Bad Gateway / Connection Refused on container recreations (`fa04d9e`). Tested with 43 MB video upload (`enhanced_interior_tour_1080p.mp4`). |
 | Artifact Generation & Download | **VERIFIED** | Validated download of generated `.ply`, `.png`, and `.json` outputs, including directory artifacts |
 | Scale Calibration Math | **VERIFIED** | Two consecutive calibrations tested, verifying cumulative scale factor `1.5 * 2.0 = 3.0` |
-| Backend Pytest Suite | **VERIFIED** | 19/19 tests passing in container (`test_sfm_diagnostic.py`, `test_portability.py`, `test_colmap_compat.py`) |
+| Backend Pytest Suite | **VERIFIED** | 45/45 tests passing in container (`test_sfm_diagnostic.py`, `test_portability.py`, `test_colmap_compat.py`, `test_ingest_crop_and_cuts.py`, `test_cancel_sfm.py`, `test_sfm_failure.py`, etc.) |
 | Dynamic VRAM Detection & Tiers | **VERIFIED** | Tested `SCANFORGE_VRAM_GB` override vs `nvidia-smi` total memory minus 0.5 GB safety margin; logs tier selection and source; preserves 2000 px COLMAP cap on 8 GB tier (`f1ec5ac`) |
-| Real Video Ingestion & Scene Cuts | **VERIFIED** | Probed duration, dimensions, normalized color, and detected scene transitions via HSV histogram correlation (detected 5 cuts in `bedroom_vid.mp4`, 0 in `house_test_30s.mp4`) |
+| Ingest Auto-Crop & Multi-Criteria Cut Filter | **VERIFIED** | Auto-detected letterbox bars (`cropdetect=24:2:0`); cropped 60px top/bottom bars on `enhanced_interior_tour_1080p.mp4` to 1080x1800 (`65a594e`). Multi-criteria cut validation rejected false cuts on textureless walls and exposure shifts while preserving real sequence cuts. |
 | Adaptive Keyframe Extraction | **VERIFIED** | Evaluated frames with Laplacian sharpness scoring, Farneback optical flow, and homography rotation check |
 | Low-Texture SIFT Filtering | **VERIFIED** | Automatic dropping of feature-starved frames before matching (`min_sift_keypoints=100`); dropped 11 featureless wall/ceiling frames in `bedroom_vid.mp4`, logged in `sfm_report.json` |
-| GPU COLMAP SfM (RTX 4060) | **VERIFIED** | Full GPU SIFT extraction, sequential + auto exhaustive matching, unconstrained Ceres BA. House clip: 92/99 registered (92.9%), 8,214 points, 0.662 px error in 159.6s. Mapper runtime 54.0s (no timeout, timeout is 1800s). |
+| GPU COLMAP SfM (RTX 4060) | **VERIFIED** | Full GPU SIFT extraction, sequential + auto exhaustive matching, unconstrained Ceres BA. Tested across reference clip (`house_test_30s.mp4`), indoor bedroom clip, and enhanced interior tour (`enhanced_interior_tour_1080p.mp4` with SIMPLE_RADIAL and OPENCV). |
 | 4-Panel Diagnostic Camera Trajectory | **VERIFIED** | `camera_path.png` generated with: (1) 3D camera trajectory colored by frame index, broken at gaps/jumps, equal axes, high-contrast points, (2) Side view (Z-Y / X-Z), (3) Consecutive distance ratio to median with jumps >5x flagged, (4) Per-frame SIFT keypoints, consecutive verified matches, and rotation-vs-translation metric |
 | COLMAP Multi-Version Adaptation | **VERIFIED** | Verified rename mapping against 3.9.1 and 3.13.0 help fixtures; hang protection via timeout without Ceres iteration caps; FAISS loop detection fallback (`59a4724`) |
-| OpenMVS Route A Mesh Pipeline | **UNVERIFIED** | Scheduled for Milestone P2c |
+| Native Docker Client Operation | **VERIFIED** | Executed in sequence via native Docker client (`/usr/bin/docker`): `make up-mock` (code 0), `make smoke` (code 0), `make up-gpu` (code 0, `gpu_available=True`). |
+| OpenMVS Route A Mesh Pipeline | **UNVERIFIED** | Milestone P2c plan written; execution stopped for user approval |
 | Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
@@ -62,56 +63,61 @@
 
 ---
 
-### Comparative Evaluation Matrix across Videos, Presets & Sampling Frequencies
+### Comparative Evaluation Matrix across Real Video Captures
 
-| Metric | Reference Clip (`house_test_30s.mp4`) | Bedroom Baseline (`bedroom_vid.mp4`) — Partial Model (0.30 Threshold) | Bedroom Filtered (Run 2) | Bedroom Unfiltered (Run 3) | Bedroom 4 fps Experiment (361 frames, overlap 20) | Bedroom 6 fps Experiment (542 frames, overlap 20) |
+| Metric | Reference Clip (`house_test_30s.mp4`) | Enhanced Tour — `SIMPLE_RADIAL` (`dde47794...`) | Enhanced Tour — `OPENCV` (`a31916f3...`) | Bedroom Baseline (`bedroom_vid.mp4`) | Bedroom 4 fps Exp. (`bac945fd...`) | Bedroom 6 fps Exp. (`5a1eeaa9...`) |
 |---|---|---|---|---|---|---|
-| **Job ID** | `bcaa88f4...` | `0d9060a5...` | `4179ece6...` | `65a6fc3e...` | `bac945fd...` | `5a1eeaa9...` |
-| **Duration / Res** | 30.0s, 478x850, 60 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps |
-| **Sampling Mode** | Adaptive (~3.3 fps) | Adaptive (2.0 fps) | Adaptive (2.0 fps) | Adaptive (2.0 fps) | Uniform 4.0 fps | Uniform 6.0 fps |
-| **Frames Extracted**| 99 | 180 | 180 | 180 | 361 | 542 |
-| **Low-Texture Drop**| 0 | 10 | 11 | 0 (Disabled) | 28 | 38 |
-| **Active Match Frames**| 99 | 170 | 169 | 180 | 333 | 504 |
-| **Cuts Validated** | 0 | 0 of 5 survived (all 5 rejected as continuous pans) | 5 candidates | 5 candidates | 0 confirmed | 0 confirmed |
-| **Sequential Reg.** | 68 / 99 | 12 / 170 | 12 / 169 | 12 / 180 | 45 / 333 (145 across 6 submodels) | 70 / 504 (312 across 10 submodels) |
-| **Exhaustive Reg.** | 92 / 99 | 72 / 170 | 61 / 169 | 64 / 180 | N/A (Sequential only) | N/A (Sequential only) |
-| **Final Registered**| **92 / 99 (92.9%)** | **72 / 180 (40.0%)** | **61 / 180 (33.9%)** | **64 / 180 (35.6%)** | **45 / 361 (12.5%)** | **70 / 542 (12.9%)** |
-| **Sparse 3D Points**| 8,214 | 8,872 | 7,444 | 8,431 | 5,618 | 14,649 |
-| **Reprojection Err** | 0.662 px | 0.542 px | 0.553 px | 0.546 px | 0.601 px | 0.585 px |
-| **Sub-models Found** | 2 (92, 2) | 1 (72) | 2 (61, 2) | 3 (64, 2, 2) | 6 (45, 27, 22, 22, 18, 11) | 10 (70, 50, 39, 34, 34, 24, 17, 17, 16, 11) |
-| **Trajectory Jumps** | 0 flagged | **0 flagged (7 gaps tracked)** | 6 flagged across gaps | 6 flagged across gaps | 0 flagged (consecutive checked) | 0 flagged (consecutive checked) |
-| **Status Badge** | Completed | Partial Model (40.0%) | Failed (<60%) | Failed (<60%) | Failed (<30%) | Partial Model (12.9%) |
-| **Mapper Runtime** | 54.0s | 127.9s | 150.8s | 176.7s | 260.2s | 507.2s |
-| **Total SfM Duration**| 159.6s | 266.7s | 345.1s | 377.9s | 315.4s | 583.3s |
+| **Duration / Raw Dim** | 30.0s, 478x850, 60 fps | 20.2s, 1080x1920 (portrait), 30 fps | 20.2s, 1080x1920 (portrait), 30 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps | 90.5s, 478x850, 30 fps |
+| **Auto-Crop Applied** | None (no bars) | `1080x1800:0:60` (60px top/bottom) | `1080x1800:0:60` (60px top/bottom) | None (no bars) | None (no bars) | None (no bars) |
+| **Camera Model** | `SIMPLE_RADIAL` | `SIMPLE_RADIAL` | `OPENCV` | `SIMPLE_RADIAL` | `SIMPLE_RADIAL` | `SIMPLE_RADIAL` |
+| **Frames Extracted** | 99 | 67 | 67 | 180 | 361 | 542 |
+| **Active Match Frames** | 99 | 67 | 67 | 170 | 333 | 504 |
+| **Largest Single Model** | **92 / 99 (92.9%)** | **67 / 67 (100.0%)** | **67 / 67 (100.0%)** | **72 / 170 (42.4%)** | **45 / 333 (13.5%)** | **70 / 504 (13.9%)** |
+| **Best Result (Exhaustive)** | 92 / 99 (92.9%) | 67 / 67 (100.0%) | 67 / 67 (100.0%) | 72 / 180 (40.0% total) | N/A (Sequential only) | N/A (Sequential only) |
+| **Sparse 3D Points** | 8,214 | 13,129 | 13,631 | 8,872 | 5,618 | 14,649 |
+| **Reprojection Error** | 0.662 px | 0.627 px | 0.607 px | 0.542 px | 0.601 px | 0.585 px |
+| **Sub-models Found** | 2 (92, 2) | 1 (67) | 1 (67, 2 discarded) | 1 (72) | 6 (45, 27, 22, 22, 18, 11) | 10 (70, 50, 39, 34, 34, 24, 17, 17, 16, 11) |
+| **Trajectory Jumps** | 0 flagged | 0 flagged (1 borderline) | 0 flagged (1 borderline) | 0 flagged (7 gaps tracked) | 0 flagged | 0 flagged |
+| **Peak VRAM / RAM** | 415 MB / ~400 MB | 1,151 MB / 652.8 MB | 1,175 MB / 462.2 MB | 527 MB / ~420 MB | 415 MB / ~430 MB | 527 MB / ~450 MB |
+| **Mapper Runtime** | 54.0s | 64.9s | 117.6s | 127.9s | 260.2s | 507.2s |
+| **Total SfM Duration** | 159.6s | 190.3s | 270.6s | 266.7s | 315.4s | 583.3s |
 
 ---
 
 ### Detailed Findings & Engineering Rationale
 
-1. **Scene Cut Dual-Validation & Rejection of False Positives**:
-   - The 5 candidate cuts detected on `bedroom_vid.mp4` (at timestamps ~24.0s, 24.5s, 66.5s, 87.0s, 89.0s) were investigated.
-   - Root cause: During a rapid camera pan past a dark doorway (t=23.5s to 25.0s), the frame brightness dropped abruptly (<30 mean pixel intensity), causing the HSV histogram correlation to drop sharply (`corr = 0.003` and `0.189`), while darkness and motion blur temporarily starved FAST/ORB features.
-   - Refined detector logic: Added dual validation requiring significant histogram change (`corr < 0.15`), verified RANSAC inlier collapse (`inliers < 10`), adequate illumination (`mean_brightness >= 35`), and sufficient texture (`keypoints >= 20`).
-   - Result: **0 of the 5 false positive cuts survived**. All 5 were properly classified as continuous motion past dark zones, preventing unnecessary sequence splitting. Before/after and comparison composite images are automatically saved to `cuts/` for visual verification on the job page.
+1. **Scene Cut Investigation & Frame Brightness Verification (`bedroom_vid.mp4`)**:
+   - The user noted frames at 23.5s, 24.0s, 24.5s, and 25.0s of `bedroom_vid.mp4` are bright (white wall, corner, bed, curtain), showing that the earlier "mean brightness < 30" explanation was contradictory.
+   - **Empirical Brightness Measurement (Original vs Normalized)**:
+     - $t=23.0\text{s}$ (f681): ORIGINAL mean = 107.12 | NORMALIZED mean = 107.14 ($\Delta = +0.02$)
+     - $t=23.5\text{s}$ (f695): ORIGINAL mean = 156.93 | NORMALIZED mean = 161.21 ($\Delta = +4.28$)
+     - $t=24.0\text{s}$ (f710): ORIGINAL mean = 162.98 | NORMALIZED mean = 162.40 ($\Delta = -0.58$)
+     - $t=24.5\text{s}$ (f725): ORIGINAL mean = 149.84 | NORMALIZED mean = 150.34 ($\Delta = +0.50$)
+     - $t=25.0\text{s}$ (f740): ORIGINAL mean = 139.34 | NORMALIZED mean = 137.52 ($\Delta = -1.81$)
+   - **Finding**: The normalized copy is **not darker** (deviations are within $\pm 0.5 - 4$ pixel values due to standard YUV-RGB color conversion). There is **no color range or tone-mapping ingest bug**.
+   - **True Root Cause of False Cut**: Frame 705 (mean brightness 161.21) transitions to Frame 720 (mean brightness 162.40), where the lens pans directly across a completely smooth, uniform, textureless white wall section. In Frame 720, ORB keypoints dropped to **0** and Laplacian blur variance dropped to **0.5**. Because zero features could be extracted from the uniform white surface, RANSAC matching produced zero inliers. The old detector mistakenly interpreted the zero inliers as a shot cut.
+   - **Refined Cut Detector Rule**: Completely eliminated the arbitrary `brightness >= 35` threshold. Cut confirmation now strictly requires:
+     1. Histogram divergence ($\text{corr} < 0.15$), **AND**
+     2. Feature-match collapse ($\text{inliers} < 8$), **AND**
+     3. Not explained by motion blur ($\text{blur\_variance} \ge 25.0$), **AND**
+     4. Not explained by blank/textureless frames ($\min(\text{kp}_a, \text{kp}_b) \ge 40$), **AND**
+     5. Not explained by abrupt exposure swing ($|\text{mean}_a - \text{mean}_b| \le 40.0$).
+   - On the new `enhanced_interior_tour_1080p.mp4` clip, 0 false cuts were detected.
 
-2. **Gap Separation vs. Camera Trajectory Jumps**:
-   - The previously reported "13.4x jump between frames 46 and 58" was an artifact of computing distances across an unmodelled gap of 11 unregistered frames.
-   - Fixed motion jump detector: Now strictly tests consecutive registered frames (`frame_b == frame_a + 1`). Unregistered stretches are tracked and reported separately as `registration_gaps` (e.g., "Registration gap: frames 22..47 missing (26 frames)").
-   - Borderline jumps (4x to 5x median step) are categorized separately as fast camera pans rather than discontinuities. Trajectory plot axes are explicitly labeled in "SfM units (arbitrary scale, not metres)".
+2. **Accurate Reporting of Sampling Experiment**:
+   - In photogrammetry, disconnected sub-models represent mutually disjoint coordinate systems and cannot be treated as a single reconstructed scene. Summing registered frame counts across disconnected sub-models is invalid.
+   - **Corrected Single Model Ratios**:
+     - 2.0 fps sequential: **12 / 170 (7.1%)** registered in largest single model (baseline).
+     - 4.0 fps sequential: **45 / 333 (13.5%)** registered in largest single model (split across 6 submodels).
+     - 6.0 fps sequential: **70 / 504 (13.9%)** registered in largest single model (split across 10 submodels).
+     - Best result remains 2.0 fps with exhaustive cross-matching: **72 / 180 (40.0%)** in a single connected model.
+   - Removed any "+483%" wording or claims of reconstruction gain from sub-model summation.
 
-3. **Low-Texture Filtering Accuracy**:
-   - Accurate reporting: Filtering low-texture frames on `bedroom_vid.mp4` resulted in a slight loss of registered frames (61 vs 64) and points (7,444 vs 8,431) while reducing SfM runtime from 377.9s to 345.1s. It is documented accurately as a performance-for-coverage tradeoff rather than "no quality loss".
-
-4. **Configurable Registration Threshold (`min_registration_ratio`)**:
-   - Added `min_registration_ratio` (default 0.60) in backend options, API, and frontend NewScan slider (10% to 100%).
-   - Partial models (`min_registration_ratio <= ratio < 0.60`) are accepted and highlighted with an amber "Partial Model" badge in the UI and `sfm_report.json`.
-   - Re-running `bedroom_vid.mp4` with `min_registration_ratio=0.30` yielded an accepted 72-frame partial model with 8,872 points, 0.542 px error, 0 jumps, and downloadable diagnostics.
-
-5. **Sampling Density Experiment (Uniform 4 fps vs 6 fps)**:
-   - Evaluated 4 fps (361 frames) and 6 fps (542 frames) with sequential overlap 20 on `bedroom_vid.mp4`.
-   - Increasing sampling density significantly improved sequential matching tracking: primary submodel registration increased from **12 frames (at 2 fps)** to **45 frames (at 4 fps, 3.75x)** and **70 frames (at 6 fps, 5.8x)**. Total registered frames across all submodels reached 145 frames (4 fps) and 312 frames (6 fps).
-   - However, sequential matching fragmented the walkthrough into **6 submodels (at 4 fps)** and **10 submodels (at 6 fps)** because rapid rotation sweeps past blank doors broke visual tracking without cross-loop matching.
-   - **Conclusion**: Sampling rate is a significant factor in consecutive frame tracking, but **not the sole root cause** of walkthrough fragmentation. Per user directive, the `low_texture_indoor` preset, adaptive sampler, and pre-flight check are deferred until after Milestone P2c.
+3. **Evaluation of `enhanced_interior_tour_1080p.mp4`**:
+   - Letterbox detection: `ffmpeg cropdetect=24:2:0` detected 60px black bars top and bottom. Auto-cropped from $1080\times 1920$ to $1080\times 1800$ (`crop=1080:1800:0:60`), removing black border artifacts during SIFT extraction.
+   - `SIMPLE_RADIAL`: Reached 67/67 (100%) registration in 1 sub-model with 13,129 points and 0.627 px reprojection error. Mapper runtime: 64.9s.
+   - `OPENCV`: Reached 67/67 (100%) registration in 1 sub-model with 13,631 points (+502 points) and 0.607 px reprojection error. Mapper runtime: 117.6s.
+   - Both runs demonstrated excellent convergence, peak VRAM well within 8 GB budget (~1.15 - 1.18 GB), and clean 4-panel camera trajectory plots. The clip is kept outside the git repository.
 
 ---
 
