@@ -36,10 +36,14 @@ env/
 data/
 uploads/
 storage/
+outputs/
 *.db
 *.sqlite3
 *.mp4
 *.mov
+*.glb
+*.ply
+*.obj
 
 # Environment variables
 .env
