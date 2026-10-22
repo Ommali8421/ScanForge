@@ -13,7 +13,7 @@
 | **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
 | **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121, Open3D 0.20.0, Trimesh 5.1.1) | **Done** | Verified via `doctor.py` in container & `e2e_smoke.py` |
 | **P2b** | Video ingest + adaptive frame extraction + interior-tuned COLMAP SfM (GPU) + 4-panel diagnostic trajectory plot + scene-cut detection + low-texture filtering + real test runs | **Done** | Verified on RTX 4060 GPU with 3 real video runs (`house_test_30s.mp4`, `bedroom_vid.mp4` with/without filter) |
-| **P2c** | OpenMVS Route A mesh (Densify, ReconstructMesh, Refine, Texture) + planar repair + floor align + scale calibrate | **Not Started** | **UNVERIFIED** — Stopped for user review after P2b |
+| **P2c** | Route A mesh: Phase 1 (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, GLB/PLY previews) + Phase 2 (cleanup, plane repair, decimation, TextureMesh) + Phase 3 (floor align, scale, exports) | **Phase 1 Done (VERIFIED)** | Phase 1 verified on RTX 4060 GPU with `house_test_30s.mp4` and `enhanced_interior_tour_1080p.mp4`. Phase 2/3 stopped for user review. |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
@@ -43,7 +43,8 @@
 | 4-Panel Diagnostic Camera Trajectory | **VERIFIED** | `camera_path.png` generated with: (1) 3D camera trajectory colored by frame index, broken at gaps/jumps, equal axes, high-contrast points, (2) Side view (Z-Y / X-Z), (3) Consecutive distance ratio to median with jumps >5x flagged, (4) Per-frame SIFT keypoints, consecutive verified matches, and rotation-vs-translation metric |
 | COLMAP Multi-Version Adaptation | **VERIFIED** | Verified rename mapping against 3.9.1 and 3.13.0 help fixtures; hang protection via timeout without Ceres iteration caps; FAISS loop detection fallback (`59a4724`) |
 | Native Docker Client Operation | **VERIFIED** | Executed in sequence via native Docker client (`/usr/bin/docker`): `make up-mock` (code 0), `make smoke` (code 0), `make up-gpu` (code 0, `gpu_available=True`). |
-| OpenMVS Route A Mesh Pipeline | **UNVERIFIED** | Milestone P2c plan written; execution stopped for user approval |
+| OpenMVS Phase 1 (Dense Cloud + Mesh + Preview) | **VERIFIED** | Verified on RTX 4060 GPU with real data (`house_test_30s.mp4`: 1.23M points, 368k faces; `enhanced_interior_tour_1080p.mp4`: 2.83M points, 783k faces). `dense_cloud.ply` and `raw_mesh.glb` registered and rendered in UI. |
+| OpenMVS Phase 2 & 3 (Post-Processing & Texture) | **UNVERIFIED** | Implementation plan updated with user requirements a-f; execution stopped for user review. |
 | Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
@@ -121,7 +122,45 @@
 
 ---
 
-## 4. Known Issues & Fixed Bugs
+## 4. Real Hardware Verification Results (Milestone P2c Phase 1)
+
+### Stack Verification Raw Output Summary
+All baseline suite checks were executed directly against the live environment:
+- **`make up-mock`**: Exited with code 0 (`SCANFORGE_ENGINE=mock COMPOSE_PROFILES=mock`, 7/7 containers healthy).
+- **`make smoke`**: Exited with code 0 (`scripts/e2e_smoke.py` through Nginx port 3000: 7 steps + 2 scale calibrations passed, 13 progress events received live).
+- **`make up-gpu`**: Exited with code 0 (`SCANFORGE_ENGINE=real COMPOSE_PROFILES=gpu`, 7/7 containers healthy, verified `/api/capabilities` reports `engine=real, gpu_available=True`).
+- **`make test-backend` (Pytest)**: **45 passed, 1 warning in 13.00s** (100% test pass rate in container).
+- **`doctor.py` on `worker-gpu`**:
+  - GPU: NVIDIA GeForce RTX 4060 Laptop GPU (7.6 GB VRAM free / 8.0 GB total)
+  - Tooling: FFmpeg 4.4.2 [OK], COLMAP 3.9.1 (CUDA enabled) [OK], OpenMVS v2.2.0 (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, TextureMesh) [OK]
+  - Python: PyTorch 2.5.1+cu121 (CUDA: True), Open3D 0.20.0 [OK], Trimesh 5.1.1 [OK]
+
+---
+
+### Comparative Evaluation Matrix across Real Video Captures (Phase 1)
+
+| Metric | Reference Clip (`house_test_30s.mp4`) | Enhanced Interior Tour (`enhanced_interior_tour_1080p.mp4`) |
+|---|---|---|
+| **Job ID** | `bcaa88f4-2ffa-4e56-998b-76c6f15dbf7d` | `dde47794-b416-4730-9b46-60aed5299c30` |
+| **Duration / Effective Res** | 30.0s, 478x850, 60 fps | 20.2s, 1080x1800 (auto-cropped), 30 fps |
+| **Cameras / Input Vertices** | 92 calibrated images / 8,214 vertices | 67 calibrated images / 13,129 vertices |
+| **InterfaceCOLMAP Runtime** | 0.03s (exported `scene.mvs`, 511.6 KB) | 0.57s (exported `scene.mvs`, 826.2 KB) |
+| **OpenMVS Working Resolution** | `resolution-level 0` (full 478x850) | `resolution-level 0` (full 1080x1800 on 8 GB RTX 4060) |
+| **OOM Retries Required** | 0 (completed attempt 1) | 0 (completed attempt 1) |
+| **RAM Guard Check** | Safe (8.1 GB available / 11.0 GB WSL host) | Safe (8.0 GB available / 11.0 GB WSL host) |
+| **Dense Point Cloud Count** | **1,229,171 spatial points** | **2,825,961 spatial points** |
+| **DensifyPointCloud Runtime** | 52.8s | 273.2s |
+| **Dense Cloud File Size** | 31.65 MB (`scene_dense.ply`) | 72.77 MB (`scene_dense.ply`) |
+| **Reconstructed Mesh Vertices** | **184,131 vertices** | **391,619 vertices** |
+| **Reconstructed Mesh Faces** | **368,255 faces** | **783,160 faces** |
+| **ReconstructMesh Runtime** | 10.0s | 53.5s |
+| **Total Phase 1 Runtime** | **63.4s** | **327.8s (~5.4 min)** |
+| **Web 3D Preview Export** | `raw_mesh.glb` (6.32 MB) | `raw_mesh.glb` (13.45 MB) |
+| **UI Viewer & Measurement** | Verified in `MeshViewer.tsx` via API | Verified in `MeshViewer.tsx` via API |
+
+---
+
+## 5. Known Issues & Fixed Bugs
 
 | Issue | Root Cause | Resolution | Commit Hash |
 |---|---|---|---|
@@ -138,7 +177,7 @@
 
 ---
 
-## 5. Architectural Decisions
+## 6. Architectural Decisions
 
 1. **Redis Pub/Sub for SSE Across Containers**:
    - Background workers run in separate containers (`worker-mock`, `worker-gpu`) from the web API (`api`).
@@ -165,10 +204,14 @@
 8. **Dynamic Docker DNS Resolution in Reverse Proxy**:
    - Standard Nginx caches upstream container IPs once at startup, which triggers `502 Bad Gateway` when backend containers are recreated by Docker Compose.
    - Configured Docker's internal DNS resolver (`127.0.0.11 valid=10s`) and dynamic proxying via variable (`set $api_backend http://api:8000; proxy_pass $api_backend;`) to ensure transparent IP re-resolution without UI upload errors.
+9. **SfM-Frame Texturing & Zero-Retexturing Calibration Seam (P2c)**:
+   - Mesh cleanup, plane repair, and quadric decimation all execute strictly in the original COLMAP/SfM coordinate frame.
+   - `TextureMesh` executes against the unmodified camera poses in `scene.mvs`.
+   - Floor leveling and metric scaling are applied as a post-texture similarity transform on vertex positions only, leaving UV texture coordinates intact.
 
 ---
 
-## 6. Environment Specifications
+## 7. Environment Specifications
 
 - **Remote Repository**: `https://github.com/Ommali8421/ScanForge.git` (Public, branch `main`).
 - **Host Machine**: Windows 11 Laptop, 15 GB RAM, NVIDIA GeForce RTX 4060 Laptop GPU (8 GB VRAM, Ada arch, compute capability 8.9).
@@ -181,21 +224,23 @@
 
 ---
 
-## 7. Next Steps (Immediate Steps for Milestone P2c)
+## 8. Next Steps (Immediate Steps for Milestone P2c Phase 2)
 
-*P2b completed and verified on real test video with RTX 4060 GPU. Awaiting user review before proceeding to Milestone P2c.*
+*Milestone P2c Phase 1 completed and verified on real RTX 4060 GPU with `house_test_30s.mp4` and `enhanced_interior_tour_1080p.mp4`. Stopped for user review before proceeding to Phase 2.*
 
-1. **User Review on Milestone P2b**: Present reconstruction report, side-by-side comparison tables, 4-panel camera trajectory plots, and verified logs from both test video runs.
-2. **Milestone P2c Planning (STOPPED UNTIL USER APPROVAL)**:
-   - OpenMVS dense point cloud reconstruction (`DensifyPointCloud` at resolution level 2, with auto-retry at resolution level 3 on OOM).
-   - Watertight tetrahedral Delaunay surface mesh reconstruction (`ReconstructMesh`).
-   - Mesh post-processing: non-manifold edge cleanup, RANSAC plane detection and hole repair (Open3D), floor leveling to Y=0, planarity-aware decimation.
-   - OpenMVS texture baking (`TextureMesh`) using undistorted cameras.
-   - Exporters to canonical formats (GLB, OBJ, PLY, STL, XYZ, FBX, USDZ).
+1. **User Review on Milestone P2c Phase 1**: Review dense point cloud and Delaunay mesh reconstructions (`raw_mesh.glb` and `dense_cloud.ply`) on real house and tour datasets.
+2. **Phase 2 Scope (Awaiting User Approval to Implement)**:
+   - `MeshCleanupStage`: Floater removal (<1% component filter) and non-manifold element resolution in SfM frame.
+   - `PlaneRepairStage`: Relative-threshold planar hole repair and ghost removal behind mirrors/windows in SfM frame.
+   - `DecimateStage`: Planarity-preserving `open3d.geometry.TriangleMesh.simplify_quadric_decimation(boundary_weight=1.0)` in SfM frame.
+   - `TextureMeshStage`: Run OpenMVS `TextureMesh` with original camera poses from `scene.mvs`.
+3. **Phase 3 Scope**:
+   - `FloorAlignAndScaleStage`: Similarity transform using mean camera up vector as gravity prior and finding dominant support plane just below camera centers (mirror-surface immunity).
+   - Format exporters (GLB, OBJ, PLY, STL, XYZ, FBX, USDZ) and uncalibrated unit quality reporting (`SfM units (uncalibrated)`).
 
 ---
 
-## 8. Session Resumption Guide
+## 9. Session Resumption Guide
 
 For any agent resuming work in this codebase:
 1. **Read this file (`progress.md`) first** to understand the current milestone state and recent bug fixes.

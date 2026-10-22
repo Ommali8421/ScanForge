@@ -1,21 +1,32 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { Eye, RotateCw, Crosshair } from "lucide-react";
 
 interface Props {
+  modelUrl?: string;
   onPointSelected?: (point: [number, number, number]) => void;
   measureMode?: boolean;
+  pointA?: [number, number, number] | null;
+  pointB?: [number, number, number] | null;
 }
 
-export const MeshViewer: React.FC<Props> = ({ onPointSelected, measureMode }) => {
-
+export const MeshViewer: React.FC<Props> = ({
+  modelUrl,
+  onPointSelected,
+  measureMode,
+  pointA,
+  pointB,
+}) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const [wireframe, setWireframe] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
+
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const meshGroupRef = useRef<THREE.Group | null>(null);
+  const markersGroupRef = useRef<THREE.Group | null>(null);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -28,9 +39,9 @@ export const MeshViewer: React.FC<Props> = ({ onPointSelected, measureMode }) =>
     // 2. Camera setup
     const width = mountRef.current.clientWidth;
     const height = mountRef.current.clientHeight;
-    const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
+    const camera = new THREE.PerspectiveCamera(50, width / height, 0.05, 1000);
     camera.position.set(4, 3, 5);
-    camera.lookAt(0, 1, 0);
+    camera.lookAt(0, 0, 0);
     cameraRef.current = camera;
 
     // 3. Renderer setup
@@ -41,14 +52,14 @@ export const MeshViewer: React.FC<Props> = ({ onPointSelected, measureMode }) =>
     rendererRef.current = renderer;
 
     // 4. Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
     scene.add(ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-    dirLight.position.set(5, 10, 7);
-    scene.add(dirLight);
+    const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.2);
+    dirLight1.position.set(5, 10, 7);
+    scene.add(dirLight1);
 
-    const dirLight2 = new THREE.DirectionalLight(0x60a5fa, 0.4);
+    const dirLight2 = new THREE.DirectionalLight(0x60a5fa, 0.5);
     dirLight2.position.set(-5, 5, -5);
     scene.add(dirLight2);
 
@@ -57,50 +68,92 @@ export const MeshViewer: React.FC<Props> = ({ onPointSelected, measureMode }) =>
     grid.position.y = 0;
     scene.add(grid);
 
-    // 6. Mesh group with procedural room geometry representation
+    // 6. Mesh group & Markers group
     const group = new THREE.Group();
     meshGroupRef.current = group;
-
-    // Room Box geometry (walls and floor)
-    const roomGeo = new THREE.BoxGeometry(4, 2.6, 5);
-    const roomMat = new THREE.MeshStandardMaterial({
-      color: 0x94a3b8,
-      side: THREE.BackSide,
-      roughness: 0.8,
-    });
-    const roomMesh = new THREE.Mesh(roomGeo, roomMat);
-    roomMesh.position.y = 1.3;
-    group.add(roomMesh);
-
-    // Table box
-    const tableGeo = new THREE.BoxGeometry(1.2, 0.75, 0.8);
-    const tableMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.5 });
-    const tableMesh = new THREE.Mesh(tableGeo, tableMat);
-    tableMesh.position.set(0, 0.375, 0);
-    group.add(tableMesh);
-
-    // Chair box
-    const chairGeo = new THREE.BoxGeometry(0.4, 0.45, 0.4);
-    const chairMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.6 });
-    const chairMesh = new THREE.Mesh(chairGeo, chairMat);
-    chairMesh.position.set(1.0, 0.225, 0.4);
-    group.add(chairMesh);
-
     scene.add(group);
 
-    // 7. Interactive orbit controls simulation
+    const markersGroup = new THREE.Group();
+    markersGroupRef.current = markersGroup;
+    scene.add(markersGroup);
+
+    // Spherical orbit controls state
     let isDragging = false;
     let prevMouse = { x: 0, y: 0 };
-    let spherical = { radius: 7, theta: 0.8, phi: 1.1 };
+    let spherical = { radius: 6, theta: 0.8, phi: 1.1 };
+    let target = new THREE.Vector3(0, 0, 0);
 
     const updateCameraPos = () => {
-      camera.position.x = spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
-      camera.position.y = spherical.radius * Math.cos(spherical.phi);
-      camera.position.z = spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
-      camera.lookAt(0, 1, 0);
+      camera.position.x = target.x + spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
+      camera.position.y = target.y + spherical.radius * Math.cos(spherical.phi);
+      camera.position.z = target.z + spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
+      camera.lookAt(target);
     };
     updateCameraPos();
 
+    // 7. Load real GLB model or fall back to procedural geometry
+    if (modelUrl) {
+      const loader = new GLTFLoader();
+      loader.load(
+        modelUrl,
+        (gltf) => {
+          // Clear procedural content
+          while (group.children.length > 0) {
+            group.remove(group.children[0]);
+          }
+
+          const model = gltf.scene;
+          const box = new THREE.Box3().setFromObject(model);
+          const center = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3());
+          const maxDim = Math.max(size.x, size.y, size.z) || 2.0;
+
+          // Center geometry
+          model.position.sub(center);
+          group.add(model);
+
+          spherical.radius = maxDim * 1.8;
+          target.set(0, 0, 0);
+          updateCameraPos();
+        },
+        undefined,
+        (err) => {
+          console.warn("[MeshViewer] GLTFLoader failed to load modelUrl:", err);
+          createProceduralFallback(group);
+        }
+      );
+    } else {
+      createProceduralFallback(group);
+    }
+
+    function createProceduralFallback(parentGroup: THREE.Group) {
+      // Room Box geometry (walls and floor)
+      const roomGeo = new THREE.BoxGeometry(4, 2.6, 5);
+      const roomMat = new THREE.MeshStandardMaterial({
+        color: 0x94a3b8,
+        side: THREE.BackSide,
+        roughness: 0.8,
+      });
+      const roomMesh = new THREE.Mesh(roomGeo, roomMat);
+      roomMesh.position.y = 1.3;
+      parentGroup.add(roomMesh);
+
+      // Table box
+      const tableGeo = new THREE.BoxGeometry(1.2, 0.75, 0.8);
+      const tableMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.5 });
+      const tableMesh = new THREE.Mesh(tableGeo, tableMat);
+      tableMesh.position.set(0, 0.375, 0);
+      parentGroup.add(tableMesh);
+
+      // Chair box
+      const chairGeo = new THREE.BoxGeometry(0.4, 0.45, 0.4);
+      const chairMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.6 });
+      const chairMesh = new THREE.Mesh(chairGeo, chairMat);
+      chairMesh.position.set(1.0, 0.225, 0.4);
+      parentGroup.add(chairMesh);
+    }
+
+    // 8. Interactive orbit controls
     const handleMouseDown = (e: MouseEvent) => {
       isDragging = true;
       prevMouse = { x: e.clientX, y: e.clientY };
@@ -122,7 +175,7 @@ export const MeshViewer: React.FC<Props> = ({ onPointSelected, measureMode }) =>
     };
 
     const handleWheel = (e: WheelEvent) => {
-      spherical.radius = Math.max(2, Math.min(15, spherical.radius + e.deltaY * 0.005));
+      spherical.radius = Math.max(0.5, Math.min(40, spherical.radius + e.deltaY * 0.005));
       updateCameraPos();
     };
 
@@ -187,7 +240,7 @@ export const MeshViewer: React.FC<Props> = ({ onPointSelected, measureMode }) =>
       }
       renderer.dispose();
     };
-  }, [autoRotate, onPointSelected]);
+  }, [modelUrl, autoRotate, onPointSelected]);
 
   // Update wireframe mode
   useEffect(() => {
@@ -202,6 +255,42 @@ export const MeshViewer: React.FC<Props> = ({ onPointSelected, measureMode }) =>
       }
     });
   }, [wireframe]);
+
+  // Update 3D marker spheres for Point A and Point B
+  useEffect(() => {
+    if (!markersGroupRef.current) return;
+    const group = markersGroupRef.current;
+    while (group.children.length > 0) {
+      group.remove(group.children[0]);
+    }
+
+    if (pointA) {
+      const geoA = new THREE.SphereGeometry(0.08, 16, 16);
+      const matA = new THREE.MeshBasicMaterial({ color: 0x10b981 }); // emerald
+      const sphereA = new THREE.Mesh(geoA, matA);
+      sphereA.position.set(pointA[0], pointA[1], pointA[2]);
+      group.add(sphereA);
+    }
+
+    if (pointB) {
+      const geoB = new THREE.SphereGeometry(0.08, 16, 16);
+      const matB = new THREE.MeshBasicMaterial({ color: 0x3b82f6 }); // blue
+      const sphereB = new THREE.Mesh(geoB, matB);
+      sphereB.position.set(pointB[0], pointB[1], pointB[2]);
+      group.add(sphereB);
+
+      if (pointA) {
+        const lineMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, linewidth: 2 });
+        const points = [
+          new THREE.Vector3(pointA[0], pointA[1], pointA[2]),
+          new THREE.Vector3(pointB[0], pointB[1], pointB[2]),
+        ];
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+        const line = new THREE.Line(lineGeo, lineMat);
+        group.add(line);
+      }
+    }
+  }, [pointA, pointB]);
 
   return (
     <div className="relative w-full h-[450px] bg-dark-bg rounded-2xl overflow-hidden border border-dark-border shadow-xl">

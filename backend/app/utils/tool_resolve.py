@@ -57,12 +57,13 @@ def resolve_colmap() -> str:
 
 
 def resolve_openmvs(bin_name: str) -> str:
-    """Resolve OpenMVS binary (e.g. DensifyPointCloud, ReconstructMesh, TextureMesh)."""
+    """Resolve OpenMVS binary (e.g. InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, TextureMesh)."""
     custom_dir = os.environ.get("SCANFORGE_OPENMVS_DIR")
     search_dirs = [custom_dir] if custom_dir else []
     search_dirs.extend([
-        "/usr/local/bin",
+        "/opt/openmvs/bin/OpenMVS",
         "/opt/openmvs/bin",
+        "/usr/local/bin",
         "/opt/openmvs",
         "/usr/bin"
     ])
@@ -236,3 +237,79 @@ def get_configured_threads() -> int:
     total_cores = os.cpu_count() or 2
     # Reserve at least 1 core for OS/driver, cap default worker threads at 4
     return max(1, min(4, total_cores - 1))
+
+
+def check_ram_guard(min_available_mb: int = 1500) -> Tuple[bool, float, float]:
+    """
+    RAM guard for WSL2 (11 GB limit).
+    Checks available memory in MB from /proc/meminfo or psutil.
+    Returns (is_safe, available_mb, total_mb).
+    Triggers garbage collection if available memory is below threshold.
+    """
+    import gc
+    gc.collect()
+    available_mb = 0.0
+    total_mb = 0.0
+    try:
+        meminfo = Path("/proc/meminfo")
+        if meminfo.exists():
+            with open(meminfo, "r") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        available_mb = float(line.split()[1]) / 1024.0
+                    elif line.startswith("MemTotal:"):
+                        total_mb = float(line.split()[1]) / 1024.0
+        else:
+            import psutil
+            vm = psutil.virtual_memory()
+            available_mb = vm.available / (1024 * 1024)
+            total_mb = vm.total / (1024 * 1024)
+    except Exception as e:
+        logger.debug(f"[RAM Guard] Could not read memory stats ({e})")
+        return (True, 4000.0, 11000.0)
+
+    is_safe = available_mb >= min_available_mb
+    if not is_safe:
+        logger.warning(
+            f"[RAM Guard] Low host memory: {available_mb:.1f} MB available (threshold: {min_available_mb} MB). "
+            f"Invoked gc.collect(). Total memory: {total_mb:.1f} MB."
+        )
+    return (is_safe, available_mb, total_mb)
+
+
+def determine_openmvs_resolution_level(
+    image_width: int,
+    image_height: int,
+    vram_gb: Optional[float] = None,
+    quality: str = "standard"
+) -> int:
+    """
+    OpenMVS working resolution determined from actual image size and VRAM tier (Requirement P2c.a).
+    478x850 house clip -> level 0.
+    ~1080x1800 tour -> level 0 on 8 GB if standard/high; level 1 if draft or VRAM < 6 GB.
+    Images > 2000px -> level 1 on 8 GB.
+    """
+    if vram_gb is None:
+        vram_gb = get_available_vram_gb()
+
+    max_dim = max(image_width, image_height)
+    quality_lower = quality.lower()
+
+    if max_dim <= 1000:
+        # Small video frames (e.g. 478x850 house clip) always run at full resolution
+        return 0
+
+    if max_dim <= 2000:
+        # 1080p / 1080x1800 portrait
+        if vram_gb >= 7.0 and quality_lower in ("high", "standard"):
+            return 0  # fits on 8 GB RTX 4060
+        return 1
+
+    # High resolution (> 2000px)
+    if vram_gb >= 12.0 and quality_lower == "high":
+        return 0
+    elif vram_gb >= 6.0:
+        return 1
+    else:
+        return 2
+

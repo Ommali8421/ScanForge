@@ -10,17 +10,29 @@ from app.config import settings
 
 
 def create_real_pipeline(scan_type: str) -> Pipeline:
-    """Build real GPU pipeline stages for milestone P2b."""
+    """Build real GPU pipeline stages for milestone P2c Phase 1."""
     from app.pipelines.common.ingest import IngestStage
     from app.pipelines.common.frame_extraction import FrameExtractionStage
     from app.pipelines.common.sfm_colmap import ColmapSfMStage
 
-    # P2b implements real Ingest -> FrameExtraction -> ColmapSfM
     stages = [
         IngestStage(),
         FrameExtractionStage(),
         ColmapSfMStage()
     ]
+
+    if scan_type == "photo":
+        from app.pipelines.photo.openmvs import (
+            OpenMVSInterfaceStage,
+            OpenMVSDensifyStage,
+            OpenMVSRMeshStage,
+        )
+        stages.extend([
+            OpenMVSInterfaceStage(),
+            OpenMVSDensifyStage(),
+            OpenMVSRMeshStage(),
+        ])
+
     return Pipeline(scan_type=scan_type, stages=stages)
 
 

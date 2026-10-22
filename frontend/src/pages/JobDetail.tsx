@@ -294,10 +294,19 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
             <span className="text-xs text-dark-muted">Click anywhere on geometry to pick scale points</span>
           </div>
 
-          <MeshViewer
-            onPointSelected={handlePointClick}
-            measureMode={true}
-          />
+          {(() => {
+            const modelArtifact = job?.artifacts?.find(a => a.filename === "raw_mesh.glb" || a.filename === "scanforge_room.glb" || a.filename.endsWith(".glb"));
+            const modelUrl = modelArtifact ? modelArtifact.download_url : undefined;
+            return (
+              <MeshViewer
+                modelUrl={modelUrl}
+                onPointSelected={handlePointClick}
+                measureMode={true}
+                pointA={pointA}
+                pointB={pointB}
+              />
+            );
+          })()}
 
           {/* Scale Calibration Tool */}
           <MeasureTool

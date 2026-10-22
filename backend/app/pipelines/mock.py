@@ -204,7 +204,9 @@ class MockDenseMVSStage(Stage):
         ctx.log_cb("[OpenMVS] Densifying point cloud at resolution-level 2 (fits 8 GB VRAM budget)...")
         time.sleep(0.3)
         ctx.log_cb("[OpenMVS] Point cloud densified: 1,420,500 3D spatial points.")
-        return StageResult(success=True)
+        dense_ply = ctx.workdir / "dense_cloud.ply"
+        generate_synthetic_splat_ply(dense_ply, num_points=1000, scale=ctx.cumulative_scale)
+        return StageResult(success=True, output_files=[dense_ply])
 
 
 class MockMeshReconstructStage(Stage):
@@ -215,7 +217,18 @@ class MockMeshReconstructStage(Stage):
         ctx.log_cb("[OpenMVS] Reconstructing watertight Delaunay tetrahedral mesh...")
         time.sleep(0.25)
         ctx.log_cb("[OpenMVS] Initial surface mesh generated: 380,000 faces.")
-        return StageResult(success=True)
+        raw_obj = ctx.workdir / "raw_mesh.obj"
+        generate_procedural_room_obj(raw_obj, scale=ctx.cumulative_scale)
+        raw_glb = ctx.workdir / "raw_mesh.glb"
+        try:
+            import trimesh
+            mesh = trimesh.load(str(raw_obj))
+            mesh.export(str(raw_glb))
+        except Exception:
+            with open(raw_glb, "wb") as f:
+                f.write(b"glTF" + b"\x00" * 1024)
+        return StageResult(success=True, output_files=[raw_glb])
+
 
 
 class MockMeshCleanupStage(Stage):
