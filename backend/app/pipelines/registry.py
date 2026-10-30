@@ -26,11 +26,13 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             OpenMVSInterfaceStage,
             OpenMVSDensifyStage,
             OpenMVSRMeshStage,
+            OpenMVSTextureStage,
         )
         stages.extend([
             OpenMVSInterfaceStage(),
             OpenMVSDensifyStage(),
             OpenMVSRMeshStage(),
+            OpenMVSTextureStage(),
         ])
 
     return Pipeline(scan_type=scan_type, stages=stages)

@@ -13,7 +13,7 @@
 | **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
 | **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121, Open3D 0.20.0, Trimesh 5.1.1) | **Done** | Verified via `doctor.py` in container & `e2e_smoke.py` |
 | **P2b** | Video ingest + adaptive frame extraction + interior-tuned COLMAP SfM (GPU) + 4-panel diagnostic trajectory plot + scene-cut detection + low-texture filtering + real test runs | **Done** | Verified on RTX 4060 GPU with 3 real video runs (`house_test_30s.mp4`, `bedroom_vid.mp4` with/without filter) |
-| **P2c** | Route A mesh: Phase 1 (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, GLB/PLY previews) + Phase 2 (cleanup, plane repair, decimation, TextureMesh) + Phase 3 (floor align, scale, exports) | **Phase 1 Done (VERIFIED)** | Phase 1 verified on RTX 4060 GPU with `house_test_30s.mp4` and `enhanced_interior_tour_1080p.mp4`. Phase 2/3 stopped for user review. |
+| **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (plane repair, floor align, decimate, scale) | **Phase 1 & 1b Done (VERIFIED)** | Phase 1b verified on RTX 4060 GPU with `house_test_30s.mp4` (Job `7d4c7704`) and `enhanced_interior_tour_1080p.mp4` (Job `f888dc62`). 4-view composite evidence saved in `outputs/`. Stopped for user review before Phase 2. |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
@@ -43,8 +43,8 @@
 | 4-Panel Diagnostic Camera Trajectory | **VERIFIED** | `camera_path.png` generated with: (1) 3D camera trajectory colored by frame index, broken at gaps/jumps, equal axes, high-contrast points, (2) Side view (Z-Y / X-Z), (3) Consecutive distance ratio to median with jumps >5x flagged, (4) Per-frame SIFT keypoints, consecutive verified matches, and rotation-vs-translation metric |
 | COLMAP Multi-Version Adaptation | **VERIFIED** | Verified rename mapping against 3.9.1 and 3.13.0 help fixtures; hang protection via timeout without Ceres iteration caps; FAISS loop detection fallback (`59a4724`) |
 | Native Docker Client Operation | **VERIFIED** | Executed in sequence via native Docker client (`/usr/bin/docker`): `make up-mock` (code 0), `make smoke` (code 0), `make up-gpu` (code 0, `gpu_available=True`). |
-| OpenMVS Phase 1 (Dense Cloud + Mesh + Preview) | **VERIFIED** | Verified on RTX 4060 GPU with real data (`house_test_30s.mp4`: 1.23M points, 368k faces; `enhanced_interior_tour_1080p.mp4`: 2.83M points, 783k faces). `dense_cloud.ply` and `raw_mesh.glb` registered and rendered in UI. |
-| OpenMVS Phase 2 & 3 (Post-Processing & Texture) | **UNVERIFIED** | Implementation plan updated with user requirements a-f; execution stopped for user review. |
+| OpenMVS Phase 1 & 1b (Dense Cloud + Mesh + UV Texture + Up-Alignment + Filtering) | **VERIFIED** | Verified on RTX 4060 GPU with real data (`house_test_30s.mp4`: 1.23M points, 176k clean mesh verts, UV textured GLB; `enhanced_interior_tour_1080p.mp4`: 2.88M points, 381k clean mesh verts, UV textured GLB). Camera up-vector alignment ($\bar{\mathbf{u}}$ to $+Y$), nearest-neighbor KDTree vertex colors, TextureMesh 4K UV atlas, long-edge/bbox garbage removal, and Three.js OrbitControls with multi-tab preview verified. |
+| OpenMVS Phase 2 & 3 (Plane Repair, Floor Align, Decimate, Exporters) | **UNVERIFIED** | Implementation plan ready; execution stopped for user review before Phase 2. |
 | Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
@@ -137,26 +137,37 @@ All baseline suite checks were executed directly against the live environment:
 
 ---
 
-### Comparative Evaluation Matrix across Real Video Captures (Phase 1)
+### Comparative Evaluation Matrix across Real Video Captures (Phase 1 & Phase 1b)
 
 | Metric | Reference Clip (`house_test_30s.mp4`) | Enhanced Interior Tour (`enhanced_interior_tour_1080p.mp4`) |
 |---|---|---|
-| **Job ID** | `bcaa88f4-2ffa-4e56-998b-76c6f15dbf7d` | `dde47794-b416-4730-9b46-60aed5299c30` |
-| **Duration / Effective Res** | 30.0s, 478x850, 60 fps | 20.2s, 1080x1800 (auto-cropped), 30 fps |
-| **Cameras / Input Vertices** | 92 calibrated images / 8,214 vertices | 67 calibrated images / 13,129 vertices |
-| **InterfaceCOLMAP Runtime** | 0.03s (exported `scene.mvs`, 511.6 KB) | 0.57s (exported `scene.mvs`, 826.2 KB) |
-| **OpenMVS Working Resolution** | `resolution-level 0` (full 478x850) | `resolution-level 0` (full 1080x1800 on 8 GB RTX 4060) |
-| **OOM Retries Required** | 0 (completed attempt 1) | 0 (completed attempt 1) |
-| **RAM Guard Check** | Safe (8.1 GB available / 11.0 GB WSL host) | Safe (8.0 GB available / 11.0 GB WSL host) |
-| **Dense Point Cloud Count** | **1,229,171 spatial points** | **2,825,961 spatial points** |
-| **DensifyPointCloud Runtime** | 52.8s | 273.2s |
-| **Dense Cloud File Size** | 31.65 MB (`scene_dense.ply`) | 72.77 MB (`scene_dense.ply`) |
-| **Reconstructed Mesh Vertices** | **184,131 vertices** | **391,619 vertices** |
-| **Reconstructed Mesh Faces** | **368,255 faces** | **783,160 faces** |
-| **ReconstructMesh Runtime** | 10.0s | 53.5s |
-| **Total Phase 1 Runtime** | **63.4s** | **327.8s (~5.4 min)** |
-| **Web 3D Preview Export** | `raw_mesh.glb` (6.32 MB) | `raw_mesh.glb` (13.45 MB) |
-| **UI Viewer & Measurement** | Verified in `MeshViewer.tsx` via API | Verified in `MeshViewer.tsx` via API |
+| **Phase 1b Job ID** | `7d4c7704-7fec-4bbc-9aa6-2950db1bbb4e` | `f888dc62-136d-40d7-b74a-5fe7823a27de` |
+| **Duration / Effective Res** | 30.0s, 478x850, 60 fps | 20.2s, 1080x1800 (auto-cropped 60px letterbox), 30 fps |
+| **Calibrated Cameras** | 92 calibrated images | 67 calibrated images |
+| **Camera Mean Up Vector ($\bar{\mathbf{u}}$)** | `[0.081, -0.985, -0.151]` | `[0.000, -1.000, -0.000]` |
+| **InterfaceCOLMAP Runtime** | 0.04s (`scene.mvs`, 511.6 KB) | 0.58s (`scene.mvs`, 841.1 KB) |
+| **OpenMVS Working Resolution** | `resolution-level 0` (478x850) | `resolution-level 0` (1080x1800 on 8 GB RTX 4060) |
+| **Dense Point Cloud Count** | **1,231,802 points** (31.72 MB) | **2,884,988 points** (74.29 MB) |
+| **DensifyPointCloud Runtime** | 53.1s | 275.4s (~4.6 min) |
+| **Raw Delaunay Vertices / Faces** | 180,086 verts / 360,037 faces | 384,861 verts / 769,677 faces |
+| **ReconstructMesh Runtime** | 8.1s (`--remove-spurious 20 -f 1 --smooth 2`) | 28.1s (`--remove-spurious 20 -f 1 --smooth 2`) |
+| **Long-Edge Spikes Dropped** | 7,355 faces ($> 6\times \text{median}$) | 17,544 faces ($> 6\times \text{median}$) |
+| **Out-of-Bounds Faces Dropped** | 5,885 faces (outside camera bbox) | 3,355 faces (outside camera bbox, removing thin outer sheet) |
+| **Cleaned Mesh Vertices / Faces** | **176,431 verts / 347,043 faces (kept 96.4%)** | **381,041 verts / 750,062 faces (kept 97.5%)** |
+| **Nearest-Neighbor Color Transfer** | KDTree from 1.23M dense points to vertices | KDTree from 2.88M dense points to vertices |
+| **TextureMesh Atlas & Runtime** | 4096x4096 atlas (`scene_textured.png`), 41.2s | 4096x4096 atlas (`scene_textured.png`), 184.2s (3.1 min) |
+| **Oriented Previews (up = +Y)** | `preview_mesh.glb` (6.66 MB), `preview_textured.glb` (19.66 MB), `preview_cloud.ply` (59.91 MB) | `preview_mesh.glb` (14.28 MB), `preview_textured.glb` (42.17 MB), `preview_cloud.ply` (140.32 MB) |
+| **Offscreen Visual Evidence** | `outputs/house_dense_4views.png`, `outputs/house_textured_4views.png` | `outputs/tour_dense_4views.png`, `outputs/tour_textured_4views.png` |
+| **Three.js UI Viewer Enhancements** | OrbitControls, Zoom (+/-), Reset View, Multi-Tab Switcher | OrbitControls, Zoom (+/-), Reset View, Multi-Tab Switcher |
+
+---
+
+### Investigation of Vertex Count Discrepancy (App served 399,209 vs reported 391,619)
+
+- **Finding**: In Milestone P2c Phase 1, job `dde47794-b416-4730-9b46-60aed5299c30` was submitted via CLI script with 67 extracted frames, generating `raw_mesh.glb` with **391,619 vertices**. Subsequently, the user uploaded the tour video directly through the web UI creating job `b8367aa4-0fd4-4a92-9b8d-ac7d343d809f`.
+- In job `b8367aa4`, COLMAP registered frames with slightly different feature keypoint densities, producing **399,209 vertices** in `raw_mesh.glb`.
+- Because the frontend always queries `/api/jobs` sorted by `created_at DESC` and selects the most recent completed job, the web UI served the artifacts from job `b8367aa4` (399,209 vertices) rather than the earlier job `dde47794` (391,619 vertices).
+- With the Phase 1b automated garbage filtering and spike removal implemented, the raw mesh from ReconstructMesh (384,861 vertices / 769,677 faces) is cleanly pruned of 17,544 spikes and 3,355 out-of-bounds spurious faces, resulting in exactly **381,041 vertices / 750,062 faces** in the clean oriented `preview_mesh.glb`.
 
 ---
 
@@ -174,6 +185,10 @@ All baseline suite checks were executed directly against the live environment:
 | Mock worker RQ task import failure | `worker-mock` container crashed on task execution with `ValueError: Invalid attribute name: run_pipeline_task` due to missing `app.queue.__init__.py` and eager top-level imports in `registry.py` importing `cv2` in the slim mock container. | Created `app/queue/__init__.py` and changed `create_real_pipeline` in `registry.py` to lazily import real pipeline stages (`IngestStage`, `FrameExtractionStage`, `ColmapSfMStage`). | *Verified* |
 | Directory artifact registration | Exporter stage outputs directories (`submodels/`) which failed file-based size check during artifact registration. | Updated `job_runner.py` to calculate directory tree size and skip sha256 for directory artifacts. | `e175f65` |
 | Model analyzer output parsing | COLMAP 3.9.1 `model_analyzer` prefixes log lines with glog timestamp strings containing colons (e.g. `I1019 10:26:33.756991 924 model.cc:434]`). | Implemented robust regex extractors for `Mean track length`, `Mean observations per image`, and `Mean points per image`. | `fda7f98` |
+| Raw preview meshes uncolored and tilted | OpenMVS `ReconstructMesh` creates raw geometry without textures or vertex colors, leaving output in raw COLMAP camera coordinate system (upside-down). | Implemented Rodrigues alignment matrix rotating mean camera up vector ($\bar{\mathbf{u}} = \frac{1}{N}\sum \mathbf{R}_i^\top [0, -1, 0]^\top$) to $+Y$; transferred dense cloud RGB colors via KDTree nearest-neighbor search (`cKDTree`); added OpenMVS `TextureMesh` to pipeline emitting 4K UV texture atlas (`scene_textured.png`) and oriented textured GLB. | *Verified (Phase 1b)* |
+| Obvious spikes and spurious sheets outside room | OpenMVS Delaunay mesher constructs tetrahedra across empty space and distant background points. | Enabled OpenMVS surface tuning (`--remove-spurious 20 --remove-spikes 1 --close-holes 30 --smooth 2 -f 1`); added vectorized triangle filtering dropping faces with edge lengths $> 6\times \text{median}$ and dropping faces outside camera trajectory bounding box with minimum span margin. | *Verified (Phase 1b)* |
+| Planar trajectory bounding box clipping | In horizontal corridor or tripod videos (like synthetic tour), vertical camera span $\Delta Y \approx 0.02$ m; an unscaled percentage margin clipped ceiling and floor. | Set bounding box margin to `np.maximum(1.2 * cam_span, max(0.4 * max_span, 2.5))`, ensuring at least 2.5m vertical clearance for interior walls, floors, and ceilings. | *Verified (Phase 1b)* |
+| Web viewer zoom/pan and scroll hijacking | Custom spherical mouse listener lacked `e.preventDefault()`, broke page scrolling, had no camera panning, and clamped phi to $87^\circ$. | Replaced with standard Three.js `OrbitControls` with smooth damping, scroll zoom, right-click pan, explicit toolbar buttons (+/- zoom, reset view), and multi-tab switcher for Textured Mesh, Dense Cloud (PLY), and Raw Geometry (GLB). | *Verified (Phase 1b)* |
 
 ---
 

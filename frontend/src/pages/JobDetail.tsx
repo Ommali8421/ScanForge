@@ -46,6 +46,9 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
   const [pointA, setPointA] = useState<[number, number, number] | null>(null);
   const [pointB, setPointB] = useState<[number, number, number] | null>(null);
 
+  // Active 3D preview selection
+  const [previewTab, setPreviewTab] = useState<"textured" | "dense" | "mesh">("textured");
+
   // SSE event stream
   const eventState = useJobEvents(jobId);
 
@@ -289,14 +292,76 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
       {/* 3D Interactive Viewer when completed */}
       {currentStatus === "completed" && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-white">Interactive 3D Geometry Preview</h3>
-            <span className="text-xs text-dark-muted">Click anywhere on geometry to pick scale points</span>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-white">Interactive 3D Preview</h3>
+              <p className="text-xs text-dark-muted">Click anywhere on geometry to pick scale points</p>
+            </div>
+
+            {/* Preview Model Mode Switcher */}
+            <div className="flex items-center space-x-1 bg-dark-card p-1 rounded-xl border border-dark-border text-xs">
+              <button
+                onClick={() => setPreviewTab("textured")}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
+                  previewTab === "textured" ? "bg-brand-600 text-white shadow-sm" : "text-dark-muted hover:text-white"
+                }`}
+              >
+                Textured Mesh
+              </button>
+              <button
+                onClick={() => setPreviewTab("dense")}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
+                  previewTab === "dense" ? "bg-brand-600 text-white shadow-sm" : "text-dark-muted hover:text-white"
+                }`}
+              >
+                Dense Cloud (PLY)
+              </button>
+              <button
+                onClick={() => setPreviewTab("mesh")}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
+                  previewTab === "mesh" ? "bg-brand-600 text-white shadow-sm" : "text-dark-muted hover:text-white"
+                }`}
+              >
+                Raw Geometry (GLB)
+              </button>
+            </div>
           </div>
 
           {(() => {
-            const modelArtifact = job?.artifacts?.find(a => a.filename === "raw_mesh.glb" || a.filename === "scanforge_room.glb" || a.filename.endsWith(".glb"));
-            const modelUrl = modelArtifact ? modelArtifact.download_url : undefined;
+            let targetArtifact: Artifact | undefined;
+            let displayLabel = "raw, uncalibrated (SfM units)";
+
+            if (previewTab === "textured") {
+              targetArtifact = job?.artifacts?.find(a =>
+                a.filename === "preview_textured.glb" ||
+                a.filename === "scene_textured.glb" ||
+                a.filename === "scene_dense_mesh_texture.glb"
+              );
+              displayLabel = "Textured Mesh (raw, uncalibrated SfM units)";
+            } else if (previewTab === "dense") {
+              targetArtifact = job?.artifacts?.find(a =>
+                a.filename === "preview_cloud.ply" ||
+                a.filename === "dense_cloud.ply" ||
+                a.filename === "scene_dense.ply"
+              );
+              displayLabel = "Dense Point Cloud (raw, uncalibrated SfM units)";
+            } else {
+              targetArtifact = job?.artifacts?.find(a =>
+                a.filename === "preview_mesh.glb" ||
+                a.filename === "raw_mesh.glb" ||
+                a.filename === "scene_dense_mesh.ply"
+              );
+              displayLabel = "Raw Delaunay Mesh (raw, uncalibrated SfM units)";
+            }
+
+            // Fallback if specific tab artifact not found
+            if (!targetArtifact) {
+              targetArtifact = job?.artifacts?.find(a =>
+                a.filename.endsWith(".glb") || a.filename.endsWith(".ply")
+              );
+            }
+
+            const modelUrl = targetArtifact ? targetArtifact.download_url : undefined;
             return (
               <MeshViewer
                 modelUrl={modelUrl}
@@ -304,6 +369,7 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
                 measureMode={true}
                 pointA={pointA}
                 pointB={pointB}
+                label={displayLabel}
               />
             );
           })()}

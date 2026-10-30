@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { Eye, RotateCw, Crosshair } from "lucide-react";
+import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { Eye, RotateCw, Crosshair, ZoomIn, ZoomOut, RefreshCw } from "lucide-react";
 
 interface Props {
   modelUrl?: string;
@@ -9,6 +11,7 @@ interface Props {
   measureMode?: boolean;
   pointA?: [number, number, number] | null;
   pointB?: [number, number, number] | null;
+  label?: string;
 }
 
 export const MeshViewer: React.FC<Props> = ({
@@ -17,16 +20,22 @@ export const MeshViewer: React.FC<Props> = ({
   measureMode,
   pointA,
   pointB,
+  label = "raw, uncalibrated (SfM units)"
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const [wireframe, setWireframe] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
+  const [loadingModel, setLoadingModel] = useState(false);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
   const meshGroupRef = useRef<THREE.Group | null>(null);
   const markersGroupRef = useRef<THREE.Group | null>(null);
+
+  const initialCamPos = useRef<THREE.Vector3>(new THREE.Vector3(0, 2, 5));
+  const initialTarget = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -40,8 +49,7 @@ export const MeshViewer: React.FC<Props> = ({
     const width = mountRef.current.clientWidth;
     const height = mountRef.current.clientHeight;
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.05, 1000);
-    camera.position.set(4, 3, 5);
-    camera.lookAt(0, 0, 0);
+    camera.position.copy(initialCamPos.current);
     cameraRef.current = camera;
 
     // 3. Renderer setup
@@ -51,24 +59,33 @@ export const MeshViewer: React.FC<Props> = ({
     mountRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    // 4. Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+    // 4. Orbit Controls (Smooth orbit, pan, and zoom)
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.screenSpacePanning = true;
+    controls.minDistance = 0.1;
+    controls.maxDistance = 200;
+    controlsRef.current = controls;
+
+    // 5. Lights
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
     scene.add(ambientLight);
 
     const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.2);
-    dirLight1.position.set(5, 10, 7);
+    dirLight1.position.set(5, 12, 7);
     scene.add(dirLight1);
 
-    const dirLight2 = new THREE.DirectionalLight(0x60a5fa, 0.5);
-    dirLight2.position.set(-5, 5, -5);
+    const dirLight2 = new THREE.DirectionalLight(0x93c5fd, 0.6);
+    dirLight2.position.set(-5, 6, -5);
     scene.add(dirLight2);
 
-    // 5. Grid Helper
+    // 6. Subtle Floor Grid
     const grid = new THREE.GridHelper(10, 20, 0x3b82f6, 0x1e293b);
     grid.position.y = 0;
     scene.add(grid);
 
-    // 6. Mesh group & Markers group
+    // 7. Groups
     const group = new THREE.Group();
     meshGroupRef.current = group;
     scene.add(group);
@@ -77,57 +94,109 @@ export const MeshViewer: React.FC<Props> = ({
     markersGroupRef.current = markersGroup;
     scene.add(markersGroup);
 
-    // Spherical orbit controls state
-    let isDragging = false;
-    let prevMouse = { x: 0, y: 0 };
-    let spherical = { radius: 6, theta: 0.8, phi: 1.1 };
-    let target = new THREE.Vector3(0, 0, 0);
-
-    const updateCameraPos = () => {
-      camera.position.x = target.x + spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
-      camera.position.y = target.y + spherical.radius * Math.cos(spherical.phi);
-      camera.position.z = target.z + spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
-      camera.lookAt(target);
-    };
-    updateCameraPos();
-
-    // 7. Load real GLB model or fall back to procedural geometry
+    // 8. Load Model
     if (modelUrl) {
-      const loader = new GLTFLoader();
-      loader.load(
-        modelUrl,
-        (gltf) => {
-          // Clear procedural content
-          while (group.children.length > 0) {
-            group.remove(group.children[0]);
+      setLoadingModel(true);
+      const isPly = modelUrl.toLowerCase().endsWith(".ply");
+
+      if (isPly) {
+        const plyLoader = new PLYLoader();
+        plyLoader.load(
+          modelUrl,
+          (geometry) => {
+            while (group.children.length > 0) {
+              group.remove(group.children[0]);
+            }
+            geometry.computeVertexNormals();
+            geometry.computeBoundingBox();
+
+            const bbox = geometry.boundingBox || new THREE.Box3();
+            const size = bbox.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z) || 2.0;
+
+            geometry.center();
+
+            const hasVertexColors = geometry.hasAttribute("color");
+            let pcdObject: THREE.Object3D;
+
+            if (geometry.index !== null) {
+              // Surface Mesh PLY
+              const mat = new THREE.MeshStandardMaterial({
+                vertexColors: hasVertexColors,
+                color: hasVertexColors ? 0xffffff : 0x94a3b8,
+                roughness: 0.6,
+                metalness: 0.1,
+                side: THREE.DoubleSide,
+              });
+              pcdObject = new THREE.Mesh(geometry, mat);
+            } else {
+              // Point Cloud PLY
+              const pcdMat = new THREE.PointsMaterial({
+                size: Math.max(0.015, maxDim * 0.005),
+                vertexColors: hasVertexColors,
+                color: hasVertexColors ? 0xffffff : 0x38bdf8,
+              });
+              pcdObject = new THREE.Points(geometry, pcdMat);
+            }
+
+            group.add(pcdObject);
+
+            const dist = maxDim * 1.6;
+            camera.position.set(dist * 0.7, dist * 0.6, dist * 0.8);
+            controls.target.set(0, 0, 0);
+            controls.update();
+
+            initialCamPos.current.copy(camera.position);
+            initialTarget.current.set(0, 0, 0);
+            setLoadingModel(false);
+          },
+          undefined,
+          (err) => {
+            console.warn("[MeshViewer] PLYLoader failed:", err);
+            createProceduralFallback(group);
+            setLoadingModel(false);
           }
+        );
+      } else {
+        const gltfLoader = new GLTFLoader();
+        gltfLoader.load(
+          modelUrl,
+          (gltf) => {
+            while (group.children.length > 0) {
+              group.remove(group.children[0]);
+            }
+            const model = gltf.scene;
+            const box = new THREE.Box3().setFromObject(model);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z) || 2.0;
 
-          const model = gltf.scene;
-          const box = new THREE.Box3().setFromObject(model);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
-          const maxDim = Math.max(size.x, size.y, size.z) || 2.0;
+            // Center geometry
+            model.position.sub(center);
+            group.add(model);
 
-          // Center geometry
-          model.position.sub(center);
-          group.add(model);
+            const dist = maxDim * 1.6;
+            camera.position.set(dist * 0.7, dist * 0.6, dist * 0.8);
+            controls.target.set(0, 0, 0);
+            controls.update();
 
-          spherical.radius = maxDim * 1.8;
-          target.set(0, 0, 0);
-          updateCameraPos();
-        },
-        undefined,
-        (err) => {
-          console.warn("[MeshViewer] GLTFLoader failed to load modelUrl:", err);
-          createProceduralFallback(group);
-        }
-      );
+            initialCamPos.current.copy(camera.position);
+            initialTarget.current.set(0, 0, 0);
+            setLoadingModel(false);
+          },
+          undefined,
+          (err) => {
+            console.warn("[MeshViewer] GLTFLoader failed:", err);
+            createProceduralFallback(group);
+            setLoadingModel(false);
+          }
+        );
+      }
     } else {
       createProceduralFallback(group);
     }
 
     function createProceduralFallback(parentGroup: THREE.Group) {
-      // Room Box geometry (walls and floor)
       const roomGeo = new THREE.BoxGeometry(4, 2.6, 5);
       const roomMat = new THREE.MeshStandardMaterial({
         color: 0x94a3b8,
@@ -137,61 +206,15 @@ export const MeshViewer: React.FC<Props> = ({
       const roomMesh = new THREE.Mesh(roomGeo, roomMat);
       roomMesh.position.y = 1.3;
       parentGroup.add(roomMesh);
-
-      // Table box
-      const tableGeo = new THREE.BoxGeometry(1.2, 0.75, 0.8);
-      const tableMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.5 });
-      const tableMesh = new THREE.Mesh(tableGeo, tableMat);
-      tableMesh.position.set(0, 0.375, 0);
-      parentGroup.add(tableMesh);
-
-      // Chair box
-      const chairGeo = new THREE.BoxGeometry(0.4, 0.45, 0.4);
-      const chairMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.6 });
-      const chairMesh = new THREE.Mesh(chairGeo, chairMat);
-      chairMesh.position.set(1.0, 0.225, 0.4);
-      parentGroup.add(chairMesh);
     }
 
-    // 8. Interactive orbit controls
-    const handleMouseDown = (e: MouseEvent) => {
-      isDragging = true;
-      prevMouse = { x: e.clientX, y: e.clientY };
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging) return;
-      const dx = e.clientX - prevMouse.x;
-      const dy = e.clientY - prevMouse.y;
-      prevMouse = { x: e.clientX, y: e.clientY };
-
-      spherical.theta -= dx * 0.008;
-      spherical.phi = Math.max(0.1, Math.min(Math.PI / 2 - 0.05, spherical.phi - dy * 0.008));
-      updateCameraPos();
-    };
-
-    const handleMouseUp = () => {
-      isDragging = false;
-    };
-
-    const handleWheel = (e: WheelEvent) => {
-      spherical.radius = Math.max(0.5, Math.min(40, spherical.radius + e.deltaY * 0.005));
-      updateCameraPos();
-    };
-
-    const dom = renderer.domElement;
-    dom.addEventListener("mousedown", handleMouseDown);
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    dom.addEventListener("wheel", handleWheel);
-
-    // Raycasting for point picking
+    // 9. Raycasting for point selection
     const raycaster = new THREE.Raycaster();
     const mouseCoord = new THREE.Vector2();
 
     const handleClick = (e: MouseEvent) => {
       if (!onPointSelected) return;
-      const rect = dom.getBoundingClientRect();
+      const rect = renderer.domElement.getBoundingClientRect();
       mouseCoord.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouseCoord.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
@@ -202,9 +225,9 @@ export const MeshViewer: React.FC<Props> = ({
         onPointSelected([parseFloat(pt.x.toFixed(3)), parseFloat(pt.y.toFixed(3)), parseFloat(pt.z.toFixed(3))]);
       }
     };
-    dom.addEventListener("click", handleClick);
+    renderer.domElement.addEventListener("click", handleClick);
 
-    // Resize handler
+    // 10. Resize handler
     const handleResize = () => {
       if (!mountRef.current) return;
       const w = mountRef.current.clientWidth;
@@ -215,32 +238,28 @@ export const MeshViewer: React.FC<Props> = ({
     };
     window.addEventListener("resize", handleResize);
 
-    // Animation loop
+    // 11. Animation Loop
     let animId: number;
     const animate = () => {
       animId = requestAnimationFrame(animate);
-      if (autoRotate) {
-        spherical.theta += 0.003;
-        updateCameraPos();
-      }
+      controls.autoRotate = autoRotate;
+      controls.autoRotateSpeed = 2.0;
+      controls.update();
       renderer.render(scene, camera);
     };
     animate();
 
     return () => {
       cancelAnimationFrame(animId);
-      dom.removeEventListener("mousedown", handleMouseDown);
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-      dom.removeEventListener("wheel", handleWheel);
-      dom.removeEventListener("click", handleClick);
+      renderer.domElement.removeEventListener("click", handleClick);
       window.removeEventListener("resize", handleResize);
-      if (dom.parentElement) {
-        dom.parentElement.removeChild(dom);
+      controls.dispose();
+      if (renderer.domElement.parentElement) {
+        renderer.domElement.parentElement.removeChild(renderer.domElement);
       }
       renderer.dispose();
     };
-  }, [modelUrl, autoRotate, onPointSelected]);
+  }, [modelUrl, onPointSelected]);
 
   // Update wireframe mode
   useEffect(() => {
@@ -266,7 +285,7 @@ export const MeshViewer: React.FC<Props> = ({
 
     if (pointA) {
       const geoA = new THREE.SphereGeometry(0.08, 16, 16);
-      const matA = new THREE.MeshBasicMaterial({ color: 0x10b981 }); // emerald
+      const matA = new THREE.MeshBasicMaterial({ color: 0x10b981 });
       const sphereA = new THREE.Mesh(geoA, matA);
       sphereA.position.set(pointA[0], pointA[1], pointA[2]);
       group.add(sphereA);
@@ -274,7 +293,7 @@ export const MeshViewer: React.FC<Props> = ({
 
     if (pointB) {
       const geoB = new THREE.SphereGeometry(0.08, 16, 16);
-      const matB = new THREE.MeshBasicMaterial({ color: 0x3b82f6 }); // blue
+      const matB = new THREE.MeshBasicMaterial({ color: 0x3b82f6 });
       const sphereB = new THREE.Mesh(geoB, matB);
       sphereB.position.set(pointB[0], pointB[1], pointB[2]);
       group.add(sphereB);
@@ -292,12 +311,68 @@ export const MeshViewer: React.FC<Props> = ({
     }
   }, [pointA, pointB]);
 
+  // Zoom control helpers
+  const handleZoom = (factor: number) => {
+    if (!cameraRef.current || !controlsRef.current) return;
+    const cam = cameraRef.current;
+    const controls = controlsRef.current;
+    const dir = new THREE.Vector3().subVectors(cam.position, controls.target);
+    dir.multiplyScalar(factor);
+    cam.position.copy(controls.target).add(dir);
+    controls.update();
+  };
+
+  const handleResetView = () => {
+    if (!cameraRef.current || !controlsRef.current) return;
+    cameraRef.current.position.copy(initialCamPos.current);
+    controlsRef.current.target.copy(initialTarget.current);
+    controlsRef.current.update();
+  };
+
   return (
-    <div className="relative w-full h-[450px] bg-dark-bg rounded-2xl overflow-hidden border border-dark-border shadow-xl">
+    <div className="relative w-full h-[480px] bg-dark-bg rounded-2xl overflow-hidden border border-dark-border shadow-2xl">
       <div ref={mountRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
 
-      {/* Floating Toolbar */}
-      <div className="absolute top-4 right-4 flex items-center space-x-1.5 bg-dark-card/90 backdrop-blur p-1.5 rounded-xl border border-dark-border text-xs">
+      {/* Top Banner Status & Mode */}
+      <div className="absolute top-4 left-4 flex items-center space-x-2">
+        <span className="px-3 py-1 rounded-lg bg-dark-card/90 backdrop-blur border border-dark-border/80 text-[11px] font-mono text-dark-muted">
+          {label}
+        </span>
+        {loadingModel && (
+          <span className="px-2.5 py-1 rounded-lg bg-brand-500/20 border border-brand-500/40 text-[11px] text-brand-300 animate-pulse">
+            Loading 3D asset...
+          </span>
+        )}
+      </div>
+
+      {/* Floating Action Toolbar */}
+      <div className="absolute top-4 right-4 flex items-center space-x-1.5 bg-dark-card/90 backdrop-blur p-1.5 rounded-xl border border-dark-border text-xs shadow-lg">
+        <button
+          onClick={() => handleZoom(0.8)}
+          className="p-1.5 rounded-lg text-dark-muted hover:text-white hover:bg-dark-hover transition-colors"
+          title="Zoom In (+)"
+        >
+          <ZoomIn className="w-4 h-4" />
+        </button>
+
+        <button
+          onClick={() => handleZoom(1.25)}
+          className="p-1.5 rounded-lg text-dark-muted hover:text-white hover:bg-dark-hover transition-colors"
+          title="Zoom Out (-)"
+        >
+          <ZoomOut className="w-4 h-4" />
+        </button>
+
+        <button
+          onClick={handleResetView}
+          className="p-1.5 rounded-lg text-dark-muted hover:text-white hover:bg-dark-hover transition-colors"
+          title="Reset Camera View"
+        >
+          <RefreshCw className="w-4 h-4" />
+        </button>
+
+        <div className="w-[1px] h-4 bg-dark-border mx-0.5" />
+
         <button
           onClick={() => setWireframe(!wireframe)}
           className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all ${
@@ -320,12 +395,19 @@ export const MeshViewer: React.FC<Props> = ({
         </button>
       </div>
 
-      {measureMode && (
-        <div className="absolute bottom-4 left-4 bg-brand-500/90 backdrop-blur text-white px-3 py-1.5 rounded-xl text-xs flex items-center gap-2 shadow-lg">
-          <Crosshair className="w-4 h-4 animate-spin text-brand-200" />
-          <span>Click any 2 points on the 3D surface to calibrate physical scale</span>
-        </div>
-      )}
+      {/* Bottom instructions badge */}
+      <div className="absolute bottom-4 left-4 flex items-center gap-2">
+        {measureMode ? (
+          <div className="bg-brand-500/90 backdrop-blur text-white px-3 py-1.5 rounded-xl text-xs flex items-center gap-2 shadow-lg">
+            <Crosshair className="w-4 h-4 animate-spin text-brand-200" />
+            <span>Click any 2 points on the 3D surface to calibrate physical scale</span>
+          </div>
+        ) : (
+          <div className="bg-dark-card/80 backdrop-blur text-dark-muted px-3 py-1 rounded-lg text-[11px] border border-dark-border/60">
+            Rotate: Left Click + Drag | Pan: Right Click + Drag | Zoom: Scroll Wheel
+          </div>
+        )}
+      </div>
     </div>
   );
 };
