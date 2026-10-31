@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { Eye, RotateCw, Crosshair, ZoomIn, ZoomOut, RefreshCw } from "lucide-react";
+import { Eye, RotateCw, Crosshair, ZoomIn, ZoomOut, RefreshCw, Sun, Moon, AlertTriangle } from "lucide-react";
 
 interface Props {
   modelUrl?: string;
@@ -25,12 +25,15 @@ export const MeshViewer: React.FC<Props> = ({
   const mountRef = useRef<HTMLDivElement>(null);
   const [wireframe, setWireframe] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false); // Default to white scene background
   const [loadingModel, setLoadingModel] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const gridRef = useRef<THREE.GridHelper | null>(null);
   const meshGroupRef = useRef<THREE.Group | null>(null);
   const markersGroupRef = useRef<THREE.Group | null>(null);
 
@@ -39,10 +42,11 @@ export const MeshViewer: React.FC<Props> = ({
 
   useEffect(() => {
     if (!mountRef.current) return;
+    setLoadError(null);
 
-    // 1. Scene setup
+    // 1. Scene setup (Default pure white background)
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#090d16");
+    scene.background = new THREE.Color(isDarkMode ? "#090d16" : "#ffffff");
     sceneRef.current = scene;
 
     // 2. Camera setup
@@ -52,10 +56,11 @@ export const MeshViewer: React.FC<Props> = ({
     camera.position.copy(initialCamPos.current);
     cameraRef.current = camera;
 
-    // 3. Renderer setup
+    // 3. Renderer setup with sRGB color space
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     mountRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
@@ -68,21 +73,32 @@ export const MeshViewer: React.FC<Props> = ({
     controls.maxDistance = 200;
     controlsRef.current = controls;
 
-    // 5. Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
+    // 5. Lights (Full multi-source illumination for glTF PBR and unlit geometry)
+    const hemiLight = new THREE.HemisphereLight(0xffffff, isDarkMode ? 0x222222 : 0xcccccc, 1.2);
+    hemiLight.position.set(0, 20, 0);
+    scene.add(hemiLight);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
     scene.add(ambientLight);
 
-    const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.2);
+    const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.5);
     dirLight1.position.set(5, 12, 7);
     scene.add(dirLight1);
 
-    const dirLight2 = new THREE.DirectionalLight(0x93c5fd, 0.6);
-    dirLight2.position.set(-5, 6, -5);
+    const dirLight2 = new THREE.DirectionalLight(0xffffff, 1.0);
+    dirLight2.position.set(-5, 8, -5);
     scene.add(dirLight2);
 
-    // 6. Subtle Floor Grid
-    const grid = new THREE.GridHelper(10, 20, 0x3b82f6, 0x1e293b);
+    const dirLight3 = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight3.position.set(0, -10, 0); // Upward bounce so ceilings and under-surfaces don't go pitch black
+    scene.add(dirLight3);
+
+    // 6. Floor Grid (Light grey grid on white background)
+    const gridColor1 = isDarkMode ? 0x3b82f6 : 0x9ca3af;
+    const gridColor2 = isDarkMode ? 0x1e293b : 0xe5e7eb;
+    const grid = new THREE.GridHelper(10, 20, gridColor1, gridColor2);
     grid.position.y = 0;
+    gridRef.current = grid;
     scene.add(grid);
 
     // 7. Groups
@@ -124,8 +140,8 @@ export const MeshViewer: React.FC<Props> = ({
               const mat = new THREE.MeshStandardMaterial({
                 vertexColors: hasVertexColors,
                 color: hasVertexColors ? 0xffffff : 0x94a3b8,
-                roughness: 0.6,
-                metalness: 0.1,
+                roughness: 1.0,
+                metalness: 0.0,
                 side: THREE.DoubleSide,
               });
               pcdObject = new THREE.Mesh(geometry, mat);
@@ -134,7 +150,7 @@ export const MeshViewer: React.FC<Props> = ({
               const pcdMat = new THREE.PointsMaterial({
                 size: Math.max(0.015, maxDim * 0.005),
                 vertexColors: hasVertexColors,
-                color: hasVertexColors ? 0xffffff : 0x38bdf8,
+                color: hasVertexColors ? 0xffffff : (isDarkMode ? 0x38bdf8 : 0x0284c7),
               });
               pcdObject = new THREE.Points(geometry, pcdMat);
             }
@@ -152,8 +168,9 @@ export const MeshViewer: React.FC<Props> = ({
           },
           undefined,
           (err) => {
-            console.warn("[MeshViewer] PLYLoader failed:", err);
-            createProceduralFallback(group);
+            console.error("[MeshViewer] PLYLoader failed:", err);
+            const msg = (err as any)?.message || "File corrupted or unavailable";
+            setLoadError(`Failed to load PLY geometry: ${msg}`);
             setLoadingModel(false);
           }
         );
@@ -166,6 +183,28 @@ export const MeshViewer: React.FC<Props> = ({
               group.remove(group.children[0]);
             }
             const model = gltf.scene;
+
+            // Fix glTF materials: ensure metalness=0, roughness=1, double-sided, and sRGB color space
+            model.traverse((child) => {
+              if ((child as THREE.Mesh).isMesh) {
+                const mesh = child as THREE.Mesh;
+                mesh.castShadow = false;
+                mesh.receiveShadow = false;
+                const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+                materials.forEach((mat) => {
+                  if (mat instanceof THREE.MeshStandardMaterial) {
+                    mat.metalness = 0.0; // Prevent pitch-black render without HDR env map
+                    mat.roughness = 1.0;
+                    mat.side = THREE.DoubleSide; // Render both exterior and interior faces
+                    if (mat.map) {
+                      mat.map.colorSpace = THREE.SRGBColorSpace;
+                      mat.map.needsUpdate = true;
+                    }
+                  }
+                });
+              }
+            });
+
             const box = new THREE.Box3().setFromObject(model);
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
@@ -186,26 +225,16 @@ export const MeshViewer: React.FC<Props> = ({
           },
           undefined,
           (err) => {
-            console.warn("[MeshViewer] GLTFLoader failed:", err);
-            createProceduralFallback(group);
+            console.error("[MeshViewer] GLTFLoader failed:", err);
+            const msg = (err as any)?.message || "File corrupted or unavailable";
+            setLoadError(`Failed to load glTF model: ${msg}`);
             setLoadingModel(false);
           }
         );
       }
     } else {
-      createProceduralFallback(group);
-    }
-
-    function createProceduralFallback(parentGroup: THREE.Group) {
-      const roomGeo = new THREE.BoxGeometry(4, 2.6, 5);
-      const roomMat = new THREE.MeshStandardMaterial({
-        color: 0x94a3b8,
-        side: THREE.BackSide,
-        roughness: 0.8,
-      });
-      const roomMesh = new THREE.Mesh(roomGeo, roomMat);
-      roomMesh.position.y = 1.3;
-      parentGroup.add(roomMesh);
+      // Never fall back to a placeholder box mesh in real mode
+      setLoadError("No 3D asset available for this job (0 artifacts registered). This reconstruction did not emit a 3D model.");
     }
 
     // 9. Raycasting for point selection
@@ -259,7 +288,7 @@ export const MeshViewer: React.FC<Props> = ({
       }
       renderer.dispose();
     };
-  }, [modelUrl, onPointSelected]);
+  }, [modelUrl, onPointSelected, isDarkMode]);
 
   // Update wireframe mode
   useEffect(() => {
@@ -275,7 +304,7 @@ export const MeshViewer: React.FC<Props> = ({
     });
   }, [wireframe]);
 
-  // Update 3D marker spheres for Point A and Point B
+  // Update 3D marker spheres for Point A and Point B (High-contrast markers on white and dark backdrops)
   useEffect(() => {
     if (!markersGroupRef.current) return;
     const group = markersGroupRef.current;
@@ -284,22 +313,40 @@ export const MeshViewer: React.FC<Props> = ({
     }
 
     if (pointA) {
+      // Point A: Vivid Crimson / Red (0xdc2626) with black outline ring
       const geoA = new THREE.SphereGeometry(0.08, 16, 16);
-      const matA = new THREE.MeshBasicMaterial({ color: 0x10b981 });
+      const matA = new THREE.MeshBasicMaterial({ color: 0xdc2626 });
       const sphereA = new THREE.Mesh(geoA, matA);
       sphereA.position.set(pointA[0], pointA[1], pointA[2]);
       group.add(sphereA);
+
+      // Contrast outline ring
+      const ringGeoA = new THREE.RingGeometry(0.09, 0.11, 24);
+      const ringMatA = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+      const ringA = new THREE.Mesh(ringGeoA, ringMatA);
+      ringA.position.set(pointA[0], pointA[1], pointA[2]);
+      ringA.lookAt(cameraRef.current ? cameraRef.current.position : new THREE.Vector3(0, 1, 0));
+      group.add(ringA);
     }
 
     if (pointB) {
+      // Point B: Vivid Royal Blue (0x2563eb) with black outline ring
       const geoB = new THREE.SphereGeometry(0.08, 16, 16);
-      const matB = new THREE.MeshBasicMaterial({ color: 0x3b82f6 });
+      const matB = new THREE.MeshBasicMaterial({ color: 0x2563eb });
       const sphereB = new THREE.Mesh(geoB, matB);
       sphereB.position.set(pointB[0], pointB[1], pointB[2]);
       group.add(sphereB);
 
+      const ringGeoB = new THREE.RingGeometry(0.09, 0.11, 24);
+      const ringMatB = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+      const ringB = new THREE.Mesh(ringGeoB, ringMatB);
+      ringB.position.set(pointB[0], pointB[1], pointB[2]);
+      ringB.lookAt(cameraRef.current ? cameraRef.current.position : new THREE.Vector3(0, 1, 0));
+      group.add(ringB);
+
       if (pointA) {
-        const lineMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, linewidth: 2 });
+        // High-contrast measure line
+        const lineMat = new THREE.LineBasicMaterial({ color: 0x9333ea, linewidth: 3 }); // High-contrast purple
         const points = [
           new THREE.Vector3(pointA[0], pointA[1], pointA[2]),
           new THREE.Vector3(pointB[0], pointB[1], pointB[2]),
@@ -330,26 +377,65 @@ export const MeshViewer: React.FC<Props> = ({
   };
 
   return (
-    <div className="relative w-full h-[480px] bg-dark-bg rounded-2xl overflow-hidden border border-dark-border shadow-2xl">
+    <div className={`relative w-full h-[480px] rounded-2xl overflow-hidden border shadow-2xl transition-colors duration-200 ${
+      isDarkMode ? "bg-[#090d16] border-dark-border" : "bg-white border-slate-200"
+    }`}>
       <div ref={mountRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
+
+      {/* Explicit Error Display Overlay (Never fall back to placeholder mesh) */}
+      {loadError && (
+        <div className="absolute inset-0 bg-dark-bg/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20">
+          <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center mb-3">
+            <AlertTriangle className="w-6 h-6 text-rose-400" />
+          </div>
+          <h4 className="text-sm font-semibold text-white mb-1">Model Unavailable in Viewer</h4>
+          <p className="text-xs text-rose-300 max-w-md font-mono bg-rose-950/40 border border-rose-900/50 p-2.5 rounded-xl mb-3">
+            {loadError}
+          </p>
+          <p className="text-[11px] text-dark-muted max-w-sm">
+            Real mode reconstructions strictly display verified assets. Placeholder meshes are disabled.
+          </p>
+        </div>
+      )}
 
       {/* Top Banner Status & Mode */}
       <div className="absolute top-4 left-4 flex items-center space-x-2">
-        <span className="px-3 py-1 rounded-lg bg-dark-card/90 backdrop-blur border border-dark-border/80 text-[11px] font-mono text-dark-muted">
+        <span className={`px-3 py-1 rounded-lg backdrop-blur border text-[11px] font-mono shadow-sm ${
+          isDarkMode
+            ? "bg-dark-card/90 border-dark-border/80 text-dark-muted"
+            : "bg-white/90 border-slate-300 text-slate-700"
+        }`}>
           {label}
         </span>
         {loadingModel && (
-          <span className="px-2.5 py-1 rounded-lg bg-brand-500/20 border border-brand-500/40 text-[11px] text-brand-300 animate-pulse">
+          <span className="px-2.5 py-1 rounded-lg bg-brand-500/20 border border-brand-500/40 text-[11px] text-brand-500 font-medium animate-pulse">
             Loading 3D asset...
           </span>
         )}
       </div>
 
       {/* Floating Action Toolbar */}
-      <div className="absolute top-4 right-4 flex items-center space-x-1.5 bg-dark-card/90 backdrop-blur p-1.5 rounded-xl border border-dark-border text-xs shadow-lg">
+      <div className={`absolute top-4 right-4 flex items-center space-x-1.5 backdrop-blur p-1.5 rounded-xl border text-xs shadow-lg ${
+        isDarkMode ? "bg-dark-card/90 border-dark-border" : "bg-white/90 border-slate-200"
+      }`}>
+        {/* White / Dark Mode Toggle */}
+        <button
+          onClick={() => setIsDarkMode(!isDarkMode)}
+          className={`p-1.5 rounded-lg transition-colors ${
+            isDarkMode ? "text-amber-400 hover:bg-dark-hover" : "text-slate-600 hover:bg-slate-100"
+          }`}
+          title={isDarkMode ? "Switch to white background" : "Switch to dark background"}
+        >
+          {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+        </button>
+
+        <div className={`w-[1px] h-4 mx-0.5 ${isDarkMode ? "bg-dark-border" : "bg-slate-200"}`} />
+
         <button
           onClick={() => handleZoom(0.8)}
-          className="p-1.5 rounded-lg text-dark-muted hover:text-white hover:bg-dark-hover transition-colors"
+          className={`p-1.5 rounded-lg transition-colors ${
+            isDarkMode ? "text-dark-muted hover:text-white hover:bg-dark-hover" : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+          }`}
           title="Zoom In (+)"
         >
           <ZoomIn className="w-4 h-4" />
@@ -357,7 +443,9 @@ export const MeshViewer: React.FC<Props> = ({
 
         <button
           onClick={() => handleZoom(1.25)}
-          className="p-1.5 rounded-lg text-dark-muted hover:text-white hover:bg-dark-hover transition-colors"
+          className={`p-1.5 rounded-lg transition-colors ${
+            isDarkMode ? "text-dark-muted hover:text-white hover:bg-dark-hover" : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+          }`}
           title="Zoom Out (-)"
         >
           <ZoomOut className="w-4 h-4" />
@@ -365,18 +453,24 @@ export const MeshViewer: React.FC<Props> = ({
 
         <button
           onClick={handleResetView}
-          className="p-1.5 rounded-lg text-dark-muted hover:text-white hover:bg-dark-hover transition-colors"
+          className={`p-1.5 rounded-lg transition-colors ${
+            isDarkMode ? "text-dark-muted hover:text-white hover:bg-dark-hover" : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+          }`}
           title="Reset Camera View"
         >
           <RefreshCw className="w-4 h-4" />
         </button>
 
-        <div className="w-[1px] h-4 bg-dark-border mx-0.5" />
+        <div className={`w-[1px] h-4 mx-0.5 ${isDarkMode ? "bg-dark-border" : "bg-slate-200"}`} />
 
         <button
           onClick={() => setWireframe(!wireframe)}
           className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all ${
-            wireframe ? "bg-brand-500 text-white" : "text-dark-muted hover:text-white hover:bg-dark-hover"
+            wireframe
+              ? "bg-brand-500 text-white font-medium shadow-sm"
+              : isDarkMode
+              ? "text-dark-muted hover:text-white hover:bg-dark-hover"
+              : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
           }`}
           title="Toggle wireframe display"
         >
@@ -387,7 +481,11 @@ export const MeshViewer: React.FC<Props> = ({
         <button
           onClick={() => setAutoRotate(!autoRotate)}
           className={`p-1.5 rounded-lg transition-all ${
-            autoRotate ? "bg-brand-500 text-white" : "text-dark-muted hover:text-white hover:bg-dark-hover"
+            autoRotate
+              ? "bg-brand-500 text-white"
+              : isDarkMode
+              ? "text-dark-muted hover:text-white hover:bg-dark-hover"
+              : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
           }`}
           title="Toggle turntable auto-rotation"
         >
@@ -398,12 +496,14 @@ export const MeshViewer: React.FC<Props> = ({
       {/* Bottom instructions badge */}
       <div className="absolute bottom-4 left-4 flex items-center gap-2">
         {measureMode ? (
-          <div className="bg-brand-500/90 backdrop-blur text-white px-3 py-1.5 rounded-xl text-xs flex items-center gap-2 shadow-lg">
+          <div className="bg-brand-600/90 backdrop-blur text-white px-3 py-1.5 rounded-xl text-xs flex items-center gap-2 shadow-lg">
             <Crosshair className="w-4 h-4 animate-spin text-brand-200" />
             <span>Click any 2 points on the 3D surface to calibrate physical scale</span>
           </div>
         ) : (
-          <div className="bg-dark-card/80 backdrop-blur text-dark-muted px-3 py-1 rounded-lg text-[11px] border border-dark-border/60">
+          <div className={`backdrop-blur px-3 py-1 rounded-lg text-[11px] border shadow-sm ${
+            isDarkMode ? "bg-dark-card/80 text-dark-muted border-dark-border/60" : "bg-white/80 text-slate-600 border-slate-200"
+          }`}>
             Rotate: Left Click + Drag | Pan: Right Click + Drag | Zoom: Scroll Wheel
           </div>
         )}

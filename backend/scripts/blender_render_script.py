@@ -68,9 +68,23 @@ def render_view(cam_pos, look_at, is_ortho, ortho_scale, output_path, up_vector=
     scene.render.resolution_x = res[0]
     scene.render.resolution_y = res[1]
     scene.render.engine = "BLENDER_WORKBENCH"
-    scene.display.shading.light = "MATCAP"
+
     has_textures = len(bpy.data.images) > 0
-    scene.display.shading.color_type = "TEXTURE" if has_textures else "VERTEX"
+    has_vertex_colors = any(
+        obj.type == "MESH" and (len(getattr(obj.data, "color_attributes", [])) > 0 or len(getattr(obj.data, "vertex_colors", [])) > 0)
+        for obj in bpy.context.scene.objects
+    )
+
+    if has_textures:
+        scene.display.shading.color_type = "TEXTURE"
+        scene.display.shading.light = "FLAT"  # Bright, unshadowed photographic texture
+    elif has_vertex_colors:
+        scene.display.shading.color_type = "VERTEX"
+        scene.display.shading.light = "MATCAP"
+    else:
+        scene.display.shading.color_type = "SINGLE"
+        scene.display.shading.single_color = (0.78, 0.82, 0.88)  # Clean architectural clay
+        scene.display.shading.light = "MATCAP"
 
     cam_data = bpy.data.cameras.new("RenderCam")
     cam_obj = bpy.data.objects.new("RenderCam", cam_data)

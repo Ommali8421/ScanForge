@@ -14,6 +14,7 @@ Adheres to ScanForge Portability & Resource Etiquette Rules:
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -520,11 +521,63 @@ class OpenMVSRMeshStage(Stage):
         )
 
 
+def fix_glb_pbr_materials(glb_path: Path):
+    """
+    Patches glTF binary (GLB) material properties:
+    - metallicFactor = 0.0 (prevents pitch-black render in standard viewers without HDR map)
+    - roughnessFactor = 1.0 (diffuse matte finish for interior walls)
+    - doubleSided = True (ensures both interior and exterior surfaces are rendered)
+    """
+    import struct
+    import json
+    if not glb_path.exists():
+        return
+    with open(glb_path, "rb") as f:
+        data = f.read()
+    if len(data) < 20:
+        return
+    magic, version, _ = struct.unpack_from("<4sII", data, 0)
+    if magic != b"glTF" or version != 2:
+        return
+    c0_len, c0_type = struct.unpack_from("<II", data, 12)
+    if c0_type != 0x4E4F534A:
+        return
+    json_bytes = data[20:20 + c0_len]
+    try:
+        gltf = json.loads(json_bytes.decode("utf-8"))
+    except Exception:
+        return
+
+    modified = False
+    for mat in gltf.get("materials", []):
+        if "pbrMetallicRoughness" not in mat:
+            mat["pbrMetallicRoughness"] = {}
+        mat["pbrMetallicRoughness"]["metallicFactor"] = 0.0
+        mat["pbrMetallicRoughness"]["roughnessFactor"] = 1.0
+        mat["doubleSided"] = True
+        modified = True
+
+    if not modified:
+        return
+
+    new_json = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    pad = (4 - (len(new_json) % 4)) % 4
+    new_json += b" " * pad
+    new_c0_len = len(new_json)
+    bin_chunk = data[20 + c0_len:]
+    new_total_len = 12 + 8 + new_c0_len + len(bin_chunk)
+    new_header = struct.pack("<4sII", b"glTF", 2, new_total_len)
+    new_c0_hdr = struct.pack("<II", new_c0_len, 0x4E4F534A)
+    with open(glb_path, "wb") as f:
+        f.write(new_header + new_c0_hdr + new_json + bin_chunk)
+
+
 class OpenMVSTextureStage(Stage):
     """
     Applies photographic UV texture mapping to the mesh using OpenMVS TextureMesh.
     Creates scene_textured.glb, scene_textured.png (texture atlas), and
     oriented preview_textured.glb (up = +Y).
+    Uses neutral light-grey empty colour (13158600) and patches glTF PBR materials.
     """
     name: str = "openmvs_texture"
     weight: float = 2.5
@@ -539,23 +592,55 @@ class OpenMVSTextureStage(Stage):
         texture_bin = resolve_openmvs("TextureMesh")
         threads = str(get_configured_threads())
 
+        # Select target input mesh (prefer decimated / repaired mesh from Phase 2)
+        input_mesh = ctx.workdir / "mesh_decimated.ply"
+        if not input_mesh.exists():
+            input_mesh = ctx.workdir / "mesh_repaired.ply"
+        if not input_mesh.exists():
+            input_mesh = ctx.workdir / "mesh_cleaned.ply"
+        if not input_mesh.exists():
+            input_mesh = ctx.workdir / "scene_dense_mesh.ply"
+
         input_mvs = ctx.workdir / "scene_dense_mesh.mvs"
         if not input_mvs.exists():
-            raise FileNotFoundError(f"Input mesh project not found: {input_mvs}. Ensure OpenMVSRMeshStage ran.")
+            input_mvs = ctx.workdir / "scene_dense.mvs"
+        if not input_mvs.exists():
+            input_mvs = ctx.workdir / "scene.mvs"
+        if not input_mvs.exists():
+            raise FileNotFoundError(
+                f"Input scene project not found: neither scene_dense_mesh.mvs nor scene.mvs exist. "
+                "Ensure upstream OpenMVS stages ran."
+            )
+
+        total_mesh_faces = 0
+        if input_mesh.exists():
+            try:
+                import trimesh
+                m_check = trimesh.load(str(input_mesh), process=False)
+                total_mesh_faces = len(m_check.faces)
+            except Exception:
+                pass
 
         output_glb = ctx.workdir / "scene_textured.glb"
         cmd = [
             texture_bin,
             "-w", str(ctx.workdir),
-            "-i", "scene_dense_mesh.mvs",
+            "-i", str(input_mvs.name),
             "-o", "scene_textured.glb",
             "--export-type", "glb",
             "--resolution-level", "1",
+            "--empty-color", "13158600",  # Neutral light-grey (0xC8C8C8) instead of orange
+            "--global-seam-leveling", "0",
+            "--local-seam-leveling", "0",
             "--max-threads", threads,
             "-v", "2",
         ]
 
-        ctx.log_cb(f"[OpenMVS] Running TextureMesh -> {output_glb.name} (resolution-level 1, threads: {threads})...")
+        if input_mesh.exists():
+            cmd.extend(["--mesh-file", str(input_mesh.name)])
+            ctx.log_cb(f"[OpenMVS] Supplying external mesh to TextureMesh: {input_mesh.name} ({total_mesh_faces:,} faces).")
+
+        ctx.log_cb(f"[OpenMVS] Running TextureMesh -> {output_glb.name} (resolution-level 1, threads: {threads}, empty-color: light-grey)...")
         res = ToolRunner.run(
             cmd,
             cwd=str(ctx.workdir),
@@ -568,6 +653,23 @@ class OpenMVSTextureStage(Stage):
             raise RuntimeError(
                 f"TextureMesh completed with exit code {res.exit_code} "
                 f"but output {output_glb} was not created."
+            )
+
+        # Parse assigned faces and report coverage / percentage without texture
+        assigned_faces = None
+        stdout_text = res.stdout if isinstance(res.stdout, str) else "\n".join(res.stdout or [])
+        for line in stdout_text.splitlines():
+            match = re.search(r"Assigning the best view to each face completed:\s*(\d+)\s*faces", line, re.IGNORECASE)
+            if match:
+                assigned_faces = int(match.group(1))
+
+        untextured_faces = (total_mesh_faces - assigned_faces) if (total_mesh_faces and assigned_faces is not None) else None
+        untextured_pct = (untextured_faces / total_mesh_faces * 100) if (total_mesh_faces and untextured_faces is not None) else None
+
+        if untextured_pct is not None:
+            ctx.log_cb(
+                f"[OpenMVS] Texture coverage: {assigned_faces:,}/{total_mesh_faces:,} faces textured "
+                f"({100 - untextured_pct:.1f}%). Untextured (empty-color fill): {untextured_faces:,} faces ({untextured_pct:.1f}%)."
             )
 
         texture_png = ctx.workdir / "scene_textured.png"
@@ -586,6 +688,12 @@ class OpenMVSTextureStage(Stage):
         except Exception as e:
             ctx.log_cb(f"[OpenMVS] Warning: Failed to orient textured GLB: {e}")
 
+        # Fix glTF PBR materials on both exported GLB files
+        fix_glb_pbr_materials(output_glb)
+        if preview_textured_glb.exists():
+            fix_glb_pbr_materials(preview_textured_glb)
+        ctx.log_cb("[OpenMVS] Applied PBR material defaults (metallicFactor=0, roughnessFactor=1, doubleSided=True).")
+
         outputs = [output_glb]
         if texture_png.exists():
             outputs.append(texture_png)
@@ -603,5 +711,9 @@ class OpenMVSTextureStage(Stage):
                 "textured_glb": str(output_glb.name),
                 "preview_textured_glb": str(preview_textured_glb.name) if preview_textured_glb.exists() else None,
                 "texture_png": str(texture_png.name) if texture_png.exists() else None,
+                "total_faces": total_mesh_faces,
+                "assigned_textured_faces": assigned_faces,
+                "untextured_faces": untextured_faces,
+                "untextured_percentage": round(untextured_pct, 2) if untextured_pct is not None else None,
             },
         )

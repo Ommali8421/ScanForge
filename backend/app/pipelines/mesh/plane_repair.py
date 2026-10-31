@@ -1,0 +1,253 @@
+"""
+Plane Repair Stage (Phase 2)
+Performs normal-aware plane snapping, corner regularisation, and spurious surface removal:
+- Uses room_analysis.json computed by RoomAnalysisStage in the original SfM frame.
+- Only snaps vertices whose normal agrees with the plane normal (|n_v . n_p| > 0.9).
+- Correctly projects two-plane corner vertices onto the intersection line (avoiding double projection).
+- Leaves furniture and non-planar geometry completely untouched.
+- Removes subsurface geometry below the floor and exterior ghost geometry outside the wall envelope.
+- Reports percentage of vertices moved and maximum displacement as a fraction of scene diagonal.
+"""
+
+import json
+import time
+from pathlib import Path
+from typing import List, Dict, Any, Tuple
+import numpy as np
+import trimesh
+
+from app.pipelines.base import Stage, StageResult, JobContext
+
+
+def line_intersection_of_two_planes(n1: np.ndarray, d1: float, n2: np.ndarray, d2: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Computes the parametric line of intersection between two planes:
+    n1 . x + d1 = 0
+    n2 . x + d2 = 0
+    Returns:
+        p_line: a point on the line (closest to origin).
+        dir_line: unit direction vector along the line.
+    """
+    dir_line = np.cross(n1, n2)
+    dir_norm = np.linalg.norm(dir_line)
+    if dir_norm < 1e-6:
+        # Nearly parallel planes
+        return -d1 * n1, np.array([0.0, 0.0, 1.0])
+
+    dir_line /= dir_norm
+
+    # Solve least squares for point on line closest to origin:
+    # [n1^T; n2^T] * p = [-d1; -d2]
+    A = np.vstack([n1, n2])
+    b = np.array([-d1, -d2])
+    p_line = np.linalg.pinv(A) @ b
+
+    return p_line, dir_line
+
+
+class PlaneRepairStage(Stage):
+    """
+    Snaps planar vertices and removes spurious out-of-envelope geometry in SfM frame.
+    Outputs: mesh_repaired.ply.
+    """
+    name: str = "plane_repair"
+    weight: float = 1.5
+    declared_outputs: List[str] = [
+        "mesh_repaired.ply",
+    ]
+
+    def run(self, ctx: JobContext) -> StageResult:
+        ctx.log_cb("[PlaneRepair] Initializing normal-aware plane repair and envelope clipping...")
+        t0 = time.time()
+
+        input_ply = ctx.workdir / "mesh_cleaned.ply"
+        if not input_ply.exists():
+            input_ply = ctx.workdir / "scene_dense_mesh.ply"
+        if not input_ply.exists():
+            raise FileNotFoundError(f"[PlaneRepair] Cleaned mesh not found at {input_ply}")
+
+        analysis_json = ctx.workdir / "room_analysis.json"
+        if not analysis_json.exists():
+            raise FileNotFoundError(
+                f"[PlaneRepair] room_analysis.json not found at {analysis_json}. "
+                "Ensure RoomAnalysisStage ran before PlaneRepairStage."
+            )
+
+        with open(analysis_json, "r") as f:
+            analysis = json.load(f)
+
+        scene_diagonal = float(analysis["scene_diagonal"])
+        chosen_floor = analysis["chosen_floor_plane"]
+        wall_planes = analysis.get("wall_planes", [])
+
+        # Build list of active dominant planes (floor + walls)
+        active_planes = []
+        # Floor plane
+        active_planes.append({
+            "name": "floor",
+            "normal": np.array(chosen_floor["normal"], dtype=float),
+            "d": float(chosen_floor["d"]),
+        })
+        # Wall planes
+        for i, wp in enumerate(wall_planes):
+            active_planes.append({
+                "name": f"wall_{i}",
+                "normal": np.array(wp["normal"], dtype=float),
+                "d": float(wp["d"]),
+            })
+
+        ctx.log_cb(
+            f"[PlaneRepair] Loaded {len(active_planes)} active dominant plane(s) "
+            f"(1 floor, {len(wall_planes)} walls). Scene diagonal: {scene_diagonal:.3f}."
+        )
+
+        mesh = trimesh.load(str(input_ply), process=False)
+        vertices = mesh.vertices.copy()
+        normals = mesh.vertex_normals.copy()
+        num_vertices = len(vertices)
+
+        # Snap distance threshold: 0.5% of scene diagonal
+        snap_thresh = 0.005 * scene_diagonal
+        # Normal agreement threshold: |n_v . n_p| > 0.9
+        normal_agreement_thresh = 0.90
+
+        vertices_moved = 0
+        max_displacement = 0.0
+        displacements = []
+
+        ctx.log_cb(
+            f"[PlaneRepair] Snapping vertices with |n_v . n_p| > {normal_agreement_thresh} "
+            f"within distance {snap_thresh:.4f}..."
+        )
+
+        # 1. Normal-aware plane snapping and corner handling
+        for i in range(num_vertices):
+            v = vertices[i]
+            nv = normals[i]
+            nv_norm = np.linalg.norm(nv)
+            if nv_norm < 1e-6:
+                continue
+            nv = nv / nv_norm
+
+            matching_planes = []
+            for plane in active_planes:
+                np_vec = plane["normal"]
+                d = plane["d"]
+                dot = abs(np.dot(nv, np_vec))
+
+                if dot > normal_agreement_thresh:
+                    dist = abs(np.dot(np_vec, v) + d)
+                    if dist <= snap_thresh:
+                        matching_planes.append((plane, dist))
+
+            if not matching_planes:
+                # Furniture / organic decoration: leave untouched
+                continue
+
+            if len(matching_planes) == 1:
+                # Project onto single dominant plane
+                plane, _ = matching_planes[0]
+                np_vec = plane["normal"]
+                d = plane["d"]
+                # v_proj = v - (np . v + d) * np
+                v_proj = v - (np.dot(np_vec, v) + d) * np_vec
+                disp = float(np.linalg.norm(v_proj - v))
+                if disp > 1e-6:
+                    vertices[i] = v_proj
+                    vertices_moved += 1
+                    displacements.append(disp)
+                    if disp > max_displacement:
+                        max_displacement = disp
+
+            elif len(matching_planes) >= 2:
+                # Corner regularisation: project onto the intersection line between two planes
+                p1 = matching_planes[0][0]
+                p2 = matching_planes[1][0]
+                n1, d1 = p1["normal"], p1["d"]
+                n2, d2 = p2["normal"], p2["d"]
+
+                p_line, dir_line = line_intersection_of_two_planes(n1, d1, n2, d2)
+                # Project v onto intersection line: p_line + ((v - p_line) . dir_line) * dir_line
+                v_proj = p_line + np.dot(v - p_line, dir_line) * dir_line
+                disp = float(np.linalg.norm(v_proj - v))
+                if disp > 1e-6 and disp <= snap_thresh * 1.5:
+                    vertices[i] = v_proj
+                    vertices_moved += 1
+                    displacements.append(disp)
+                    if disp > max_displacement:
+                        max_displacement = disp
+
+        pct_moved = (vertices_moved / num_vertices * 100) if num_vertices > 0 else 0.0
+        max_disp_fraction = (max_displacement / scene_diagonal) if scene_diagonal > 0 else 0.0
+
+        ctx.log_cb(
+            f"[PlaneRepair] Regularized {vertices_moved:,}/{num_vertices:,} vertices ({pct_moved:.1f}%). "
+            f"Max displacement: {max_displacement:.4f} ({max_disp_fraction*100:.2f}% of scene diagonal)."
+        )
+
+        mesh.vertices = vertices
+
+        # 2. Geometry Removal: Below Floor & Outside Wall Envelope (Requirement C.4)
+        floor_n = np.array(chosen_floor["normal"], dtype=float)
+        floor_d = float(chosen_floor["d"])
+        below_floor_margin = 0.01 * scene_diagonal  # strictly below floor plane
+
+        # Signed distance of vertices to floor plane (normal points UP)
+        # s_floor = n . v + d (positive above floor, negative below floor)
+        v_signed_floor = np.dot(mesh.vertices, floor_n) + floor_d
+
+        # Faces with centroid below the floor
+        face_centers = mesh.triangles_center
+        face_signed_floor = np.dot(face_centers, floor_n) + floor_d
+        below_floor_faces = face_signed_floor < -below_floor_margin
+
+        # Outside wall envelope check
+        # Each wall normal points inward (toward room center).
+        # Signed distance to wall: s_wall = n . v + d (positive inside room, negative outside wall)
+        outside_wall_faces = np.zeros(len(mesh.faces), dtype=bool)
+        wall_margin = 0.02 * scene_diagonal
+
+        for wp in wall_planes:
+            wn = np.array(wp["normal"], dtype=float)
+            wd = float(wp["d"])
+            face_signed_wall = np.dot(face_centers, wn) + wd
+            # If significantly outside wall envelope (behind the wall)
+            outside_wall_faces |= (face_signed_wall < -wall_margin)
+
+        drop_mask = below_floor_faces | outside_wall_faces
+        dropped_floor_count = int(np.sum(below_floor_faces))
+        dropped_wall_count = int(np.sum(outside_wall_faces & ~below_floor_faces))
+        total_dropped = int(np.sum(drop_mask))
+
+        ctx.log_cb(
+            f"[PlaneRepair] Pruning spurious out-of-envelope geometry: "
+            f"{dropped_floor_count:,} faces below floor, {dropped_wall_count:,} faces outside wall envelope "
+            f"({total_dropped:,} total faces pruned)."
+        )
+
+        if total_dropped > 0:
+            mesh.update_faces(~drop_mask)
+            mesh.remove_unreferenced_vertices()
+
+        output_ply = ctx.workdir / "mesh_repaired.ply"
+        mesh.export(str(output_ply))
+        ctx.log_cb(
+            f"[PlaneRepair] Plane repair completed in {time.time() - t0:.2f}s: "
+            f"{len(mesh.vertices):,} vertices, {len(mesh.faces):,} faces saved to {output_ply.name}."
+        )
+
+        return StageResult(
+            success=True,
+            output_files=[output_ply],
+            metadata={
+                "vertices_snapped": vertices_moved,
+                "percentage_vertices_snapped": round(pct_moved, 2),
+                "max_displacement": round(max_displacement, 5),
+                "max_displacement_diagonal_fraction": round(max_disp_fraction, 5),
+                "dropped_below_floor_faces": dropped_floor_count,
+                "dropped_outside_wall_faces": dropped_wall_count,
+                "repaired_vertices": len(mesh.vertices),
+                "repaired_faces": len(mesh.faces),
+            },
+        )
+

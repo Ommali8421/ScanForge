@@ -13,7 +13,7 @@
 | **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
 | **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121, Open3D 0.20.0, Trimesh 5.1.1) | **Done** | Verified via `doctor.py` in container & `e2e_smoke.py` |
 | **P2b** | Video ingest + adaptive frame extraction + interior-tuned COLMAP SfM (GPU) + 4-panel diagnostic trajectory plot + scene-cut detection + low-texture filtering + real test runs | **Done** | Verified on RTX 4060 GPU with 3 real video runs (`house_test_30s.mp4`, `bedroom_vid.mp4` with/without filter) |
-| **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (plane repair, floor align, decimate, scale) | **Phase 1 & 1b Done (VERIFIED)** | Phase 1b verified on RTX 4060 GPU with `house_test_30s.mp4` (Job `7d4c7704`) and `enhanced_interior_tour_1080p.mp4` (Job `f888dc62`). 4-view composite evidence saved in `outputs/`. Stopped for user review before Phase 2. |
+| **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (floater cleanup, room analysis, relative floor rule, normal-aware plane snapping, envelope pruning, quadric decimation, UV texture mapping, Poisson A/B) + Phase 3 (floor align Y=0, scale calibration, exporters, quality report) | **Phase 2 Done (VERIFIED)** | Phase 2 verified on RTX 4060 GPU with `house_test_30s.mp4` (Job `f0e89d25`) and `enhanced_interior_tour_1080p.mp4` (Job `2b7b3bcc`). 4-view before/after evidence sheets saved in `outputs/`. Stopped for user review before Phase 3. |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
@@ -44,7 +44,8 @@
 | COLMAP Multi-Version Adaptation | **VERIFIED** | Verified rename mapping against 3.9.1 and 3.13.0 help fixtures; hang protection via timeout without Ceres iteration caps; FAISS loop detection fallback (`59a4724`) |
 | Native Docker Client Operation | **VERIFIED** | Executed in sequence via native Docker client (`/usr/bin/docker`): `make up-mock` (code 0), `make smoke` (code 0), `make up-gpu` (code 0, `gpu_available=True`). |
 | OpenMVS Phase 1 & 1b (Dense Cloud + Mesh + UV Texture + Up-Alignment + Filtering) | **VERIFIED** | Verified on RTX 4060 GPU with real data (`house_test_30s.mp4`: 1.23M points, 176k clean mesh verts, UV textured GLB; `enhanced_interior_tour_1080p.mp4`: 2.88M points, 381k clean mesh verts, UV textured GLB). Camera up-vector alignment ($\bar{\mathbf{u}}$ to $+Y$), nearest-neighbor KDTree vertex colors, TextureMesh 4K UV atlas, long-edge/bbox garbage removal, and Three.js OrbitControls with multi-tab preview verified. |
-| OpenMVS Phase 2 & 3 (Plane Repair, Floor Align, Decimate, Exporters) | **UNVERIFIED** | Implementation plan ready; execution stopped for user review before Phase 2. |
+| OpenMVS Phase 2 (Mesh Cleanup, Room Analysis, Relative Floor Detection, Plane Snapping, Envelope Pruning, Quadric Decimation, UV Texture, Poisson A/B, Viewer Fixes) | **VERIFIED** | Verified on RTX 4060 GPU with both reference clips (`house_test_30s.mp4` Job `f0e89d25` and `enhanced_interior_tour_1080p.mp4` Job `2b7b3bcc`) run through normal job flow. Exterior slab and mirror ghosts pruned. Viewer white background, light-grey grid, high-contrast markers, and PBR material fix verified. 4-view before/after sheets saved under `outputs/`. |
+| OpenMVS Phase 3 (Floor Leveling Y=0, Scale Calibration Seam, Exporters, Quality Report) | **UNVERIFIED** | Planned; stopped for user review of Phase 2 evidence before execution. |
 | Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
@@ -239,23 +240,73 @@ All baseline suite checks were executed directly against the live environment:
 
 ---
 
-## 8. Next Steps (Immediate Steps for Milestone P2c Phase 2)
+## 8. Real Hardware Verification Results (Milestone P2c Phase 2)
 
-*Milestone P2c Phase 1 completed and verified on real RTX 4060 GPU with `house_test_30s.mp4` and `enhanced_interior_tour_1080p.mp4`. Stopped for user review before proceeding to Phase 2.*
+> **Execution Date**: 2026-10-31  
+> **Environment**: NVIDIA GeForce RTX 4060 Laptop GPU (8 GB VRAM, Ada sm_89), Ubuntu 22.04 on WSL2 (11 GB RAM limit).  
+> **Run Mode**: Real API Pipeline (`POST /api/jobs` via `scripts/submit_real_run.py`), automated worker processing end-to-end.  
+> **Scope**: Phase 2 ONLY (Floater cleanup, room analysis, relative floor rule, normal-aware plane snapping, envelope pruning, quadric decimation, OpenMVS TextureMesh, Poisson A/B, viewer fixes). Phase 3 stopped for review.
 
-1. **User Review on Milestone P2c Phase 1**: Review dense point cloud and Delaunay mesh reconstructions (`raw_mesh.glb` and `dense_cloud.ply`) on real house and tour datasets.
-2. **Phase 2 Scope (Awaiting User Approval to Implement)**:
-   - `MeshCleanupStage`: Floater removal (<1% component filter) and non-manifold element resolution in SfM frame.
-   - `PlaneRepairStage`: Relative-threshold planar hole repair and ghost removal behind mirrors/windows in SfM frame.
-   - `DecimateStage`: Planarity-preserving `open3d.geometry.TriangleMesh.simplify_quadric_decimation(boundary_weight=1.0)` in SfM frame.
-   - `TextureMeshStage`: Run OpenMVS `TextureMesh` with original camera poses from `scene.mvs`.
-3. **Phase 3 Scope**:
-   - `FloorAlignAndScaleStage`: Similarity transform using mean camera up vector as gravity prior and finding dominant support plane just below camera centers (mirror-surface immunity).
-   - Format exporters (GLB, OBJ, PLY, STL, XYZ, FBX, USDZ) and uncalibrated unit quality reporting (`SfM units (uncalibrated)`).
+### A. Viewer Enhancements & PBR Shader Corrections
+1. **White Scene Background & Contrast Markers**: Default `#ffffff` background with light-grey `#9ca3af`/`#e5e7eb` grid and sun/moon theme toggle. High-contrast measure markers: crimson red (`#dc2626`) for Point A, royal blue (`#2563eb`) for Point B, vivid purple (`#9333ea`) for distance segment.
+2. **PBR glTF Black Render Fix**:
+   - Fixed at export: In `openmvs.py`, `fix_glb_pbr_materials()` parses glTF binary chunks and explicitly patches `metallicFactor = 0.0`, `roughnessFactor = 1.0`, `doubleSided = True`.
+   - Fixed in viewer: `MeshViewer.tsx` traverses materials setting `metalness = 0.0`, `roughness = 1.0`, `side = THREE.DoubleSide`, `map.colorSpace = THREE.SRGBColorSpace`, illuminated by `HemisphereLight(0xffffff, 0xcccccc, 1.2)` and ambient/directional fill.
+3. **Investigation of Job `bc22c9e8` (`test_scene.mp4`)**:
+   - `bc22c9e8-c3d6-4c65-91a9-535847762665` was created by an automated test (`tests/test_integration.py:test_sse_replay_on_connect`), completing in 38 ms with 0 artifacts.
+   - When opened in the UI, `MeshViewer` silently executed `createProceduralFallback()`, rendering a grey test box (`BoxGeometry(4, 2.6, 5)`).
+   - **Resolution**: `createProceduralFallback` is completely eliminated. Real mode displays an explicit error message card (`<AlertTriangle>`) if an artifact fails to load.
+
+### B. TextureMesh Configuration
+- Configured `--empty-color 13158600` (RGB 200, 200, 200 neutral light-grey) instead of default bright orange.
+- Added `--global-seam-leveling 0 --local-seam-leveling 0` when texturing decimated/pruned meshes, eliminating the OpenMVS `_Map_base::at` container out-of-bounds abort and accelerating texture atlas generation to ~200 ms.
+- Log parsing extracts and reports exact textured face coverage and untextured face percentage.
+
+### C. End-to-End Test Dataset Metrics
+
+| Stage Metric | Reference Clip (`house_test_30s.mp4`) | Enhanced Interior Tour (`enhanced_interior_tour_1080p.mp4`) |
+|---|---|---|
+| **Job ID** | `f0e89d25-b4fb-4878-abef-3c2dc479bf35` | `2b7b3bcc-0c24-40ed-82b0-b2e2d4c82351` |
+| **Video Dimensions** | 478 x 850 (60 fps, 30.0s) | 1080 x 1920 -> 1080 x 1800 auto-cropped (30 fps, 20.2s) |
+| **SfM Registered Frames** | 92 / 99 frames (92.9%) | 67 / 67 frames (100.0%) |
+| **Dense Cloud Points** | 1,217,117 points | 2,797,368 points |
+| **Raw Delaunay Faces** | 356,101 faces | 734,133 faces |
+| **Cleaned Mesh Floaters** | 1 component, 0 floaters dropped (100% kept) | 3 components, 2 floaters dropped (536 faces dropped) |
+| **Camera Mean Up $\hat{\mathbf{u}}$** | $[0.079, -0.985, -0.154]$ | $[0.000, -1.000, 0.001]$ |
+| **Scene Diagonal $D_{\text{bbox}}$** | 32.112 (SfM units) | 32.951 (SfM units) |
+| **Floor Plane Selection** | Depth 5.201 below camera (16.2% $D_{\text{bbox}}$), 1,848 inliers | Depth 1.530 below camera (4.6% $D_{\text{bbox}}$), 289 inliers |
+| **Plane Snapping** | 35,048 verts (19.7%), max disp: 0.2406 (0.75% $D_{\text{bbox}}$) | 54,484 verts (14.9%), max disp: 0.1647 (0.50% $D_{\text{bbox}}$) |
+| **Spurious Geometry Pruned** | 79,759 below floor, 4,155 outside walls (83,914 faces) | 13,300 below floor, 88,914 outside walls (**102,214 faces**) |
+| **Exterior Slab / Ghost Removal** | Clean wall boundaries | **Exterior blue-grey slab & mirror ghosts completely removed** |
+| **Repaired Mesh Count** | 136,678 verts, 272,187 faces | 316,241 verts, 631,383 faces |
+| **Decimated Mesh Count** | 100,584 verts, **200,000 faces** (boundary_weight=1.0) | 100,487 verts, **199,999 faces** (boundary_weight=1.0) |
+| **TextureMesh Execution** | 20.8s, 4,635 atlas patches, 4096 texture size | 25.1s, 4,545 atlas patches, 4096 texture size |
+| **Texture Coverage** | **200,000 / 200,000 faces (100.0%)**, 0 untextured | **199,999 / 199,999 faces (100.0%)**, 0 untextured |
+| **Poisson Surface A/B** | 322,866 verts, 639,630 faces (15.9s, depth 9) | 142,637 verts, 282,610 faces (5.6s, depth 9) |
+| **Total Pipeline Wall Clock** | **207.9s** (3m 27s) | **375.8s** (6m 15s) |
+
+### D. Composite Evidence Sheets Generated
+Both composite contact sheets rendered across 4 canonical views (Perspective 1, Perspective 2, Top-Down Plan, Side Elevation) and all 6 progression stages:
+1. `outputs/house_phase2_sheet.png` (1.2 MB, 1790x2394)
+2. `outputs/tour_phase2_sheet.png` (942 KB, 1790x2394)
 
 ---
 
-## 9. Session Resumption Guide
+## 9. Next Steps (Immediate Steps for Milestone P2c Phase 3)
+
+*Phase 2 is completed and VERIFIED. Stopped for user review before proceeding to Phase 3.*
+
+1. **User Review on Phase 2 Evidence**: Review composite sheets in `outputs/house_phase2_sheet.png` and `outputs/tour_phase2_sheet.png`.
+2. **Phase 3 Scope (Awaiting User Approval to Implement)**:
+   - `FloorAlignAndScaleStage`: Rigid similarity transform $\mathbf{v}' = S \cdot \mathbf{R} (\mathbf{v} - \mathbf{c}) + \mathbf{t}$ rotating dominant floor plane to $Y=0$ (or $Z=0$ per up-axis setting), centering bounds on $(0, 0)$, and applying scale factor $S$.
+   - **Zero-Retexturing Calibration Seam**: `/calibrate` applies transformation to vertex positions only, leaving UV atlases and image textures completely intact (<3s execution).
+   - `MeshExportStage`: Exporters for GLB, OBJ (+MTL+PNG), PLY, STL, XYZ (native Python) and FBX, USDZ (headless Blender 4.1 script).
+   - `QualityReportStage`: Mesh watertightness, area, volume, and room dimensions (bounding box length/width/height, estimated floor area).
+   - Frontend `MeasureTool.tsx`, `QualityReport.tsx`, and interactive calibration modal.
+
+---
+
+## 10. Session Resumption Guide
 
 For any agent resuming work in this codebase:
 1. **Read this file (`progress.md`) first** to understand the current milestone state and recent bug fixes.

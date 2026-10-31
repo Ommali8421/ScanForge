@@ -28,11 +28,23 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             OpenMVSRMeshStage,
             OpenMVSTextureStage,
         )
+        from app.pipelines.mesh import (
+            MeshCleanupStage,
+            RoomAnalysisStage,
+            PlaneRepairStage,
+            DecimateStage,
+            PoissonABStage,
+        )
         stages.extend([
             OpenMVSInterfaceStage(),
             OpenMVSDensifyStage(),
             OpenMVSRMeshStage(),
+            MeshCleanupStage(),
+            RoomAnalysisStage(),
+            PlaneRepairStage(),
+            DecimateStage(),
             OpenMVSTextureStage(),
+            PoissonABStage(),
         ])
 
     return Pipeline(scan_type=scan_type, stages=stages)
