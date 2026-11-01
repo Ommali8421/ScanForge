@@ -187,32 +187,42 @@ class PlaneRepairStage(Stage):
 
         mesh.vertices = vertices
 
-        # 2. Geometry Removal: Below Floor & Outside Wall Envelope (Requirement C.4)
+        # 2. Geometry Removal: Below Floor & Outside Wall Envelope (Conservative Enveloping)
+        # Geometry inside the expanded camera-trajectory bounding box is strictly protected.
+        face_centers = mesh.triangles_center
+        if "cam_bbox_min" in analysis and "cam_bbox_max" in analysis:
+            cam_min = np.array(analysis["cam_bbox_min"], dtype=float)
+            cam_max = np.array(analysis["cam_bbox_max"], dtype=float)
+            cam_margin = 0.15 * scene_diagonal
+            cam_envelope_min = cam_min - cam_margin
+            cam_envelope_max = cam_max + cam_margin
+            inside_cam_envelope = np.all((face_centers >= cam_envelope_min) & (face_centers <= cam_envelope_max), axis=1)
+        else:
+            inside_cam_envelope = np.zeros(len(mesh.faces), dtype=bool)
+
+        # Floor pruning: strictly outside camera envelope AND beyond floor plane with margin
         floor_n = np.array(chosen_floor["normal"], dtype=float)
         floor_d = float(chosen_floor["d"])
-        below_floor_margin = 0.01 * scene_diagonal  # strictly below floor plane
-
-        # Signed distance of vertices to floor plane (normal points UP)
-        # s_floor = n . v + d (positive above floor, negative below floor)
-        v_signed_floor = np.dot(mesh.vertices, floor_n) + floor_d
-
-        # Faces with centroid below the floor
-        face_centers = mesh.triangles_center
+        below_floor_margin = 0.01 * scene_diagonal
         face_signed_floor = np.dot(face_centers, floor_n) + floor_d
-        below_floor_faces = face_signed_floor < -below_floor_margin
+        below_floor_faces = (face_signed_floor < -below_floor_margin) & (~inside_cam_envelope)
 
-        # Outside wall envelope check
-        # Each wall normal points inward (toward room center).
-        # Signed distance to wall: s_wall = n . v + d (positive inside room, negative outside wall)
+        # Wall envelope pruning: require at least 2 strong wall planes (>= 1000 inliers)
+        # Never prune on a single weak or single active wall plane to avoid half-space slicing.
+        strong_walls = [wp for wp in wall_planes if wp.get("inliers", 0) >= 1000]
         outside_wall_faces = np.zeros(len(mesh.faces), dtype=bool)
         wall_margin = 0.02 * scene_diagonal
 
-        for wp in wall_planes:
-            wn = np.array(wp["normal"], dtype=float)
-            wd = float(wp["d"])
-            face_signed_wall = np.dot(face_centers, wn) + wd
-            # If significantly outside wall envelope (behind the wall)
-            outside_wall_faces |= (face_signed_wall < -wall_margin)
+        if len(strong_walls) >= 2:
+            for wp in strong_walls:
+                wn = np.array(wp["normal"], dtype=float)
+                wd = float(wp["d"])
+                face_signed_wall = np.dot(face_centers, wn) + wd
+                outside_wall_faces |= (face_signed_wall < -wall_margin) & (~inside_cam_envelope)
+        else:
+            ctx.log_cb(
+                f"[PlaneRepair] Wall envelope pruning disabled: found {len(strong_walls)} strong wall(s) (minimum 2 required)."
+            )
 
         drop_mask = below_floor_faces | outside_wall_faces
         dropped_floor_count = int(np.sum(below_floor_faces))

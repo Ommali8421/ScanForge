@@ -20,6 +20,12 @@ from app.pipelines.mesh.plane_repair import PlaneRepairStage, line_intersection_
 from app.pipelines.mesh.decimate import DecimateStage
 from app.pipelines.photo.openmvs import fix_glb_pbr_materials
 
+try:
+    import open3d as o3d  # noqa: F401
+    HAS_OPEN3D = True
+except (ImportError, Exception):
+    HAS_OPEN3D = False
+
 
 def test_mesh_cleanup_floater_removal(tmp_path: Path):
     """Verify that MeshCleanupStage discards disconnected floaters <1% of primary mesh."""
@@ -68,6 +74,7 @@ def test_line_intersection_of_two_planes():
     assert abs(dir_line[2]) > 0.99
 
 
+@pytest.mark.skipif(not HAS_OPEN3D, reason="Open3D requires worker-gpu container")
 def test_room_analysis_and_relative_floor(tmp_path: Path):
     """Verify RoomAnalysisStage identifies dominant horizontal floor plane below cameras."""
     # Create synthetic room box (floor at Y=0, ceiling at Y=2.5, walls at X=+-2, Z=+-2)
@@ -171,6 +178,7 @@ def test_plane_repair_snapping_and_ghost_removal(tmp_path: Path):
     assert np.all(repaired.vertices[:, 1] >= -0.1)
 
 
+@pytest.mark.skipif(not HAS_OPEN3D, reason="Open3D requires worker-gpu container")
 def test_decimate_stage(tmp_path: Path):
     """Verify DecimateStage reduces triangle count with boundary_weight=1.0."""
     box = trimesh.creation.box(extents=(2.0, 2.0, 2.0))

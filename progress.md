@@ -13,7 +13,7 @@
 | **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
 | **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121, Open3D 0.20.0, Trimesh 5.1.1) | **Done** | Verified via `doctor.py` in container & `e2e_smoke.py` |
 | **P2b** | Video ingest + adaptive frame extraction + interior-tuned COLMAP SfM (GPU) + 4-panel diagnostic trajectory plot + scene-cut detection + low-texture filtering + real test runs | **Done** | Verified on RTX 4060 GPU with 3 real video runs (`house_test_30s.mp4`, `bedroom_vid.mp4` with/without filter) |
-| **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (floater cleanup, room analysis, relative floor rule, normal-aware plane snapping, envelope pruning, quadric decimation, UV texture mapping, Poisson A/B) + Phase 3 (floor align Y=0, scale calibration, exporters, quality report) | **Phase 2 Done (VERIFIED)** | Phase 2 verified on RTX 4060 GPU with `house_test_30s.mp4` (Job `f0e89d25`) and `enhanced_interior_tour_1080p.mp4` (Job `2b7b3bcc`). 4-view before/after evidence sheets saved in `outputs/`. Stopped for user review before Phase 3. |
+| **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (floater cleanup, room analysis, relative floor rule, normal-aware plane snapping, envelope pruning, quadric decimation, UV texture mapping, Poisson A/B) + Phase 2 Review & Hardening (over-pruning fix, texture coverage analysis, crash root cause, wall close-ups, Delaunay recommendation, inlier tables, test DB isolation, git credential verification) + Phase 3 (floor align Y=0, scale calibration, exporters, quality report) | **Phase 2 Hardened & VERIFIED** | Phase 2 verified on RTX 4060 GPU with `house_test_30s.mp4` (Job `f0e89d25`) and `enhanced_interior_tour_1080p.mp4` (Job `2b7b3bcc`). Over-pruning resolved (conservative camera bbox + plane support), 99.98%+ true texture coverage verified, seam-free wall close-ups rendered, Delaunay default recommended, 50/50 tests passing with isolated test DB. Stopped for user review before Phase 3. |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
@@ -289,6 +289,80 @@ All baseline suite checks were executed directly against the live environment:
 Both composite contact sheets rendered across 4 canonical views (Perspective 1, Perspective 2, Top-Down Plan, Side Elevation) and all 6 progression stages:
 1. `outputs/house_phase2_sheet.png` (1.2 MB, 1790x2394)
 2. `outputs/tour_phase2_sheet.png` (942 KB, 1790x2394)
+
+### E. Phase 2 Review & Hardening Verification (Items 1–6)
+
+#### Item 1 & 4: Over-Pruning Root Causes, Inlier Tables & Conservative Enveloping Fix
+1. **Diagnosis & Root Cause of Over-Pruning**:
+   - **House Clip (`f0e89d25`)**: 79,759 / 356,101 faces (22.4%) were culled below the floor in the original Phase 2 run.
+     * *Cause*: `room_analysis.py` sorted qualifying horizontal candidates by `height` descending. It chose Candidate 1 (a tabletop/counter at height -4.740 with 1,848 inliers) over Candidate 0 (the true ground floor at height -6.375 with **3,163 inliers**). Clipping geometry below height -4.740 sliced off the entire lower half of the house.
+   - **Tour Clip (`2b7b3bcc`)**: 88,914 / 734,133 faces (12.1%) were culled outside walls.
+     * *Cause*: Only **1** wall plane was detected in the tour ($X \approx 5.474$, 1,775 inliers). Applying `outside_wall` clipping on a single plane defined an infinite half-space, which sliced off half the bedroom.
+     * *Why user saw "289 inliers" on glossy floor*: The log line `min_inliers=289` was the RANSAC *stopping criterion* (`0.015 * len(pcd_sampled.points)`), not the plane's actual support. The glossy floor actually possessed **2,566 inliers** on `pcd_sampled`! Furthermore, line 261 erroneously checked `hp['inliers'] >= int(len(vertices) * 0.01)` (7,335 threshold), falsely marking `qualifies=False`.
+2. **Floor Candidates & Inlier Support Tables**:
+   - **House Candidates (`D_bbox = 32.112`, median cam height = 0.461)**:
+     * **Candidate 0 (True Floor — CHOSEN)**: Inliers = **3,163**, height = -6.375, depth below camera = 6.836 (21.3% $D_{\text{bbox}}$), `qualifies = True`.
+     * Candidate 1 (Tabletop/Counter): Inliers = 1,848, height = -4.740, depth below camera = 5.201 (16.2% $D_{\text{bbox}}$), `qualifies = True`.
+     * Candidate 2: Inliers = 1,201, height = -3.463, depth = 3.924 (12.2% $D_{\text{bbox}}$).
+   - **Tour Candidates (`D_bbox = 32.951`, median cam height = -0.000)**:
+     * Candidate 0 (Ceiling): Inliers = 2,918, height = +2.065 (above camera).
+     * **Candidate 1 (True Floor — CHOSEN)**: Inliers = **2,566**, height = -1.530, depth below camera = 1.530 (4.6% $D_{\text{bbox}}$), `qualifies = True`.
+     * Candidate 2 (Bed/Table): Inliers = 1,786, height = -0.920, depth = 0.920 (2.8% $D_{\text{bbox}}$).
+     * Candidate 4: Inliers = 1,288, height = -0.415.
+     * Candidate 6: Inliers = 898, height = -1.015.
+3. **Conservative Enveloping Solution & Empirical Results**:
+   - *Trajectory Bounding Box Protection*: A safety bounding box $B_{\text{cam}} = [\text{cam}_{\min} - 0.15 D, \text{cam}_{\max} + 0.15 D]$ encapsulates the camera path. All geometry inside $B_{\text{cam}}$ is strictly protected from clipping.
+   - *Support-Ranked Floor Heuristic*: RANSAC support is evaluated against `pcd_sampled.points`. Qualifying horizontal planes below the camera are ranked by inlier support descending. Candidate 0 (3,163 inliers) in House and Candidate 1 (2,566 inliers) in Tour win decisively.
+   - *Multi-Wall Requirement*: Wall envelope pruning requires $\ge 2$ strong wall planes ($\ge 1,000$ inliers). If only 1 wall plane exists (Tour), wall culling is disabled.
+   - *Before / After Numbers*:
+     * **House**: Below-floor pruned dropped from **79,759 (22.4%)** to **0 (0.00%)**! Pruned outside walls: 4,265 faces (1.20%, exterior stray triangles).
+     * **Tour**: Outside-walls pruned dropped from **88,914 (12.1%)** to **0 (0.00%)**! Pruned below floor: 1,094 faces (0.15%, subsurface mirror floaters).
+   - *Composite Sheets Saved*:
+     * `outputs/house_overpruning_analysis.png` (3250x1390)
+     * `outputs/tour_overpruning_analysis.png` (3250x1390)
+
+#### Item 2: Texture Coverage Computation, OpenMVS Crash Root Cause & Wall Close-Ups
+1. **How "100% Coverage" Was Computed**:
+   - In `libs/MVS/SceneTexture.cpp` (`AssignBestViews`), OpenMVS logs `mesh.faces.GetSize()` (total evaluated faces), not assigned view count. The regex matched this line, logging 200,000 / 200,000 (100.0%).
+   - **True UV Texture Coverage**: Evaluated by sampling `scene_textured.png` across all face UV centers:
+     * **House**: 199,960 / 200,000 faces (**99.98%**) sample valid photo texture pixels; only 40 faces (0.02%) sample empty grey color (`[200, 200, 200]`).
+     * **Tour**: 199,984 / 199,999 faces (**99.99%**) sample valid photo texture pixels; only 15 faces (0.01%) sample empty grey color.
+   - The large orange unseen patches in Phase 1 were raw Delaunay spurious triangles bridging into unobserved outer space. In Phase 2, because the mesh is cleaned, floater-pruned, and bounded to the interior room, 99.98%+ of faces are directly observed.
+2. **Root Cause of OpenMVS TextureMesh Crash (`_Map_base::at`)**:
+   - When an external decimated/repaired mesh is passed via `--mesh-file mesh_decimated.ply`, OpenMVS replaces mesh faces/vertices but does not rebuild the Delaunay topological edge-to-face adjacency graph in `scene.mvs`.
+   - `GlobalSeamLeveling` and `LocalSeamLeveling` attempt to look up face/edge color correspondences using `std::map::at(key)`. When a modified vertex/edge key is missing, `std::out_of_range` is thrown, which OpenMVS does not catch.
+   - Passing `--global-seam-leveling 0 --local-seam-leveling 0` skips the graph seam optimization and applies direct projective texture mapping with Poisson edge blending.
+3. **Wall Texture Visual Quality (Close-Up Renders)**:
+   - Evaluated interior wall textures using Blender Workbench/Eevee renders focused on interior walls:
+     * `outputs/house_wall_closeup.png` (1280x960, 1.0 MB)
+     * `outputs/tour_wall_closeup.png` (1280x960, 1.7 MB)
+   - Both renders demonstrate crisp, continuous textures with zero visible seam lines or exposure banding.
+
+#### Item 3: Poisson vs Delaunay Reconstruction Recommendation
+1. **Geometric Extent & Bubble Artifact Comparison**:
+   - **House**: Delaunay bounds $[-6.35, -8.27, -2.8]$ to $[13.7, 5.7, 16.2]$ (272k faces); Poisson $[-7.25, -8.78, -3.04]$ to $[16.36, 6.63, 16.73]$ (640k faces).
+   - **Tour**: Delaunay bounds $[-4.54, -8.53, -17.42]$ to $[6.63, 2.38, 4.94]$ (631k faces, Y extent 10.9); Poisson bounds $[-14.66, -8.6, -29.73]$ to $[16.34, 26.16, 7.2]$ (283k faces, **Y extent 34.8 — over 3x the room height!**).
+2. **Engineering Analysis**:
+   - **Delaunay (OpenMVS ReconstructMesh)**: Operates directly on camera line-of-sight visibility rays in a 3D Delaunay tetrahedral graph. Naturally leaves unobserved doorways, windows, and ceilings open without inventing artificial surfaces. Normal-aware plane snapping regularizes planar walls cleanly.
+   - **Screened Poisson (Open3D)**: Enforces a strictly closed, watertight isosurface ($\Delta \chi = \nabla \cdot \vec{V}$). Wherever camera coverage terminates, Poisson must close the volume, resulting in massive bulbous "balloon" surfaces extending into unobserved regions.
+3. **Recommendation**:
+   - **Delaunay (`ReconstructMesh` + plane regularization) is RECOMMENDED as the default interior reconstruction engine.**
+   - Screened Poisson is retained as an **optional** toggle for users requiring a watertight continuous manifold (e.g. 3D printing).
+   - *Side-by-Side Comparison Sheets Saved*:
+     * `outputs/house_poisson_vs_delaunay.png` (1965x820, 502 KB)
+     * `outputs/tour_poisson_vs_delaunay.png` (1965x820, 436 KB)
+
+#### Item 5: Test Database Isolation & Job `bc22c9e8` Resolution
+1. **Test Isolation**: `backend/tests/conftest.py` redirects `SCANFORGE_DB_URL` to an isolated temporary SQLite database (`sqlite:////tmp/scanforge_test_.../test_scanforge.db`) and temp directory, cleaning up on test finish. The live database `/data/scanforge.db` is strictly untouched.
+2. **Test Suite Status**: All 50 backend tests pass (50/50 in `scanforge-worker-gpu-1`, 48 passed / 2 GPU-only skipped in `scanforge-api-1`).
+3. **Job `bc22c9e8-c3d6-4c65-91a9-535847762665` Explanation**:
+   - Created on Oct 30 by `test_sse_replay_on_connect()` during earlier unisolated test runs, completing in 38 ms.
+   - Contained hardcoded mock logs (`[sparse_sfm] (35%) SfM feature matching in progress...`) and no real reconstruction geometry. The UI header reported the host GPU ("NVIDIA RTX 4060") from `/api/capabilities`, while the job rendered the mock room fallback.
+   - The job record is currently preserved in `/data/scanforge.db` awaiting user confirmation before deletion.
+
+#### Item 6: Git Credential Configuration
+- **Credential Storage**: Zero tokens, passwords, or personal keys are stored in any repository file, script, or environment file.
+- **Helper Configuration**: Global Git configuration uses `credential.helper=/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe`, delegating authentication directly to the host Windows Credential Manager. If push authentication ever fails, no configuration changes will be made without user instruction.
 
 ---
 

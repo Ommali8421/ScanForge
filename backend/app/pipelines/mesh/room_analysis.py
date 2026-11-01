@@ -252,13 +252,14 @@ class RoomAnalysisStage(Stage):
                     "inliers": p["inliers"],
                 })
 
-        # 5. Relative Floor Selection Heuristic (Requirement C.2)
+        # 5. Relative Floor Selection Heuristic (Requirement C.2 & Verification Revision)
         # - Units are uncalibrated: use relative scene diagonal fractions.
-        # - Choose the highest large horizontal plane below the median camera height with enough support.
+        # - RANSAC support threshold is computed relative to sampled RANSAC cloud size.
+        # - Prioritizes dominant ground floor plane with largest planar support in the lower camera zone.
         # - Reject planes deeper than 0.45 * scene_diagonal below median camera height.
         floor_candidates = []
         max_depth_below_cam = 0.45 * scene_diagonal
-        min_floor_support = max(100, int(len(vertices) * 0.01))
+        min_floor_support = max(100, int(len(pcd_sampled.points) * 0.015))
 
         for hp in horizontal_planes:
             h = hp["height"]
@@ -276,8 +277,8 @@ class RoomAnalysisStage(Stage):
         qualifying_floors = [c for c in floor_candidates if c["qualifies"]]
 
         if qualifying_floors:
-            # Sort by height descending (highest qualifying plane = real floor surface)
-            qualifying_floors.sort(key=lambda x: x["height"], reverse=True)
+            # Sort by planar inlier support descending; break ties by lower height (ground floor below elevated furniture)
+            qualifying_floors.sort(key=lambda x: (x["inliers"], -x["height"]), reverse=True)
             chosen_floor = qualifying_floors[0]
             ctx.log_cb(
                 f"[RoomAnalysis] Identified floor from {len(qualifying_floors)} qualifying candidate(s): "
@@ -334,12 +335,16 @@ class RoomAnalysisStage(Stage):
         T_level_center[:3, 3] = np.array([tx, ty, tz])
 
         # 7. Save room_analysis.json
+        cam_min = np.min(centers, axis=0) if len(centers) > 0 else bbox_min
+        cam_max = np.max(centers, axis=0) if len(centers) > 0 else bbox_max
         report_data = {
             "camera_mean_up": [float(x) for x in mean_up],
             "median_camera_height": cam_median_height,
             "scene_diagonal": scene_diagonal,
             "bounding_box_min": [float(x) for x in bbox_min],
             "bounding_box_max": [float(x) for x in bbox_max],
+            "cam_bbox_min": [float(x) for x in cam_min],
+            "cam_bbox_max": [float(x) for x in cam_max],
             "floor_candidates": floor_candidates,
             "chosen_floor_plane": chosen_floor,
             "wall_planes": wall_planes,
