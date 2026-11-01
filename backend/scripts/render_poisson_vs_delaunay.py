@@ -1,5 +1,7 @@
 """
 Render Poisson vs Delaunay side-by-side comparison views using Blender.
+High-contrast configuration: Dark slate background, crisp architectural clay,
+three-point cavity lighting.
 """
 
 import sys
@@ -20,13 +22,22 @@ def render_mesh(mesh_path, out_path, is_glb=False, camera_setup=None):
     scene.render.resolution_x = 960
     scene.render.resolution_y = 720
     scene.render.image_settings.file_format = 'PNG'
+    scene.render.engine = 'BLENDER_WORKBENCH'
     
-    # Material / Shading
-    mat = bpy.data.materials.new("Clay")
+    # 1. Dark slate background for high contrast
+    world = bpy.data.worlds.new('World')
+    scene.world = world
+    world.use_nodes = True
+    bg = world.node_tree.nodes['Background']
+    bg.inputs['Color'].default_value = (0.07, 0.09, 0.13, 1.0)  # Dark slate #121721
+    bg.inputs['Strength'].default_value = 1.0
+    
+    # 2. Crisp architectural clay material
+    mat = bpy.data.materials.new("ClayHighContrast")
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = (0.78, 0.80, 0.82, 1.0)
-    bsdf.inputs["Roughness"].default_value = 0.6
+    bsdf.inputs["Base Color"].default_value = (0.86, 0.84, 0.81, 1.0)  # Crisp light stone
+    bsdf.inputs["Roughness"].default_value = 0.35
     
     for obj in bpy.context.scene.objects:
         if obj.type == 'MESH':
@@ -35,20 +46,40 @@ def render_mesh(mesh_path, out_path, is_glb=False, camera_setup=None):
             else:
                 obj.data.materials[0] = mat
                 
-    # World
-    world = bpy.data.worlds.new('World')
-    scene.world = world
-    world.use_nodes = True
-    bg = world.node_tree.nodes['Background']
-    bg.inputs['Color'].default_value = (0.95, 0.95, 0.95, 1.0)
-    bg.inputs['Strength'].default_value = 1.0
+    # 3. Workbench Cavity / Ridge highlighting to accentuate geometric contours
+    scene.render.film_transparent = True
+    scene.display.shading.color_type = "SINGLE"
+    scene.display.shading.single_color = (0.86, 0.84, 0.81)
+    scene.display.shading.light = "MATCAP"
+    scene.display.shading.show_cavity = True
+    scene.display.shading.cavity_type = "BOTH"
+    scene.display.shading.cavity_ridge_factor = 2.0
+    scene.display.shading.cavity_valley_factor = 2.0
     
-    # Lighting
-    light_data = bpy.data.lights.new('Key', type='SUN')
-    light_data.energy = 2.0
-    key_obj = bpy.data.objects.new('Key', light_data)
+    # 4. Three-point lighting
+    # Key Light (warm)
+    key_data = bpy.data.lights.new('Key', type='SUN')
+    key_data.energy = 3.5
+    key_data.color = (1.0, 0.98, 0.92)
+    key_obj = bpy.data.objects.new('Key', key_data)
     bpy.context.collection.objects.link(key_obj)
     key_obj.rotation_euler = (0.7, 0.3, 0.5)
+    
+    # Fill Light (cool sky)
+    fill_data = bpy.data.lights.new('Fill', type='SUN')
+    fill_data.energy = 1.8
+    fill_data.color = (0.70, 0.82, 1.0)
+    fill_obj = bpy.data.objects.new('Fill', fill_data)
+    bpy.context.collection.objects.link(fill_obj)
+    fill_obj.rotation_euler = (-0.5, -0.4, 2.2)
+    
+    # Rim Light (crisp silhouette)
+    rim_data = bpy.data.lights.new('Rim', type='SUN')
+    rim_data.energy = 2.5
+    rim_data.color = (1.0, 1.0, 1.0)
+    rim_obj = bpy.data.objects.new('Rim', rim_data)
+    bpy.context.collection.objects.link(rim_obj)
+    rim_obj.rotation_euler = (1.2, -0.6, -1.8)
     
     # Camera
     cam_data = bpy.data.cameras.new('Cam')
@@ -82,24 +113,16 @@ def render_mesh(mesh_path, out_path, is_glb=False, camera_setup=None):
     return {"loc": cam_obj.location.copy(), "rot": cam_obj.rotation_euler.copy()}
 
 def main():
-    os.makedirs("/data/outputs/comparison", exist_ok=True)
+    if len(sys.argv) < 6:
+        print("Usage: blender -b -P render_poisson_vs_delaunay.py -- <del_ply> <poi_glb> <out_del_png> <out_poi_png>")
+        return
+    args = sys.argv[sys.argv.index("--") + 1:]
+    del_ply, poi_glb, out_del, out_poi = args[0], args[1], args[2], args[3]
     
-    jobs = [
-        ("house", "f0e89d25-b4fb-4878-abef-3c2dc479bf35"),
-        ("tour", "2b7b3bcc-0c24-40ed-82b0-b2e2d4c82351")
-    ]
-    
-    for name, jid in jobs:
-        del_ply = f"/data/jobs/{jid}/mesh_repaired.ply"
-        poi_glb = f"/data/jobs/{jid}/mesh_poisson.glb"
-        
-        out_del = f"/data/outputs/comparison/{name}_delaunay.png"
-        out_poi = f"/data/outputs/comparison/{name}_poisson.png"
-        
-        cam_setup = render_mesh(del_ply, out_del, is_glb=False)
-        print(f"Rendered Delaunay: {out_del}")
-        render_mesh(poi_glb, out_poi, is_glb=True, camera_setup=cam_setup)
-        print(f"Rendered Poisson: {out_poi}")
+    cam_setup = render_mesh(del_ply, out_del, is_glb=False)
+    print(f"Rendered Delaunay: {out_del}")
+    render_mesh(poi_glb, out_poi, is_glb=True, camera_setup=cam_setup)
+    print(f"Rendered Poisson: {out_poi}")
 
 if __name__ == "__main__":
     main()

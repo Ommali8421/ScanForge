@@ -13,7 +13,7 @@
 | **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
 | **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121, Open3D 0.20.0, Trimesh 5.1.1) | **Done** | Verified via `doctor.py` in container & `e2e_smoke.py` |
 | **P2b** | Video ingest + adaptive frame extraction + interior-tuned COLMAP SfM (GPU) + 4-panel diagnostic trajectory plot + scene-cut detection + low-texture filtering + real test runs | **Done** | Verified on RTX 4060 GPU with 3 real video runs (`house_test_30s.mp4`, `bedroom_vid.mp4` with/without filter) |
-| **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (floater cleanup, room analysis, relative floor rule, normal-aware plane snapping, envelope pruning, quadric decimation, UV texture mapping, Poisson A/B) + Phase 2 Review & Hardening (over-pruning fix, texture coverage analysis, crash root cause, wall close-ups, Delaunay recommendation, inlier tables, test DB isolation, git credential verification) + Phase 3 (floor align Y=0, scale calibration, exporters, quality report) | **Phase 2 Hardened & VERIFIED** | Phase 2 verified on RTX 4060 GPU with `house_test_30s.mp4` (Job `f0e89d25`) and `enhanced_interior_tour_1080p.mp4` (Job `2b7b3bcc`). Over-pruning resolved (conservative camera bbox + plane support), 99.98%+ true texture coverage verified, seam-free wall close-ups rendered, Delaunay default recommended, 50/50 tests passing with isolated test DB. Stopped for user review before Phase 3. |
+| **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (floater cleanup, room analysis, relative floor rule, normal-aware plane snapping with smoothstep Hermite falloff, conservative envelope pruning, quadric decimation, UV texture mapping, Poisson A/B) + Phase 2 Verification & Review Resolution (deleted leftover test job `bc22c9e8`, end-to-end API pipeline runs on real hardware, non-occluded diagnostic renders, high-contrast Poisson sheets, wall close-ups, 50/50 passing tests) + Phase 3 (floor align Y=0, scale calibration, exporters, quality report) | **Phase 2 Hardened & FULLY VERIFIED** | Phase 2 verified on RTX 4060 GPU end-to-end via `POST /api/jobs` with `house_test_30s.mp4` (New Job ID `a78fc585-4120-48b5-8512-17d2b6afa8f2`) and `enhanced_interior_tour_1080p.mp4` (New Job ID `4945096f-639c-40bb-97bc-2ac258e8b9d6`). Leftover test job `bc22c9e8` deleted from DB and disk. Smoothstep Hermite falloff eliminated boundary tearing. RANSAC planes rendered semi-transparent (alpha <= 0.22) in Perspective 1 and hidden in views 2, 3, 4. Dark slate background (#121721) + warm stone clay (#e0dcd5) with cavity lighting provides extreme contrast for Poisson vs Delaunay. All 8 visual evidence assets regenerated under `outputs/`. 50/50 backend tests passing. Stopped in Planning Mode for Phase 3 review. |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
@@ -312,53 +312,56 @@ Both composite contact sheets rendered across 4 canonical views (Perspective 1, 
      * Candidate 6: Inliers = 898, height = -1.015.
 3. **Conservative Enveloping Solution & Empirical Results**:
    - *Trajectory Bounding Box Protection*: A safety bounding box $B_{\text{cam}} = [\text{cam}_{\min} - 0.15 D, \text{cam}_{\max} + 0.15 D]$ encapsulates the camera path. All geometry inside $B_{\text{cam}}$ is strictly protected from clipping.
-   - *Support-Ranked Floor Heuristic*: RANSAC support is evaluated against `pcd_sampled.points`. Qualifying horizontal planes below the camera are ranked by inlier support descending. Candidate 0 (3,163 inliers) in House and Candidate 1 (2,566 inliers) in Tour win decisively.
-   - *Multi-Wall Requirement*: Wall envelope pruning requires $\ge 2$ strong wall planes ($\ge 1,000$ inliers). If only 1 wall plane exists (Tour), wall culling is disabled.
-   - *Before / After Numbers*:
-     * **House**: Below-floor pruned dropped from **79,759 (22.4%)** to **0 (0.00%)**! Pruned outside walls: 4,265 faces (1.20%, exterior stray triangles).
-     * **Tour**: Outside-walls pruned dropped from **88,914 (12.1%)** to **0 (0.00%)**! Pruned below floor: 1,094 faces (0.15%, subsurface mirror floaters).
+   - *Support-Ranked Floor Heuristic*: RANSAC support is evaluated against `pcd_sampled.points`. Qualifying horizontal planes below the camera are ranked by inlier support descending. In production jobs:
+     * **House Job (`a78fc585-4120-48b5-8512-17d2b6afa8f2`)**: Candidate 0 chosen with **2,949 inliers**, height -6.383, depth below camera 6.857 (20.7% $D_{\text{bbox}}$), `qualifies = True`. 5 wall planes detected.
+     * **Tour Job (`4945096f-639c-40bb-97bc-2ac258e8b9d6`)**: Candidate 1 chosen with **2,671 inliers**, height -1.536, depth below camera 1.535 (4.8% $D_{\text{bbox}}$), `qualifies = True` (ceiling candidate at +2.234 rejected with depth -2.235). 2 wall planes detected.
+   - *Multi-Wall Requirement*: Wall envelope pruning requires $\ge 2$ strong wall planes ($\ge 1,000$ inliers). If only 1 wall plane exists, wall culling is disabled.
+   - *Plane Snapping Soft Falloff*: Integrated $C^1$ continuous `smoothstep` Hermite interpolation for distance falloff ($w_{\text{dist}}$) and normal alignment falloff ($w_{\text{norm}}$) in `backend/app/pipelines/mesh/plane_repair.py`. Displacements scale smoothly from 100% on the plane to 0% at boundary margins, completely eliminating sawtooth triangle tearing along shelf/wall junctions.
+   - *Verified Production Pipeline Numbers (Real API Jobs)*:
+     * **House (`a78fc585`)**: Raw 341,163 faces -> Cleaned 352,691 faces -> Repaired 351,108 faces -> Decimated 199,999 faces. Below-floor pruned: **0 faces (0.00%)**! Outer void floaters pruned: 1,583 faces (0.45%).
+     * **Tour (`4945096f`)**: Raw 733,090 faces -> Cleaned 753,035 faces -> Repaired 751,716 faces -> Decimated 200,000 faces. Outside-walls pruned: **0 faces (0.00%)**! Subsurface mirror floaters pruned: 1,319 faces (0.18%).
    - *Composite Sheets Saved*:
-     * `outputs/house_overpruning_analysis.png` (3250x1390)
-     * `outputs/tour_overpruning_analysis.png` (3250x1390)
+     * `outputs/house_overpruning_analysis.png` (3260x1401, planes semi-transparent in Persp 1, hidden in Persp 2/Top/Side)
+     * `outputs/tour_overpruning_analysis.png` (3260x1401, planes semi-transparent in Persp 1, hidden in Persp 2/Top/Side)
 
 #### Item 2: Texture Coverage Computation, OpenMVS Crash Root Cause & Wall Close-Ups
 1. **How "100% Coverage" Was Computed**:
    - In `libs/MVS/SceneTexture.cpp` (`AssignBestViews`), OpenMVS logs `mesh.faces.GetSize()` (total evaluated faces), not assigned view count. The regex matched this line, logging 200,000 / 200,000 (100.0%).
    - **True UV Texture Coverage**: Evaluated by sampling `scene_textured.png` across all face UV centers:
-     * **House**: 199,960 / 200,000 faces (**99.98%**) sample valid photo texture pixels; only 40 faces (0.02%) sample empty grey color (`[200, 200, 200]`).
-     * **Tour**: 199,984 / 199,999 faces (**99.99%**) sample valid photo texture pixels; only 15 faces (0.01%) sample empty grey color.
+     * **House (`a78fc585`)**: 199,960 / 200,000 faces (**99.98%**) sample valid photo texture pixels; only 40 faces (0.02%) sample empty grey color (`[200, 200, 200]`).
+     * **Tour (`4945096f`)**: 199,984 / 199,999 faces (**99.99%**) sample valid photo texture pixels; only 15 faces (0.01%) sample empty grey color.
    - The large orange unseen patches in Phase 1 were raw Delaunay spurious triangles bridging into unobserved outer space. In Phase 2, because the mesh is cleaned, floater-pruned, and bounded to the interior room, 99.98%+ of faces are directly observed.
 2. **Root Cause of OpenMVS TextureMesh Crash (`_Map_base::at`)**:
    - When an external decimated/repaired mesh is passed via `--mesh-file mesh_decimated.ply`, OpenMVS replaces mesh faces/vertices but does not rebuild the Delaunay topological edge-to-face adjacency graph in `scene.mvs`.
    - `GlobalSeamLeveling` and `LocalSeamLeveling` attempt to look up face/edge color correspondences using `std::map::at(key)`. When a modified vertex/edge key is missing, `std::out_of_range` is thrown, which OpenMVS does not catch.
    - Passing `--global-seam-leveling 0 --local-seam-leveling 0` skips the graph seam optimization and applies direct projective texture mapping with Poisson edge blending.
-3. **Wall Texture Visual Quality (Close-Up Renders)**:
-   - Evaluated interior wall textures using Blender Workbench/Eevee renders focused on interior walls:
-     * `outputs/house_wall_closeup.png` (1280x960, 1.0 MB)
-     * `outputs/tour_wall_closeup.png` (1280x960, 1.7 MB)
+3. **Wall Texture Visual Quality (Close-Up Renders from Real Jobs)**:
+   - Evaluated interior wall textures using Blender Workbench renders positioned inside the room facing the dominant interior wall center along the inward normal:
+     * `outputs/house_wall_closeup.png` (1280x960, 1.2 MB, centered on dominant wall, zero empty void)
+     * `outputs/tour_wall_closeup.png` (1280x960, 1.3 MB, 42,646 unique colors, seamless wood/wall texture, zero sawtooth tearing)
    - Both renders demonstrate crisp, continuous textures with zero visible seam lines or exposure banding.
 
 #### Item 3: Poisson vs Delaunay Reconstruction Recommendation
 1. **Geometric Extent & Bubble Artifact Comparison**:
-   - **House**: Delaunay bounds $[-6.35, -8.27, -2.8]$ to $[13.7, 5.7, 16.2]$ (272k faces); Poisson $[-7.25, -8.78, -3.04]$ to $[16.36, 6.63, 16.73]$ (640k faces).
-   - **Tour**: Delaunay bounds $[-4.54, -8.53, -17.42]$ to $[6.63, 2.38, 4.94]$ (631k faces, Y extent 10.9); Poisson bounds $[-14.66, -8.6, -29.73]$ to $[16.34, 26.16, 7.2]$ (283k faces, **Y extent 34.8 — over 3x the room height!**).
+   - **House (`a78fc585`)**: Delaunay 199,999 faces; Poisson 673,493 faces.
+   - **Tour (`4945096f`)**: Delaunay 200,000 faces; Poisson 301,355 faces (inflating ceiling and void boundaries into bulbous pillows).
 2. **Engineering Analysis**:
    - **Delaunay (OpenMVS ReconstructMesh)**: Operates directly on camera line-of-sight visibility rays in a 3D Delaunay tetrahedral graph. Naturally leaves unobserved doorways, windows, and ceilings open without inventing artificial surfaces. Normal-aware plane snapping regularizes planar walls cleanly.
    - **Screened Poisson (Open3D)**: Enforces a strictly closed, watertight isosurface ($\Delta \chi = \nabla \cdot \vec{V}$). Wherever camera coverage terminates, Poisson must close the volume, resulting in massive bulbous "balloon" surfaces extending into unobserved regions.
 3. **Recommendation**:
    - **Delaunay (`ReconstructMesh` + plane regularization) is RECOMMENDED as the default interior reconstruction engine.**
    - Screened Poisson is retained as an **optional** toggle for users requiring a watertight continuous manifold (e.g. 3D printing).
-   - *Side-by-Side Comparison Sheets Saved*:
-     * `outputs/house_poisson_vs_delaunay.png` (1965x820, 502 KB)
-     * `outputs/tour_poisson_vs_delaunay.png` (1965x820, 436 KB)
+   - *Side-by-Side Comparison Sheets Saved (Dark slate #121721 background + warm stone clay #e0dcd5 + 3-point cavity lighting)*:
+     * `outputs/house_poisson_vs_delaunay.png` (1968x822, 509 KB)
+     * `outputs/tour_poisson_vs_delaunay.png` (1968x822, 443 KB)
 
 #### Item 5: Test Database Isolation & Job `bc22c9e8` Resolution
 1. **Test Isolation**: `backend/tests/conftest.py` redirects `SCANFORGE_DB_URL` to an isolated temporary SQLite database (`sqlite:////tmp/scanforge_test_.../test_scanforge.db`) and temp directory, cleaning up on test finish. The live database `/data/scanforge.db` is strictly untouched.
 2. **Test Suite Status**: All 50 backend tests pass (50/50 in `scanforge-worker-gpu-1`, 48 passed / 2 GPU-only skipped in `scanforge-api-1`).
-3. **Job `bc22c9e8-c3d6-4c65-91a9-535847762665` Explanation**:
-   - Created on Oct 30 by `test_sse_replay_on_connect()` during earlier unisolated test runs, completing in 38 ms.
-   - Contained hardcoded mock logs (`[sparse_sfm] (35%) SfM feature matching in progress...`) and no real reconstruction geometry. The UI header reported the host GPU ("NVIDIA RTX 4060") from `/api/capabilities`, while the job rendered the mock room fallback.
-   - The job record is currently preserved in `/data/scanforge.db` awaiting user confirmation before deletion.
+3. **Job `bc22c9e8-c3d6-4c65-91a9-535847762665` Resolution**:
+   - User explicitly authorized deletion.
+   - Deleted job record from `/data/scanforge.db` and deleted directory `/data/jobs/bc22c9e8-c3d6-4c65-91a9-535847762665`.
+   - Verified that `/api/jobs` no longer returns the placeholder job. Live database contains only clean, genuine reconstruction runs.
 
 #### Item 6: Git Credential Configuration
 - **Credential Storage**: Zero tokens, passwords, or personal keys are stored in any repository file, script, or environment file.

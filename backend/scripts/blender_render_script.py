@@ -148,9 +148,27 @@ def main():
     dist = size * 1.8
 
     # Note: Model is oriented with up = +Y
-    # View 1: Perspective Front-Left Corner (isometric)
+    # Detect overlaid plane quads (RANSAC diagnostic visualizers)
+    plane_objs = [
+        o for o in bpy.context.scene.objects
+        if o.type == "MESH" and (len(o.data.vertices) <= 8 or "plane" in o.name.lower() or "quad" in o.name.lower())
+    ]
+    if plane_objs:
+        print(f"[Blender] Found {len(plane_objs)} diagnostic plane quad(s). Configuring visibility per view.")
+
+    # View 1: Perspective Front-Left Corner (isometric) - Show planes semi-transparently (alpha <= 0.25)
+    for o in plane_objs:
+        o.hide_render = False
+        if hasattr(o.data, "color_attributes"):
+            for ca in o.data.color_attributes:
+                for c in ca.data:
+                    c.color = (c.color[0], c.color[1], c.color[2], min(c.color[3], 0.20))
     p1_pos = center + np.array([-dist * 0.7, dist * 0.6, dist * 0.7])
     render_view(p1_pos, center, is_ortho=False, ortho_scale=size, output_path=output_dir / "persp1.png")
+
+    # Hide plane quads completely in Views 2, 3, and 4 so mesh geometry is 100% unobstructed
+    for o in plane_objs:
+        o.hide_render = True
 
     # View 2: Perspective Back-Right Corner
     p2_pos = center + np.array([dist * 0.7, dist * 0.6, -dist * 0.7])

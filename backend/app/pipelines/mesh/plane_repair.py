@@ -45,6 +45,14 @@ def line_intersection_of_two_planes(n1: np.ndarray, d1: float, n2: np.ndarray, d
     return p_line, dir_line
 
 
+def smoothstep(edge0: float, edge1: float, x: float) -> float:
+    """Smooth Hermite interpolation between edge0 and edge1, clamping to [0, 1]."""
+    if abs(edge1 - edge0) < 1e-9:
+        return 0.0
+    t = max(0.0, min(1.0, (x - edge0) / (edge1 - edge0)))
+    return t * t * (3.0 - 2.0 * t)
+
+
 class PlaneRepairStage(Stage):
     """
     Snaps planar vertices and removes spurious out-of-envelope geometry in SfM frame.
@@ -133,45 +141,50 @@ class PlaneRepairStage(Stage):
             for plane in active_planes:
                 np_vec = plane["normal"]
                 d = plane["d"]
-                dot = abs(np.dot(nv, np_vec))
+                dot = abs(float(np.dot(nv, np_vec)))
 
                 if dot > normal_agreement_thresh:
-                    dist = abs(np.dot(np_vec, v) + d)
+                    dist = abs(float(np.dot(np_vec, v) + d))
                     if dist <= snap_thresh:
-                        matching_planes.append((plane, dist))
+                        # Soft C1 falloff to prevent sawtooth tearing at boundaries/shelves:
+                        # Full weight at dist -> 0 and dot -> 1, smoothly tapering to 0 at cutoff edges
+                        w_dist = smoothstep(snap_thresh, 0.0, dist)
+                        w_norm = smoothstep(normal_agreement_thresh, 1.0, dot)
+                        w = w_dist * w_norm
+                        matching_planes.append((plane, dist, w))
 
             if not matching_planes:
                 # Furniture / organic decoration: leave untouched
                 continue
 
             if len(matching_planes) == 1:
-                # Project onto single dominant plane
-                plane, _ = matching_planes[0]
+                # Soft projection onto single dominant plane
+                plane, dist, w = matching_planes[0]
                 np_vec = plane["normal"]
                 d = plane["d"]
-                # v_proj = v - (np . v + d) * np
-                v_proj = v - (np.dot(np_vec, v) + d) * np_vec
-                disp = float(np.linalg.norm(v_proj - v))
+                displacement_vector = -w * (np.dot(np_vec, v) + d) * np_vec
+                disp = float(np.linalg.norm(displacement_vector))
                 if disp > 1e-6:
-                    vertices[i] = v_proj
+                    vertices[i] = v + displacement_vector
                     vertices_moved += 1
                     displacements.append(disp)
                     if disp > max_displacement:
                         max_displacement = disp
 
             elif len(matching_planes) >= 2:
-                # Corner regularisation: project onto the intersection line between two planes
-                p1 = matching_planes[0][0]
-                p2 = matching_planes[1][0]
+                # Corner regularisation: project onto intersection line with blended soft weight
+                p1, dist1, w1 = matching_planes[0]
+                p2, dist2, w2 = matching_planes[1]
                 n1, d1 = p1["normal"], p1["d"]
                 n2, d2 = p2["normal"], p2["d"]
+                w_corner = min(w1, w2)
 
                 p_line, dir_line = line_intersection_of_two_planes(n1, d1, n2, d2)
-                # Project v onto intersection line: p_line + ((v - p_line) . dir_line) * dir_line
-                v_proj = p_line + np.dot(v - p_line, dir_line) * dir_line
-                disp = float(np.linalg.norm(v_proj - v))
+                v_target = p_line + np.dot(v - p_line, dir_line) * dir_line
+                displacement_vector = w_corner * (v_target - v)
+                disp = float(np.linalg.norm(displacement_vector))
                 if disp > 1e-6 and disp <= snap_thresh * 1.5:
-                    vertices[i] = v_proj
+                    vertices[i] = v + displacement_vector
                     vertices_moved += 1
                     displacements.append(disp)
                     if disp > max_displacement:
