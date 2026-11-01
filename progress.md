@@ -14,8 +14,9 @@
 | **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121, Open3D 0.20.0, Trimesh 5.1.1) | **Done** | Verified via `doctor.py` in container & `e2e_smoke.py` |
 | **P2b** | Video ingest + adaptive frame extraction + interior-tuned COLMAP SfM (GPU) + 4-panel diagnostic trajectory plot + scene-cut detection + low-texture filtering + real test runs | **Done** | Verified on RTX 4060 GPU with 3 real video runs (`house_test_30s.mp4`, `bedroom_vid.mp4` with/without filter) |
 | **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (floater cleanup, room analysis, relative floor rule, normal-aware plane snapping with smoothstep Hermite falloff, conservative envelope pruning, quadric decimation, UV texture mapping, Poisson A/B) + Phase 2 Verification & Review Resolution + Phase 3 (floor align Y=0 with normal-sign & antiparallel singularity guards, non-compounding scale calibration seam <0.1s, 8 deliverable exporters, quality report, Blender 4.1 round-trip verification) | **Milestone P2c FULLY COMPLETE & VERIFIED** | All 4 phases (1, 1b, 2, 3) executed and verified on RTX 4060 GPU end-to-end via `POST /api/jobs` on both `house_test_30s.mp4` (`a78fc585-4120-48b5-8512-17d2b6afa8f2`) and `enhanced_interior_tour_1080p.mp4` (`4945096f-639c-40bb-97bc-2ac258e8b9d6`). Floor aligned flush to Y=0 with median inliers, yaw-rotated to cardinal walls, centered, and physically calibrated. Sequential `/calibrate` executes in 0.067s - 0.130s (<3.0s spec) with bitwise identical UVs and texture atlas. All 8 deliverable assets generated (GLB, GLTF, OBJ ZIP, PLY, STL, XYZ, FBX, USDZ). Cross-container Blender detection verified. 57/57 tests passing. Blender 4.1 round-trip proof sheet saved to `outputs/phase3_roundtrip_proof.png`. |
-| **P2-Ext** | Long-Video Optimization & Deliverable Calibration Sync (Two-pass zero-RAM frame extraction, 600s duration limit, adaptive diminishing-returns keyframe curve, offline strided anchor-frame loop closure for N>=150 via matches_importer, OpenMVS joint megapixel resolution planning, auto OOM/SIGKILL fallback escalation, calibrated multi-format deliverable sync for OBJ ZIP, PLY, STL, XYZ, FBX, USDZ) | **Done & Verified** | Implemented per user amendments. 62/62 tests passing in `tests/test_long_video_optimization.py` and full pytest suite. `npm run build` clean. Ready for Tanks & Temples Tier 1 validation. |
-| **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
+| **P2-Ext** | Long-Video Optimization & Deliverable Calibration Sync (Two-pass zero-RAM frame extraction, 600s duration limit, adaptive diminishing-returns keyframe curve, offline strided anchor-frame loop closure for N>=150 via matches_importer, OpenMVS joint megapixel resolution planning, auto OOM/SIGKILL fallback escalation, calibrated multi-format deliverable sync for OBJ ZIP, PLY, STL, XYZ, FBX, USDZ) | **Done & Verified** | Implemented per user amendments. 62/62 tests passing (`4e3b23d`). Verified on Tanks & Temples `Meetingroom` (293/293 frames registered, 100%). |
+| **P2-Fix** | Orientation, PBR & Spike Hardening: Trajectory PCA gravity refinement (eliminates 15-20° pitch tilt), Ceiling-as-Floor guard, Mandatory Gravity Fallback (u_grav -> +Y, 5% bottom leveling), Scene-graph flattening on load (`loaded.to_geometry()`), Pure-Python zero-dependency PBR patcher (`metallicFactor=0.0`, `roughnessFactor=1.0`, `doubleSided=True` across all GLB/GLTF assets & `/calibrate`), Post-decimation long-edge spike filter (drops edges > 5x median), Architectural face budget (300k standard, 500k high) | **Done & Verified** | Verified on both `Meetingroom` and `house_test_30s.mp4`. All 66 tests passing in container. Spikes eliminated (max edge 2.33m -> 0.29m on Meetingroom, 2.75m -> 0.25m on House). Elevation and PBR verified in Blender 4.1. Proof renders saved to `outputs/`. |
+| **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Next (Drafting Plan)** | Milestone P2 fully complete and hardened |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
 | **P6** | LiDAR / RGB-D pipeline (feature-flagged `ENABLE_LIDAR=false`) + synthetic tests | **Not Started** | Blocked on P5 |
@@ -466,7 +467,7 @@ All 8 requested delivery formats verified on disk for both real datasets:
 ---
 
 ### 7. Backend Pytest Suite
-- **57/57 tests passing** (100%) in `scanforge-worker-gpu-1`:
+- **66/66 tests passing** (100%) in `scanforge-worker-gpu-1`:
   * `test_floor_align_antiparallel_singularity_guard`: PASSED
   * `test_floor_align_normal_sign_orientation`: PASSED
   * `test_floor_align_robust_y0_leveling_and_scale`: PASSED
@@ -474,19 +475,43 @@ All 8 requested delivery formats verified on disk for both real datasets:
   * `test_exporter_obj_zip_completeness`: PASSED
   * `test_quality_report_schema_and_uncalibrated_badge`: PASSED
   * `test_api_calibrate_sequential_non_compounding`: PASSED
+  * `test_ceiling_plane_rejection`: PASSED
+  * `test_gravity_fallback_when_no_floor_plane`: PASSED
+  * `test_exported_mesh_glb_pbr_materials_and_double_sided`: PASSED
+  * `test_post_decimation_spike_filter`: PASSED
+
+---
+
+### 8. Orientation, PBR & Spike Hardening Verification Report
+- **Tanks & Temples Meetingroom (`f73e4156-27f7-455c-b793-7e4f2958f4f5`)**:
+  * Gravity up vector refined via trajectory PCA: `[0.049, -0.982, -0.183]`.
+  * Verified floor identified: Height=-1.149m (depth below cameras = 1.148m, 8,768 inliers).
+  * Post-decimation spike filter dropped 3,827 spurious razor-sharp triangles, reducing max edge length from 2.33m (35.7x median) to 0.29m (5.0x median).
+  * Mesh decimated to 296,172 faces with 100.0% texture coverage.
+  * Floor leveled precisely to Y=0.000m (bounds: `[-7.78, -0.23, -8.60]` to `[7.78, 4.27, 8.60]`). Floor is on the BOTTOM, benches on the floor, ceiling trusses at Y=4.27m.
+  * PBR materials verified: `metallicFactor=0.0`, `roughnessFactor=1.0`, `doubleSided=True`.
+  * Rendered evidence: `outputs/t2_meetingroom_side_elevation.png`, `outputs/t2_meetingroom_interior.png`, `outputs/t2_meetingroom_sheet.png`, `outputs/t2_meetingroom_closeup.png`.
+- **Reference House Clip (`a78fc585-4120-48b5-8512-17d2b6afa8f2`)**:
+  * Gravity up vector refined: `[0.081, -0.985, -0.152]`.
+  * Verified floor identified: Height=-6.404m (depth below cameras = 6.833m, 2,799 inliers).
+  * Post-decimation spike filter dropped 7,698 spurious triangles, reducing max edge length from 2.75m to 0.25m.
+  * Decimated to 242,302 faces with 100.0% texture coverage.
+  * Floor leveled to Y=0.000m (bounds: `[-8.42, -0.19, -8.14]` to `[8.42, 12.76, 8.14]`).
+  * PBR materials verified: `metallicFactor=0.0`, `roughnessFactor=1.0`, `doubleSided=True`.
+  * Rendered evidence: `outputs/house_side_elevation.png`, `outputs/house_persp1.png`.
 
 ---
 
 ## 10. Next Steps (Milestone P3 Planning)
 
-*Milestone P2 (Route A Interior Mesh Reconstruction & Post-Processing) is FULLY COMPLETE AND VERIFIED.*
+*Milestone P2 (Route A Interior Mesh Reconstruction, Post-Processing, Long-Video Adaptation & Hardening) is FULLY COMPLETE AND VERIFIED.*
 
-1. **Stop for User Review**: Present Phase 3 implementation report, real-hardware metrics, and `outputs/phase3_roundtrip_proof.png`.
-2. **Milestone P3 Scope (Pending Approval)**:
-   - 3D Gaussian Splatting training pipeline via `nerfstudio` / `splatfacto` / `gsplat`.
-   - VRAM budget enforcement for 8 GB Ada RTX 4060: downscale to $\le 1080$p, cap max Gaussians, auto-retry on OOM.
-   - Floater cleanup and splat format converters (`.ply`, `.splat`).
-   - Web viewer integration with `@mkkellogg/gaussian-splats-3d` in `SplatViewer.tsx`.
+1. **Stop for User Review**: Present the Phase 2/3 Hardening Verification report with exact numbers, visual evidence, and passing tests.
+2. **Draft Milestone P3 Implementation Plan (3D Gaussian Splatting + Splat Viewer)**:
+   - 3D Gaussian Splatting training pipeline via `nerfstudio` (`splatfacto` / `gsplat`).
+   - 8 GB VRAM budget enforcement: downscale to $\le 1080$p, cap max Gaussians (e.g. 1.2M), auto-retry on OOM.
+   - Floater cleanup and splat export formats (`.ply`, `.splat`, `.ksplat`).
+   - Interactive Three.js splat viewer using `@mkkellogg/gaussian-splats-3d` in `frontend/src/components/SplatViewer.tsx`.
 
 ---
 

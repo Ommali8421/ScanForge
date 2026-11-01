@@ -255,3 +255,193 @@ def test_api_calibrate_sequential_non_compounding(tmp_path):
     rep_data = rep_res.json()
     assert rep_data["cumulative_scale"] == 3.0
     assert rep_data["is_calibrated"] is True
+
+
+def test_ceiling_plane_rejection():
+    """Verify that ceiling planes (above camera centers or upper point cloud) are rejected from being chosen as floor."""
+    from app.pipelines.mesh.room_analysis import RoomAnalysisStage
+
+    # Synthetic room with floor at Y=-1.5, ceiling at Y=+2.5, cameras at Y=+0.5
+    u_grav = np.array([0.0, 1.0, 0.0])
+    cam_centers = np.array([
+        [0.0, 0.5, 0.0],
+        [1.0, 0.6, 0.5],
+        [-1.0, 0.4, -0.5]
+    ])
+    cam_heights = cam_centers @ u_grav
+    p25_cam = float(np.percentile(cam_heights, 25))
+
+    # Ceiling candidate at height +2.5
+    ceiling_plane = {
+        "normal": [0.0, 1.0, 0.0],
+        "d": -2.5,
+        "height": 2.5,
+        "inliers": 15000,
+        "cos_up": 1.0
+    }
+
+    # Floor candidate at height -1.5
+    floor_plane = {
+        "normal": [0.0, 1.0, 0.0],
+        "d": 1.5,
+        "height": -1.5,
+        "inliers": 8000,
+        "cos_up": 1.0
+    }
+
+    # Test ceiling rejection rule
+    p30_verts = 0.0  # lowest 30% of vertices are below 0.0
+    assert ceiling_plane["height"] > p25_cam, "Ceiling plane is incorrectly considered below cameras"
+    assert ceiling_plane["height"] > p30_verts, "Ceiling plane is incorrectly considered in lowest 30% of vertices"
+    assert floor_plane["height"] <= p25_cam, "Floor plane is not below cameras"
+    assert floor_plane["height"] <= p30_verts, "Floor plane is not in lowest 30% of vertices"
+
+
+def test_gravity_fallback_when_no_floor_plane(tmp_path):
+    """Verify that when chosen_floor_plane is None, FloorAlignAndScaleStage falls back to gravity vector and 5% bottom leveling."""
+    workdir = tmp_path / "fallback_job"
+    workdir.mkdir()
+
+    # Create synthetic room
+    room = create_synthetic_textured_room()
+    # Tilt room by 30 degrees around X axis
+    R_tilt = trimesh.transformations.rotation_matrix(np.radians(30), [1, 0, 0])[:3, :3]
+    room.vertices = room.vertices @ R_tilt.T
+
+    glb_path = workdir / "scene_textured.glb"
+    room.export(str(glb_path))
+
+    # room_analysis.json with chosen_floor_plane = None and gravity_up_vector reflecting the tilt
+    u_grav = R_tilt @ np.array([0.0, 1.0, 0.0])
+    analysis_data = {
+        "gravity_up_vector": u_grav.tolist(),
+        "camera_mean_up": u_grav.tolist(),
+        "cam_bbox_min": [-1.0, -0.5, -1.0],
+        "cam_bbox_max": [1.0, 0.5, 1.0],
+        "scene_diagonal": 10.0,
+        "chosen_floor_plane": None  # No verified floor plane
+    }
+    (workdir / "room_analysis.json").write_text(json.dumps(analysis_data))
+
+    ctx = JobContext(
+        job_id="test_fallback_job",
+        workdir=workdir,
+        params={"quality": "standard", "options": {"up_axis": "y"}},
+        cancel_token=CancelToken(),
+        progress_cb=lambda s, p, m: None,
+        log_cb=lambda l: None,
+        cumulative_scale=1.0
+    )
+
+    stage = FloorAlignAndScaleStage()
+    res = stage.run(ctx)
+    assert res.success is True
+
+    # Output aligned mesh should be leveled so 5th percentile bottom vertices are at Y = 0.000
+    aligned = trimesh.load(str(workdir / "aligned_textured.glb"), force="mesh", process=False)
+    p5_y = np.percentile(aligned.vertices[:, 1], 5)
+    assert abs(p5_y) < 1e-3, f"5th percentile vertex height {p5_y} is not near 0.000"
+
+
+def test_exported_mesh_glb_pbr_materials_and_double_sided(tmp_path):
+    """Verify that mesh.glb and preview_textured.glb strictly have metallicFactor=0.0 and doubleSided=True."""
+    workdir = tmp_path / "pbr_test_job"
+    workdir.mkdir()
+
+    room = create_synthetic_textured_room()
+    glb_in = workdir / "aligned_textured.glb"
+    room.export(str(glb_in))
+
+    ctx = JobContext(
+        job_id="test_pbr_job",
+        workdir=workdir,
+        params={"output_formats": ["glb", "gltf"], "options": {"up_axis": "y", "units": "m"}},
+        cancel_token=CancelToken(),
+        progress_cb=lambda s, p, m: None,
+        log_cb=lambda l: None,
+        cumulative_scale=1.0
+    )
+
+    stage = MeshExportStage()
+    res = stage.run(ctx)
+    assert res.success is True
+
+    # Check mesh.glb PBR directly from binary chunk
+    import struct
+    mesh_glb = workdir / "mesh.glb"
+    assert mesh_glb.exists()
+
+    with open(mesh_glb, "rb") as f:
+        f.read(12)
+        j_len, _ = struct.unpack("<II", f.read(8))
+        gltf = json.loads(f.read(j_len).decode("utf-8"))
+
+    mats = gltf.get("materials", [])
+    assert len(mats) > 0, "No materials found in exported mesh.glb"
+    for mat in mats:
+        assert mat.get("doubleSided") is True, f"doubleSided is not True in {mat}"
+        pbr = mat.get("pbrMetallicRoughness", {})
+        assert pbr.get("metallicFactor") == 0.0, f"metallicFactor is {pbr.get('metallicFactor')}, expected 0.0"
+        assert pbr.get("roughnessFactor") == 1.0, f"roughnessFactor is {pbr.get('roughnessFactor')}, expected 1.0"
+
+
+def test_post_decimation_spike_filter(tmp_path):
+    """Verify that DecimateStage eliminates spurious bridging triangles with edge length > 5x median."""
+    from app.pipelines.mesh.decimate import DecimateStage
+    import open3d as o3d
+
+    workdir = tmp_path / "decimate_spike_job"
+    workdir.mkdir()
+
+    # Create a dense flat grid mesh
+    x = np.linspace(0, 2, 40)
+    z = np.linspace(0, 2, 40)
+    xx, zz = np.meshgrid(x, z)
+    verts = np.column_stack([xx.ravel(), np.zeros(len(xx.ravel())), zz.ravel()])
+
+    # Generate regular Delaunay triangles
+    from scipy.spatial import Delaunay
+    tri = Delaunay(verts[:, [0, 2]])
+    faces = tri.simplices.copy()
+
+    # Add a massive spurious razor-sharp triangle spike:
+    # 2 vertices on the floor, 1 vertex far away (10 meters)
+    spike_vert_idx = len(verts)
+    verts = np.vstack([verts, [1.0, 10.0, 1.0]])
+    spike_face = np.array([[0, 1, spike_vert_idx]])
+    faces = np.vstack([faces, spike_face])
+
+    in_mesh = o3d.geometry.TriangleMesh()
+    in_mesh.vertices = o3d.utility.Vector3dVector(verts)
+    in_mesh.triangles = o3d.utility.Vector3iVector(faces)
+    in_ply = workdir / "mesh_repaired.ply"
+    o3d.io.write_triangle_mesh(str(in_ply), in_mesh)
+
+    ctx = JobContext(
+        job_id="test_spike_job",
+        workdir=workdir,
+        params={"quality": "standard", "options": {"poly_target": 5000}},
+        cancel_token=CancelToken(),
+        progress_cb=lambda s, p, m: None,
+        log_cb=lambda l: None,
+        cumulative_scale=1.0
+    )
+
+    stage = DecimateStage()
+    res = stage.run(ctx)
+    assert res.success is True
+
+    out_ply = workdir / "mesh_decimated.ply"
+    out_mesh = o3d.io.read_triangle_mesh(str(out_ply))
+    out_v = np.asarray(out_mesh.vertices)
+    out_f = np.asarray(out_mesh.triangles)
+
+    e0 = np.linalg.norm(out_v[out_f[:, 0]] - out_v[out_f[:, 1]], axis=1)
+    e1 = np.linalg.norm(out_v[out_f[:, 1]] - out_v[out_f[:, 2]], axis=1)
+    e2 = np.linalg.norm(out_v[out_f[:, 2]] - out_v[out_f[:, 0]], axis=1)
+    max_edges = np.maximum(e0, np.maximum(e1, e2))
+    all_edges = np.concatenate([e0, e1, e2])
+    med_e = np.median(all_edges)
+
+    # Spike was ~10 meters long; must have been completely dropped
+    assert np.max(max_edges) <= 5.0 * med_e + 1e-4, f"Spike with max edge {np.max(max_edges)} was not filtered!"

@@ -16,6 +16,8 @@ import numpy as np
 def render_closeup(jid, out_path):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     glb_path = f"/data/jobs/{jid}/scene_textured.glb"
+    if not os.path.exists(glb_path):
+        glb_path = f"/data/jobs/{jid}/mesh.glb"
     analysis_path = f"/data/jobs/{jid}/room_analysis.json"
     
     if not os.path.exists(glb_path):

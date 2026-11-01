@@ -24,19 +24,85 @@ from app.pipelines.base import Stage, JobContext, StageResult
 from app.utils.logging import logger
 
 
+def fix_glb_pbr_materials(glb_path: Path) -> bool:
+    """
+    Pure-Python, zero-dependency glTF 2.0 PBR material patcher.
+    Directly updates binary glTF (GLB) JSON chunk:
+    - metallicFactor = 0.0 (prevents pitch-black render in standard viewers without HDR map)
+    - roughnessFactor = 1.0 (diffuse matte finish for interior walls)
+    - doubleSided = True (ensures both interior and exterior surfaces are rendered)
+    """
+    if not glb_path.exists():
+        return False
+    try:
+        with open(glb_path, "rb") as f:
+            data = f.read()
+        if len(data) < 20:
+            return False
+        magic, version, _ = struct.unpack_from("<4sII", data, 0)
+        if magic != b"glTF" or version != 2:
+            return False
+        c0_len, c0_type = struct.unpack_from("<II", data, 12)
+        if c0_type != 0x4E4F534A:
+            return False
+        json_bytes = data[20:20 + c0_len]
+        gltf = json.loads(json_bytes.decode("utf-8"))
+
+        modified = False
+        materials = gltf.get("materials", [])
+        if not materials:
+            # Create a default material if none exists
+            gltf["materials"] = [{
+                "name": "default",
+                "pbrMetallicRoughness": {
+                    "metallicFactor": 0.0,
+                    "roughnessFactor": 1.0
+                },
+                "doubleSided": True
+            }]
+            modified = True
+        else:
+            for mat in materials:
+                if "pbrMetallicRoughness" not in mat:
+                    mat["pbrMetallicRoughness"] = {}
+                mat["pbrMetallicRoughness"]["metallicFactor"] = 0.0
+                mat["pbrMetallicRoughness"]["roughnessFactor"] = 1.0
+                mat["doubleSided"] = True
+                modified = True
+
+        if not modified:
+            return True
+
+        new_json = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+        pad = (4 - (len(new_json) % 4)) % 4
+        new_json += b" " * pad
+        new_c0_len = len(new_json)
+        bin_chunk = data[20 + c0_len:]
+        new_total_len = 12 + 8 + new_c0_len + len(bin_chunk)
+        new_header = struct.pack("<4sII", b"glTF", 2, new_total_len)
+        new_c0_hdr = struct.pack("<II", new_c0_len, 0x4E4F534A)
+        with open(glb_path, "wb") as f:
+            f.write(new_header + new_c0_hdr + new_json + bin_chunk)
+        return True
+    except Exception as e:
+        logger.warning(f"fix_glb_pbr_materials failed on {glb_path}: {e}")
+        return False
+
+
 def compute_floor_alignment_transform(
     floor_normal: np.ndarray,
     floor_d: float,
     cam_centroid: np.ndarray,
     target_up: np.ndarray = np.array([0.0, 1.0, 0.0]),
-    dominant_wall_normal: Optional[np.ndarray] = None
+    dominant_wall_normal: Optional[np.ndarray] = None,
+    u_grav: Optional[np.ndarray] = None
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Computes total rotation matrix R_total and floor point p_floor.
     Guarantees:
-    - Normal sign points towards interior cameras
-    - Antiparallel 180° Rodrigues singularity handled cleanly without NaN
-    - Dominant wall yaw alignment to cardinal axis
+    - Normal sign points UP along true gravity u_grav (never flips room upside down).
+    - Antiparallel 180° Rodrigues singularity handled cleanly without NaN.
+    - Dominant wall yaw alignment to cardinal axis.
     """
     fn = np.array(floor_normal, dtype=float)
     fn_norm = np.linalg.norm(fn)
@@ -48,12 +114,22 @@ def compute_floor_alignment_transform(
     fd = float(floor_d)
     floor_point = -fd * fn
 
-    # 1. Normal Sign Orientation: Ensure normal points into interior room (towards cameras)
-    cam_vec = cam_centroid - floor_point
-    if np.dot(fn, cam_vec) < 0:
-        fn = -fn
-        fd = -fd
-        floor_point = -fd * fn
+    # 1. Normal Sign Orientation: Ensure normal points UP along gravity vector
+    if u_grav is not None:
+        ug = np.array(u_grav, dtype=float)
+        ug_norm = np.linalg.norm(ug)
+        if ug_norm > 1e-6:
+            ug /= ug_norm
+            if np.dot(fn, ug) < 0:
+                fn = -fn
+                fd = -fd
+                floor_point = -fd * fn
+    else:
+        cam_vec = cam_centroid - floor_point
+        if np.dot(fn, cam_vec) < 0:
+            fn = -fn
+            fd = -fd
+            floor_point = -fd * fn
 
     # 2. Rotation R_floor from fn to target_up
     u = np.array(target_up, dtype=float)
@@ -118,7 +194,7 @@ def compute_floor_alignment_transform(
 def apply_alignment_and_scale_to_mesh(
     mesh: trimesh.Trimesh,
     R_total: np.ndarray,
-    fn_oriented: np.ndarray,
+    fn_oriented: Optional[np.ndarray],
     fd_oriented: float,
     diag: float,
     scale: float = 1.0,
@@ -134,18 +210,25 @@ def apply_alignment_and_scale_to_mesh(
     # Rotate all vertices
     V_rot = verts @ R_total.T
 
-    # Find floor inlier vertices using the oriented floor plane equation in original space
-    dists = np.abs(np.dot(verts, fn_oriented) + fd_oriented)
-    inlier_mask = dists < 0.02 * diag
-
     up_idx = 1 if abs(target_up[1]) > 0.9 else 2
-    if np.sum(inlier_mask) >= 30:
-        Y_floor = float(np.median(V_rot[inlier_mask, up_idx]))
-    else:
-        floor_pt = -fd_oriented * fn_oriented
-        Y_floor = float((R_total @ floor_pt)[up_idx])
 
-    # Level floor plane to 0.000
+    # Level floor plane to 0.000:
+    # If a verified floor plane exists, use the median of floor inliers.
+    # Otherwise (mandatory gravity fallback), level using the 5th-percentile bottom vertices.
+    if fn_oriented is not None:
+        dists = np.abs(np.dot(verts, fn_oriented) + fd_oriented)
+        inlier_mask = dists < 0.02 * diag
+        floor_inliers_count = int(np.sum(inlier_mask))
+        if floor_inliers_count >= 30:
+            Y_floor = float(np.median(V_rot[inlier_mask, up_idx]))
+        else:
+            floor_pt = -fd_oriented * fn_oriented
+            Y_floor = float((R_total @ floor_pt)[up_idx])
+    else:
+        # Mandatory Gravity Fallback
+        Y_floor = float(np.percentile(V_rot[:, up_idx], 5))
+        floor_inliers_count = 0
+
     V_rot[:, up_idx] -= Y_floor
 
     # Center horizontal coordinates at (0, 0)
@@ -170,7 +253,7 @@ def apply_alignment_and_scale_to_mesh(
         "horizontal_center": [center_h0, center_h1],
         "scale": scale,
         "target_up": target_up.tolist(),
-        "floor_inliers_count": int(np.sum(inlier_mask)),
+        "floor_inliers_count": floor_inliers_count,
         "bounds_min": V_final.min(axis=0).tolist(),
         "bounds_max": V_final.max(axis=0).tolist()
     }
@@ -271,9 +354,10 @@ class FloorAlignAndScaleStage(Stage):
                 ctx.log_cb(f"[{self.name}] Warning: Could not parse room_analysis.json: {e}")
 
         # Extract floor plane, camera centroid, and dominant wall
-        chosen_floor = analysis.get("chosen_floor_plane", {})
-        floor_n = chosen_floor.get("normal", [0.0, -1.0, 0.0])
-        floor_d = chosen_floor.get("d", 0.0)
+        chosen_floor = analysis.get("chosen_floor_plane")
+        u_grav = np.array(analysis.get("gravity_up_vector", analysis.get("camera_mean_up", [0.0, 1.0, 0.0])))
+        if np.linalg.norm(u_grav) > 1e-6:
+            u_grav /= np.linalg.norm(u_grav)
 
         cam_min = np.array(analysis.get("cam_bbox_min", [-1.0, -1.0, -1.0]))
         cam_max = np.array(analysis.get("cam_bbox_max", [1.0, 1.0, 1.0]))
@@ -291,20 +375,50 @@ class FloorAlignAndScaleStage(Stage):
         up_axis_opt = ctx.params.get("options", {}).get("up_axis", "y").lower()
         target_up = np.array([0.0, 0.0, 1.0]) if up_axis_opt == "z" else np.array([0.0, 1.0, 0.0])
 
-        ctx.log_cb(f"[{self.name}] (20%) Computing floor alignment matrix (target up = {'+Z' if up_axis_opt == 'z' else '+Y'})...")
-        R_total, fn_oriented, fd_oriented = compute_floor_alignment_transform(
-            floor_normal=floor_n,
-            floor_d=floor_d,
-            cam_centroid=cam_centroid,
-            target_up=target_up,
-            dominant_wall_normal=dominant_wall_n
+        has_verified_floor = bool(
+            chosen_floor and
+            chosen_floor.get("qualifies", True) and
+            chosen_floor.get("inliers", 0) > 0
         )
 
-        ctx.log_cb(f"[{self.name}] (40%) Loading textured mesh from {in_glb.name}...")
+        if has_verified_floor:
+            floor_n = chosen_floor.get("normal", u_grav)
+            floor_d = chosen_floor.get("d", 0.0)
+            ctx.log_cb(f"[{self.name}] (20%) Aligning verified floor plane to {'+Z' if up_axis_opt == 'z' else '+Y'}...")
+            R_total, fn_oriented, fd_oriented = compute_floor_alignment_transform(
+                floor_normal=floor_n,
+                floor_d=floor_d,
+                cam_centroid=cam_centroid,
+                target_up=target_up,
+                dominant_wall_normal=dominant_wall_n,
+                u_grav=u_grav
+            )
+        else:
+            ctx.log_cb(
+                f"[{self.name}] (20%) Mandatory Gravity Fallback: No verified floor plane in room analysis. "
+                f"Aligning gravity up-vector [{u_grav[0]:.3f}, {u_grav[1]:.3f}, {u_grav[2]:.3f}] to {'+Z' if up_axis_opt == 'z' else '+Y'}..."
+            )
+            R_total, _, _ = compute_floor_alignment_transform(
+                floor_normal=u_grav,
+                floor_d=0.0,
+                cam_centroid=cam_centroid,
+                target_up=target_up,
+                dominant_wall_normal=dominant_wall_n,
+                u_grav=u_grav
+            )
+            fn_oriented = None
+            fd_oriented = 0.0
+
+        ctx.log_cb(f"[{self.name}] (40%) Loading textured mesh from {in_glb.name} and flattening scene-graph transforms...")
         loaded = trimesh.load(str(in_glb), force="mesh", process=False)
         if isinstance(loaded, trimesh.Scene):
-            geoms = list(loaded.geometry.values())
-            mesh = geoms[0] if geoms else trimesh.Trimesh()
+            geoms = loaded.to_geometry()
+            if isinstance(geoms, list):
+                mesh = trimesh.util.concatenate(geoms) if geoms else trimesh.Trimesh()
+            elif isinstance(geoms, dict):
+                mesh = trimesh.util.concatenate(list(geoms.values())) if geoms else trimesh.Trimesh()
+            else:
+                mesh = geoms
         else:
             mesh = loaded
 
@@ -353,19 +467,10 @@ class FloorAlignAndScaleStage(Stage):
         ply_mesh = trimesh.Trimesh(vertices=aligned_mesh.vertices, faces=aligned_mesh.faces, process=False)
         ply_mesh.export(str(out_ply))
 
-        # Ensure glTF PBR material defaults
-        try:
-            from pygltflib import GLTF2
-            gltf = GLTF2().load(str(out_glb))
-            for mat in gltf.materials:
-                if mat.pbrMetallicRoughness:
-                    mat.pbrMetallicRoughness.metallicFactor = 0.0
-                    mat.pbrMetallicRoughness.roughnessFactor = 1.0
-                mat.doubleSided = True
-            gltf.save(str(out_glb))
-            gltf.save(str(preview_glb))
-        except Exception as e:
-            ctx.log_cb(f"[{self.name}] Note: pygltflib PBR check: {e}")
+        # Enforce glTF PBR material defaults via pure-Python zero-dependency patcher
+        fix_glb_pbr_materials(out_glb)
+        fix_glb_pbr_materials(preview_glb)
+        fix_glb_pbr_materials(unscaled_glb)
 
         output_files = [out_glb, out_ply, meta_file, preview_glb]
 

@@ -366,7 +366,8 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
             from app.pipelines.mesh.floor_align import (
                 compute_floor_alignment_transform,
                 apply_alignment_and_scale_to_mesh,
-                scale_glb_in_place
+                scale_glb_in_place,
+                fix_glb_pbr_materials
             )
             from app.pipelines.mesh.quality_report import generate_quality_report_dict
 
@@ -380,9 +381,8 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
                 if analysis_file.exists():
                     analysis = json.loads(analysis_file.read_text())
 
-                chosen_floor = analysis.get("chosen_floor_plane", {})
-                floor_n = chosen_floor.get("normal", [0.0, -1.0, 0.0])
-                floor_d = chosen_floor.get("d", 0.0)
+                chosen_floor = analysis.get("chosen_floor_plane")
+                u_grav = np.array(analysis.get("gravity_up_vector", analysis.get("camera_mean_up", [0.0, 1.0, 0.0])))
                 cam_min = np.array(analysis.get("cam_bbox_min", [-1.0, -1.0, -1.0]))
                 cam_max = np.array(analysis.get("cam_bbox_max", [1.0, 1.0, 1.0]))
                 cam_centroid = (cam_min + cam_max) / 2.0
@@ -396,18 +396,39 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
                         dominant_wall_n = np.array(strongest_wall["normal"])
 
                 target_up = np.array([0.0, 1.0, 0.0])
-                R_total, fn_oriented, fd_oriented = compute_floor_alignment_transform(
-                    floor_normal=floor_n,
-                    floor_d=floor_d,
-                    cam_centroid=cam_centroid,
-                    target_up=target_up,
-                    dominant_wall_normal=dominant_wall_n
-                )
+                has_floor = bool(chosen_floor and chosen_floor.get("qualifies", True) and chosen_floor.get("inliers", 0) > 0)
+                if has_floor:
+                    floor_n = chosen_floor.get("normal", u_grav)
+                    floor_d = chosen_floor.get("d", 0.0)
+                    R_total, fn_oriented, fd_oriented = compute_floor_alignment_transform(
+                        floor_normal=floor_n,
+                        floor_d=floor_d,
+                        cam_centroid=cam_centroid,
+                        target_up=target_up,
+                        dominant_wall_normal=dominant_wall_n,
+                        u_grav=u_grav
+                    )
+                else:
+                    R_total, _, _ = compute_floor_alignment_transform(
+                        floor_normal=u_grav,
+                        floor_d=0.0,
+                        cam_centroid=cam_centroid,
+                        target_up=target_up,
+                        dominant_wall_normal=dominant_wall_n,
+                        u_grav=u_grav
+                    )
+                    fn_oriented = None
+                    fd_oriented = 0.0
 
                 loaded = trimesh.load(str(in_glb), force="mesh", process=False)
                 if isinstance(loaded, trimesh.Scene):
-                    geoms = list(loaded.geometry.values())
-                    loaded_mesh = geoms[0] if geoms else trimesh.Trimesh()
+                    geoms = loaded.to_geometry()
+                    if isinstance(geoms, list):
+                        loaded_mesh = trimesh.util.concatenate(geoms) if geoms else trimesh.Trimesh()
+                    elif isinstance(geoms, dict):
+                        loaded_mesh = trimesh.util.concatenate(list(geoms.values())) if geoms else trimesh.Trimesh()
+                    else:
+                        loaded_mesh = geoms
                 else:
                     loaded_mesh = loaded
 
@@ -421,6 +442,7 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
                     target_up=target_up
                 )
                 base_aligned.export(str(unscaled_glb))
+                fix_glb_pbr_materials(unscaled_glb)
 
             # Fast binary transform (<50ms, bitwise UVs and textures)
             min_b, max_b, count = scale_glb_in_place(
@@ -428,6 +450,7 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
                 dst_path=out_glb,
                 scale_factor=cumulative_scale
             )
+            fix_glb_pbr_materials(out_glb)
             shutil.copy2(out_glb, preview_glb)
             if art_dir.exists():
                 shutil.copy2(out_glb, art_dir / "aligned_textured.glb")

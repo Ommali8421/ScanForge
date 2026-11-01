@@ -23,8 +23,8 @@ def parse_camera_poses_from_workdir(workdir: Path) -> Tuple[np.ndarray, np.ndarr
     Parses calibrated camera centers and orientations from COLMAP output.
     Returns:
         centers: (N, 3) array of optical centers in world coordinates.
-        up_vectors: (N, 3) array of camera up-vectors in world coordinates.
-        mean_up: (3,) unit vector pointing along the gravity-up direction.
+        up_vectors: (N, 3) array of camera up-vectors in world coordinates (u_i = R_w2c^T @ [0, -1, 0]).
+        gravity_up: (3,) unit vector pointing along true gravity up, refined via camera trajectory PCA.
     """
     images_txt = workdir / "sparse_txt" / "images.txt"
     if not images_txt.exists():
@@ -80,7 +80,33 @@ def parse_camera_poses_from_workdir(workdir: Path) -> Tuple[np.ndarray, np.ndarr
     else:
         mean_up = np.array([0.0, 1.0, 0.0])
 
-    return centers, up_vectors, mean_up
+    # Trajectory PCA Gravity Refinement:
+    # When a human walks around a room/floor, the camera positions c_i lie in a flat horizontal plane.
+    # The normal to that plane (smallest PCA eigenvector) is orthogonal to the floor,
+    # eliminating the 15-20° backward pitch bias caused by holding the camera tilted downwards.
+    gravity_up = mean_up.copy()
+    if len(centers) >= 8:
+        try:
+            c_centered = centers - np.mean(centers, axis=0)
+            cov = np.cov(c_centered, rowvar=False)
+            evals, evecs = np.linalg.eigh(cov)
+            # evecs[:, 0] is the normal corresponding to the smallest variance
+            traj_normal = evecs[:, 0]
+            norm_tn = np.linalg.norm(traj_normal)
+            if norm_tn > 1e-6:
+                traj_normal /= norm_tn
+                # Planarity check: if smallest eigenvalue is small relative to the second eigenvalue
+                planarity_ratio = evals[0] / (evals[1] + 1e-9)
+                if planarity_ratio < 0.25:
+                    # Orient trajectory normal towards mean_up
+                    if np.dot(traj_normal, mean_up) < 0:
+                        traj_normal = -traj_normal
+                    # Use trajectory plane normal as refined gravity up vector
+                    gravity_up = traj_normal
+        except Exception:
+            pass
+
+    return centers, up_vectors, gravity_up
 
 
 def compute_rodrigues_rotation(v_from: np.ndarray, v_to: np.ndarray) -> np.ndarray:
@@ -135,25 +161,33 @@ class RoomAnalysisStage(Stage):
             raise FileNotFoundError(f"[RoomAnalysis] Cleaned mesh not found at {input_ply}")
 
         # 1. Parse camera trajectory & gravity up-vector
-        centers, _, mean_up = parse_camera_poses_from_workdir(ctx.workdir)
-        cam_median_pos = np.median(centers, axis=0)
-        cam_median_height = float(np.dot(cam_median_pos, mean_up))
+        centers, _, u_grav = parse_camera_poses_from_workdir(ctx.workdir)
+        cam_median_pos = np.median(centers, axis=0) if len(centers) > 0 else np.zeros(3)
+        cam_heights = centers @ u_grav if len(centers) > 0 else np.array([0.0])
+        cam_median_height = float(np.median(cam_heights))
+        p25_cam = float(np.percentile(cam_heights, 25)) if len(cam_heights) > 0 else cam_median_height
         ctx.log_cb(
             f"[RoomAnalysis] Calibrated cameras: {len(centers)}. "
-            f"Camera mean up-vector: [{mean_up[0]:.3f}, {mean_up[1]:.3f}, {mean_up[2]:.3f}]. "
-            f"Median camera height: {cam_median_height:.3f} (SfM units)."
+            f"Gravity up-vector (PCA/trajectory-refined): [{u_grav[0]:.3f}, {u_grav[1]:.3f}, {u_grav[2]:.3f}]. "
+            f"Median camera height: {cam_median_height:.3f}, p25 camera height: {p25_cam:.3f} (SfM units)."
         )
 
-        # 2. Load mesh and calculate scene bounds
+        # 2. Load mesh and calculate scene bounds & vertex height percentiles
         mesh = trimesh.load(str(input_ply), process=False)
         vertices = mesh.vertices
         bbox_min = np.min(vertices, axis=0)
         bbox_max = np.max(vertices, axis=0)
         scene_diagonal = float(np.linalg.norm(bbox_max - bbox_min))
+
+        v_heights = vertices @ u_grav
+        p10_verts = float(np.percentile(v_heights, 10))
+        p30_verts = float(np.percentile(v_heights, 30))
+        p50_verts = float(np.percentile(v_heights, 50))
         ctx.log_cb(
             f"[RoomAnalysis] Scene bounds: [{bbox_min[0]:.2f}, {bbox_min[1]:.2f}, {bbox_min[2]:.2f}] to "
             f"[{bbox_max[0]:.2f}, {bbox_max[1]:.2f}, {bbox_max[2]:.2f}]. "
-            f"Scene diagonal: {scene_diagonal:.3f} (SfM units)."
+            f"Scene diagonal: {scene_diagonal:.3f} (SfM units). "
+            f"Vertex heights along u_grav: 10%={p10_verts:.3f}, 30%={p30_verts:.3f}, 50%={p50_verts:.3f}."
         )
 
         # 3. Detect dominant planes via iterative RANSAC
@@ -219,17 +253,17 @@ class RoomAnalysisStage(Stage):
         for p in detected_planes:
             n = np.array(p["normal"])
             d = p["d"]
-            cos_up = float(np.dot(n, mean_up))
+            cos_up = float(np.dot(n, u_grav))
 
             # If nearly parallel to gravity up: horizontal
-            if abs(cos_up) >= 0.85:
-                # Orient normal upwards
+            if abs(cos_up) >= 0.80:
+                # Orient normal strictly pointing in +u_grav direction
                 if cos_up < 0:
                     n = -n
                     d = -d
                     cos_up = -cos_up
                 # Plane height along gravity vector: point on plane is p0 = -d * n
-                # height = p0 . mean_up = -d * (n . mean_up)
+                # height = p0 . u_grav = -d * (n . u_grav)
                 h_plane = float(-d * cos_up)
                 horizontal_planes.append({
                     "normal": [float(n[0]), float(n[1]), float(n[2])],
@@ -241,7 +275,6 @@ class RoomAnalysisStage(Stage):
             elif abs(cos_up) <= 0.25:
                 # Vertical plane (wall)
                 # Orient normal pointing toward camera trajectory median center
-                # Point on plane: p0 = -d * n
                 p0 = -d * n
                 if np.dot(n, cam_median_pos - p0) < 0:
                     n = -n
@@ -252,25 +285,45 @@ class RoomAnalysisStage(Stage):
                     "inliers": p["inliers"],
                 })
 
-        # 5. Relative Floor Selection Heuristic (Requirement C.2 & Verification Revision)
-        # - Units are uncalibrated: use relative scene diagonal fractions.
-        # - RANSAC support threshold is computed relative to sampled RANSAC cloud size.
-        # - Prioritizes dominant ground floor plane with largest planar support in the lower camera zone.
-        # - Reject planes deeper than 0.45 * scene_diagonal below median camera height.
+        # 5. Relative Floor Selection Heuristic & Ceiling-as-Floor Guard
+        # Mandatory requirements:
+        # 1. Floor plane MUST lie below at least 75% of camera centers: h <= p25_cam
+        # 2. Floor plane MUST lie within lowest 30% of dense point cloud: h <= p30_verts
+        # 3. Normal aligned with +u_grav: dot(n_floor, u_grav) >= 0.80
+        # 4. Ceiling rejection: any plane at/above camera median or above 50% vertices is strictly rejected
         floor_candidates = []
-        max_depth_below_cam = 0.45 * scene_diagonal
         min_floor_support = max(100, int(len(pcd_sampled.points) * 0.015))
 
         for hp in horizontal_planes:
             h = hp["height"]
             depth_below_cam = cam_median_height - h
-            is_below_cam = depth_below_cam > 0.01 * scene_diagonal
-            is_within_depth_limit = depth_below_cam <= max_depth_below_cam
+
+            is_below_75pct_cams = h <= (p25_cam + 0.02 * scene_diagonal)
+            is_in_lowest_30pct_verts = h <= (p30_verts + 0.02 * scene_diagonal)
+            is_not_ceiling = (h < cam_median_height) and (h < p50_verts)
             has_enough_support = hp["inliers"] >= min_floor_support
+
+            qualifies = bool(
+                is_below_75pct_cams and
+                is_in_lowest_30pct_verts and
+                is_not_ceiling and
+                has_enough_support
+            )
 
             hp["depth_below_camera"] = float(depth_below_cam)
             hp["depth_fraction"] = float(depth_below_cam / scene_diagonal)
-            hp["qualifies"] = bool(is_below_cam and is_within_depth_limit and has_enough_support)
+            hp["qualifies"] = qualifies
+            if not qualifies:
+                reasons = []
+                if not is_below_75pct_cams:
+                    reasons.append("above 25th percentile camera centers")
+                if not is_in_lowest_30pct_verts:
+                    reasons.append("above 30th percentile point cloud")
+                if not is_not_ceiling:
+                    reasons.append("ceiling/upper structure above cameras")
+                if not has_enough_support:
+                    reasons.append(f"inliers {hp['inliers']} < {min_floor_support}")
+                hp["rejection_reason"] = "; ".join(reasons)
 
             floor_candidates.append(hp)
 
@@ -281,49 +334,32 @@ class RoomAnalysisStage(Stage):
             qualifying_floors.sort(key=lambda x: (x["inliers"], -x["height"]), reverse=True)
             chosen_floor = qualifying_floors[0]
             ctx.log_cb(
-                f"[RoomAnalysis] Identified floor from {len(qualifying_floors)} qualifying candidate(s): "
+                f"[RoomAnalysis] Identified verified floor from {len(qualifying_floors)} qualifying candidate(s): "
                 f"Height={chosen_floor['height']:.3f}, depth_below_cam={chosen_floor['depth_below_camera']:.3f} "
                 f"({chosen_floor['depth_fraction']*100:.1f}% diag), inliers={chosen_floor['inliers']:,}."
             )
-        elif horizontal_planes:
-            # Fallback to horizontal plane with largest support below camera
-            below_cam = [hp for hp in horizontal_planes if hp["height"] < cam_median_height]
-            if below_cam:
-                below_cam.sort(key=lambda x: x["inliers"], reverse=True)
-                chosen_floor = below_cam[0]
-            else:
-                horizontal_planes.sort(key=lambda x: x["height"])
-                chosen_floor = horizontal_planes[0]
-            ctx.log_cb(
-                f"[RoomAnalysis] Warning: No floor passed all relative criteria. "
-                f"Falling back to largest horizontal plane at height={chosen_floor['height']:.3f}."
-            )
         else:
-            # Synthetic floor plane below camera
-            n_floor = mean_up
-            d_floor = -(cam_median_height - 0.20 * scene_diagonal)
-            chosen_floor = {
-                "normal": [float(n_floor[0]), float(n_floor[1]), float(n_floor[2])],
-                "d": float(d_floor),
-                "height": float(-d_floor),
-                "inliers": 0,
-                "depth_below_camera": float(0.20 * scene_diagonal),
-                "depth_fraction": 0.20,
-                "qualifies": False,
-            }
+            # Mandatory Gravity Fallback: Never pick a ceiling plane as floor!
+            chosen_floor = None
             ctx.log_cb(
-                f"[RoomAnalysis] Warning: No horizontal plane detected. Using synthetic floor along mean up."
+                f"[RoomAnalysis] No horizontal plane satisfied verified floor criteria (all were ceiling, upper structures, or low support). "
+                f"Setting chosen_floor_plane = None to trigger mandatory gravity fallback."
             )
 
         # 6. Compute Floor Leveling & Centering Transform
-        # Rotate floor normal to +Y: [0, 1, 0]^T
-        n_floor_vec = np.array(chosen_floor["normal"])
-        R_level = compute_rodrigues_rotation(n_floor_vec, np.array([0.0, 1.0, 0.0]))
-
-        # Translate so floor level Y = 0
-        p_floor = -chosen_floor["d"] * n_floor_vec
-        p_floor_leveled = R_level @ p_floor
-        ty = -p_floor_leveled[1]
+        # If valid floor exists: align floor normal to +Y: [0, 1, 0]^T
+        # If chosen_floor is None: rotate u_grav to +Y: [0, 1, 0]^T and level bottom vertices
+        if chosen_floor is not None:
+            n_floor_vec = np.array(chosen_floor["normal"])
+            R_level = compute_rodrigues_rotation(n_floor_vec, np.array([0.0, 1.0, 0.0]))
+            p_floor = -chosen_floor["d"] * n_floor_vec
+            p_floor_leveled = R_level @ p_floor
+            ty = -p_floor_leveled[1]
+        else:
+            R_level = compute_rodrigues_rotation(u_grav, np.array([0.0, 1.0, 0.0]))
+            v_rot_y = (vertices @ R_level.T)[:, 1]
+            p5_y = float(np.percentile(v_rot_y, 5))
+            ty = -p5_y
 
         # Horizontal centering: center camera median horizontal position at X=0, Z=0
         cam_leveled = R_level @ cam_median_pos
@@ -338,7 +374,8 @@ class RoomAnalysisStage(Stage):
         cam_min = np.min(centers, axis=0) if len(centers) > 0 else bbox_min
         cam_max = np.max(centers, axis=0) if len(centers) > 0 else bbox_max
         report_data = {
-            "camera_mean_up": [float(x) for x in mean_up],
+            "camera_mean_up": [float(x) for x in u_grav],
+            "gravity_up_vector": [float(x) for x in u_grav],
             "median_camera_height": cam_median_height,
             "scene_diagonal": scene_diagonal,
             "bounding_box_min": [float(x) for x in bbox_min],

@@ -101,8 +101,13 @@ class MeshExportStage(Stage):
         ctx.log_cb(f"[{self.name}] Loading aligned master model (up_axis={up_axis}, units={units}, formats={requested_formats})...")
         loaded = trimesh.load(str(in_glb), process=False)
         if isinstance(loaded, trimesh.Scene):
-            geoms = list(loaded.geometry.values())
-            raw_mesh = geoms[0] if geoms else trimesh.Trimesh()
+            geoms = loaded.to_geometry()
+            if isinstance(geoms, list):
+                raw_mesh = trimesh.util.concatenate(geoms) if geoms else trimesh.Trimesh()
+            elif isinstance(geoms, dict):
+                raw_mesh = trimesh.util.concatenate(list(geoms.values())) if geoms else trimesh.Trimesh()
+            else:
+                raw_mesh = geoms
         else:
             raw_mesh = loaded
 
@@ -118,18 +123,8 @@ class MeshExportStage(Stage):
         try:
             ctx.log_cb(f"[{self.name}] Exporting binary glTF -> mesh.glb...")
             export_mesh.export(str(out_glb))
-            # Ensure PBR material defaults
-            try:
-                from pygltflib import GLTF2
-                gltf = GLTF2().load(str(out_glb))
-                for mat in gltf.materials:
-                    if mat.pbrMetallicRoughness:
-                        mat.pbrMetallicRoughness.metallicFactor = 0.0
-                        mat.pbrMetallicRoughness.roughnessFactor = 1.0
-                    mat.doubleSided = True
-                gltf.save(str(out_glb))
-            except Exception:
-                pass
+            from app.pipelines.mesh.floor_align import fix_glb_pbr_materials
+            fix_glb_pbr_materials(out_glb)
             exported_files.append(out_glb)
         except Exception as e:
             ctx.log_cb(f"[{self.name}] Warning: GLB export failed: {e}")
@@ -147,6 +142,17 @@ class MeshExportStage(Stage):
                         target = ctx.workdir / fname
                         target.write_bytes(fbytes if isinstance(fbytes, bytes) else fbytes.encode())
                         if fname.endswith(".gltf"):
+                            try:
+                                g_data = json.loads(target.read_text())
+                                for mat in g_data.get("materials", []):
+                                    if "pbrMetallicRoughness" not in mat:
+                                        mat["pbrMetallicRoughness"] = {}
+                                    mat["pbrMetallicRoughness"]["metallicFactor"] = 0.0
+                                    mat["pbrMetallicRoughness"]["roughnessFactor"] = 1.0
+                                    mat["doubleSided"] = True
+                                target.write_text(json.dumps(g_data, indent=2))
+                            except Exception:
+                                pass
                             exported_files.append(target)
                 else:
                     out_gltf.write_text(str(gltf_files))
