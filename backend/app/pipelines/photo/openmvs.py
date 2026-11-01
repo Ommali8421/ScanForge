@@ -231,7 +231,7 @@ class OpenMVSDensifyStage(Stage):
         is_safe, avail_mb, total_mb = check_ram_guard(min_available_mb=1500)
         ctx.log_cb(f"[RAM Guard] Host memory check: {avail_mb:.1f} MB available / {total_mb:.1f} MB total (safe: {is_safe})")
 
-        # Determine input image dimensions
+        # Determine input image dimensions and active frame count
         img_w, img_h = 1080, 1920
         ingest_meta_file = ctx.workdir / "ingest_metadata.json"
         if ingest_meta_file.exists():
@@ -243,13 +243,18 @@ class OpenMVSDensifyStage(Stage):
             except Exception:
                 pass
 
+        frames_dir = ctx.workdir / "frames"
+        frame_count = len(list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.png"))) if frames_dir.exists() else 100
+
         vram_gb = get_available_vram_gb()
         quality = ctx.params.get("quality", "standard")
-        initial_res_level = determine_openmvs_resolution_level(img_w, img_h, vram_gb=vram_gb, quality=quality)
+        initial_res_level = determine_openmvs_resolution_level(
+            img_w, img_h, vram_gb=vram_gb, quality=quality, frame_count=frame_count
+        )
 
         ctx.log_cb(
-            f"[OpenMVS] Dynamic resolution planning: frame={img_w}x{img_h}, VRAM={vram_gb:.1f} GB, "
-            f"quality='{quality}' -> initial resolution-level {initial_res_level}"
+            f"[OpenMVS] Dynamic resolution planning: frames={frame_count}, res={img_w}x{img_h}, "
+            f"VRAM={vram_gb:.1f} GB, quality='{quality}' -> initial resolution-level {initial_res_level}"
         )
 
         input_mvs = ctx.workdir / "scene.mvs"
@@ -259,8 +264,9 @@ class OpenMVSDensifyStage(Stage):
         if not input_mvs.exists():
             raise FileNotFoundError(f"Input scene file not found: {input_mvs}")
 
-        # Execution with OOM auto-retry
+        # Execution with multi-criteria OOM / memory pressure auto-retry
         res_level = initial_res_level
+        effective_threads = int(threads)
         max_retries = 2
         success = False
         last_error = ""
@@ -272,11 +278,16 @@ class OpenMVSDensifyStage(Stage):
                 "-i", "scene.mvs",
                 "-o", "scene_dense.mvs",
                 "--resolution-level", str(res_level),
-                "--max-threads", threads,
+                "--max-threads", str(effective_threads),
                 "-v", "2",
             ]
+            if attempt > 0:
+                cmd.extend(["--min-resolution", "640"])
 
-            ctx.log_cb(f"[OpenMVS] Running DensifyPointCloud (attempt {attempt+1}, resolution-level {res_level}, threads {threads})...")
+            ctx.log_cb(
+                f"[OpenMVS] Running DensifyPointCloud (attempt {attempt+1}/{max_retries+1}, "
+                f"resolution-level {res_level}, threads {effective_threads})..."
+            )
             try:
                 res = ToolRunner.run(
                     cmd,
@@ -291,15 +302,27 @@ class OpenMVSDensifyStage(Stage):
                     break
                 else:
                     last_error = f"DensifyPointCloud exited with code {res.exit_code} without generating outputs."
+                    if attempt < max_retries:
+                        res_level += 1
+                        effective_threads = max(1, effective_threads - 1)
+                        ctx.log_cb(
+                            f"[OpenMVS] WARNING: DensifyPointCloud failed to generate outputs (exit code {res.exit_code}). "
+                            f"Retrying at lower resolution-level {res_level} (threads={effective_threads})..."
+                        )
+                        continue
             except Exception as e:
                 err_msg = str(e)
                 last_error = err_msg
-                is_oom = any(k in err_msg.lower() for k in ("out of memory", "cuda error", "std::bad_alloc", "oom"))
-                if is_oom and attempt < max_retries:
+                is_oom = any(k in err_msg.lower() for k in (
+                    "out of memory", "cuda error", "std::bad_alloc", "oom",
+                    "thrust::system", "failed to allocate", "killed", "137", "139", "code -9"
+                ))
+                if (is_oom or attempt < max_retries) and attempt < max_retries:
                     res_level += 1
+                    effective_threads = max(1, effective_threads - 1)
                     ctx.log_cb(
-                        f"[OpenMVS] WARNING: Memory pressure / CUDA OOM detected during densification. "
-                        f"Retrying automatically at lower resolution-level {res_level}..."
+                        f"[OpenMVS] WARNING: Memory pressure / failure detected during densification ({err_msg[:120]}). "
+                        f"Retrying automatically at lower resolution-level {res_level} (threads={effective_threads})..."
                     )
                     continue
                 raise
@@ -622,32 +645,57 @@ class OpenMVSTextureStage(Stage):
                 pass
 
         output_glb = ctx.workdir / "scene_textured.glb"
-        cmd = [
-            texture_bin,
-            "-w", str(ctx.workdir),
-            "-i", str(input_mvs.name),
-            "-o", "scene_textured.glb",
-            "--export-type", "glb",
-            "--resolution-level", "1",
-            "--empty-color", "13158600",  # Neutral light-grey (0xC8C8C8) instead of orange
-            "--global-seam-leveling", "0",
-            "--local-seam-leveling", "0",
-            "--max-threads", threads,
-            "-v", "2",
-        ]
+        tex_res_level = 1
+        res = None
+        for tex_attempt in range(2):
+            cmd = [
+                texture_bin,
+                "-w", str(ctx.workdir),
+                "-i", str(input_mvs.name),
+                "-o", "scene_textured.glb",
+                "--export-type", "glb",
+                "--resolution-level", str(tex_res_level),
+                "--empty-color", "13158600",  # Neutral light-grey (0xC8C8C8) instead of orange
+                "--global-seam-leveling", "0",
+                "--local-seam-leveling", "0",
+                "--max-threads", threads,
+                "-v", "2",
+            ]
 
-        if input_mesh.exists():
-            cmd.extend(["--mesh-file", str(input_mesh.name)])
-            ctx.log_cb(f"[OpenMVS] Supplying external mesh to TextureMesh: {input_mesh.name} ({total_mesh_faces:,} faces).")
+            if input_mesh.exists():
+                cmd.extend(["--mesh-file", str(input_mesh.name)])
 
-        ctx.log_cb(f"[OpenMVS] Running TextureMesh -> {output_glb.name} (resolution-level 1, threads: {threads}, empty-color: light-grey)...")
-        res = ToolRunner.run(
-            cmd,
-            cwd=str(ctx.workdir),
-            log_callback=ctx.log_cb,
-            cancel_token=ctx.cancel_token,
-            timeout=2400,
-        )
+            ctx.log_cb(
+                f"[OpenMVS] Running TextureMesh -> {output_glb.name} (attempt {tex_attempt+1}/2, "
+                f"resolution-level {tex_res_level}, threads: {threads}, empty-color: light-grey)..."
+            )
+            try:
+                res = ToolRunner.run(
+                    cmd,
+                    cwd=str(ctx.workdir),
+                    log_callback=ctx.log_cb,
+                    cancel_token=ctx.cancel_token,
+                    timeout=2400,
+                )
+                if output_glb.exists():
+                    break
+                else:
+                    if tex_attempt == 0:
+                        tex_res_level = 2
+                        ctx.log_cb(
+                            f"[OpenMVS] WARNING: TextureMesh exited with code {res.exit_code} without generating output. "
+                            f"Retrying at lower resolution-level 2..."
+                        )
+                        continue
+            except Exception as e:
+                if tex_attempt == 0:
+                    tex_res_level = 2
+                    ctx.log_cb(
+                        f"[OpenMVS] WARNING: TextureMesh failed ({str(e)[:120]}). "
+                        f"Retrying at lower resolution-level 2..."
+                    )
+                    continue
+                raise
 
         if not output_glb.exists():
             raise RuntimeError(

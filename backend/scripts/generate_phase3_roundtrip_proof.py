@@ -132,3 +132,4 @@ for row, col, item in grid_layout:
 out_final = OUTPUT_DIR / "phase3_roundtrip_proof.png"
 canvas.save(str(out_final), quality=95)
 print(f"SUCCESS: Saved proof sheet to {out_final} ({total_w}x{total_h})")
+

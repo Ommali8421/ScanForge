@@ -5,9 +5,10 @@ interface Props {
   file: File | null;
   onFileSelect: (file: File | null) => void;
   maxUploadMb: number;
+  maxVideoSeconds?: number;
 }
 
-export const UploadDropzone: React.FC<Props> = ({ file, onFileSelect, maxUploadMb }) => {
+export const UploadDropzone: React.FC<Props> = ({ file, onFileSelect, maxUploadMb, maxVideoSeconds = 600 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -72,7 +73,7 @@ export const UploadDropzone: React.FC<Props> = ({ file, onFileSelect, maxUploadM
             MP4, MOV video walkthrough or ZIP archive of photos / RGB-D frames
           </p>
           <span className="inline-block text-[11px] text-dark-muted bg-dark-bg px-2.5 py-1 rounded-full border border-dark-border">
-            Max upload limit: {maxUploadMb} MB
+            Max upload limit: {maxUploadMb} MB {maxVideoSeconds ? `• Max video duration: ${maxVideoSeconds}s (${Math.round(maxVideoSeconds / 60)} min)` : ""}
           </span>
         </div>
       ) : (

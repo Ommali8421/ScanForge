@@ -38,6 +38,8 @@ from app.utils.colmap_compat import (
     build_feature_extractor_args,
     build_sequential_matcher_args,
     build_exhaustive_matcher_args,
+    build_vocab_tree_matcher_args,
+    build_matches_importer_args,
     build_mapper_args,
     configure_loop_detection,
 )
@@ -850,10 +852,10 @@ class ColmapSfMStage(Stage):
             # -------------------------------------------------------------
             # Step 2: Feature Matching & Mapping
             # -------------------------------------------------------------
-            def execute_matcher(m_type: str, gpu_flag: bool, enable_loop_detection: bool = True):
+            def execute_matcher(m_type: str, gpu_flag: bool, enable_loop_detection: bool = True) -> bool:
                 ctx.log_cb(f"[SfM] Running {m_type} matcher (GPU: {gpu_flag}, threads: {threads})...")
+                loop_enabled = False
                 if m_type == "sequential":
-                    loop_enabled = False
                     vocab_path = None
                     if enable_loop_detection:
                         loop_enabled, vocab_path, loop_msg = configure_loop_detection(
@@ -889,20 +891,71 @@ class ColmapSfMStage(Stage):
                         cancel_token=ctx.cancel_token,
                         timeout=1800
                     )
+                    return loop_enabled
                 except ToolExecutionError:
                     if m_type == "sequential" and enable_loop_detection:
                         ctx.log_cb(
                             "[SfM] Warning: Sequential matching failed with loop detection. "
                             "Retrying without loop detection..."
                         )
-                        execute_matcher("sequential", gpu_flag, enable_loop_detection=False)
-                        return
+                        return execute_matcher("sequential", gpu_flag, enable_loop_detection=False)
 
                     if gpu_flag:
                         ctx.log_cb(f"[SfM] Warning: GPU {m_type} matching failed. Falling back to CPU...")
-                        execute_matcher(m_type, False, enable_loop_detection=False)
+                        return execute_matcher(m_type, False, enable_loop_detection=False)
                     else:
                         raise
+
+            def execute_anchor_matcher(active_files: List[Path], num_anchors: int = 45):
+                """
+                Strided anchor-frame loop closure for high frame-count sequences (N >= 150)
+                when operating 100% offline without a local vocabulary tree.
+                Exhaustively matches ~45 evenly spaced keyframes across the whole video (~990 pairs, <3s on GPU)
+                via colmap matches_importer so circular multi-minute walkthroughs get true start-to-end loop closure.
+                """
+                total = len(active_files)
+                if total < 15:
+                    return
+                k = min(num_anchors, total)
+                indices = np.linspace(0, total - 1, num=k, dtype=int)
+                anchor_names = [active_files[i].name for i in indices]
+
+                pairs: List[Tuple[str, str]] = []
+                for i in range(len(anchor_names)):
+                    for j in range(i + 1, len(anchor_names)):
+                        pairs.append((anchor_names[i], anchor_names[j]))
+
+                pairs_file = ctx.workdir / "anchor_pairs.txt"
+                with open(pairs_file, "w") as f:
+                    for p1, p2 in pairs:
+                        f.write(f"{p1} {p2}\n")
+
+                ctx.log_cb(
+                    f"[SfM] Running offline strided anchor loop closure ({len(anchor_names)} keyframes, "
+                    f"{len(pairs)} pairs across whole video) via matches_importer..."
+                )
+
+                importer_args = build_matches_importer_args(
+                    version=version,
+                    database_path=str(db_path),
+                    match_list_path=str(pairs_file),
+                    match_type="pairs",
+                    use_gpu=use_gpu_sift,
+                    threads=int(threads),
+                )
+                cmd = [colmap_bin, "matches_importer"] + importer_args
+                try:
+                    ToolRunner.run(
+                        cmd,
+                        cwd=str(ctx.workdir),
+                        env=colmap_env,
+                        log_callback=ctx.log_cb,
+                        cancel_token=ctx.cancel_token,
+                        timeout=600,
+                    )
+                    ctx.log_cb("[SfM] Anchor loop closure matching complete.")
+                except Exception as e:
+                    ctx.log_cb(f"[SfM] Warning: Anchor loop closure matching failed: {e}")
 
             def execute_mapper(output_dir: Path, timeout: int = 1800) -> float:
                 output_dir.mkdir(parents=True, exist_ok=True)
@@ -935,7 +988,12 @@ class ColmapSfMStage(Stage):
 
             # Initial matching
             sparse_out = ctx.workdir / "sparse"
-            execute_matcher(requested_matcher, use_gpu_sift)
+            loop_used = execute_matcher(requested_matcher, use_gpu_sift)
+
+            # For video inputs with N >= 150 frames: if no vocab tree was used, run strided anchor loop closure
+            if requested_matcher == "sequential" and active_frame_count >= 150 and not loop_used:
+                execute_anchor_matcher(active_image_files, num_anchors=45)
+
             seq_mapper_dur = execute_mapper(sparse_out, timeout=1800)
 
             best_model_dir, registered_count = self._find_best_model(sparse_out)

@@ -66,11 +66,12 @@ class IngestStage(Stage):
             f"rotation: {metadata.get('rotation')}°, HDR: {metadata.get('is_hdr')}"
         )
 
-        # Enforce maximum duration (180s)
+        # Enforce maximum duration
         if duration > float(settings.SCANFORGE_MAX_VIDEO_SECONDS):
+            max_min = int(settings.SCANFORGE_MAX_VIDEO_SECONDS // 60)
             raise ValueError(
                 f"Video duration ({duration:.1f}s) exceeds the maximum allowed limit of "
-                f"{settings.SCANFORGE_MAX_VIDEO_SECONDS}s. Please trim your video to under 3 minutes."
+                f"{settings.SCANFORGE_MAX_VIDEO_SECONDS}s. Please trim your video to under {max_min} minutes."
             )
 
         # Detect and log letterbox/pillarbox bars via ffmpeg cropdetect

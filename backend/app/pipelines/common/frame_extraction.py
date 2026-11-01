@@ -3,14 +3,62 @@ Real Frame Extraction Stage
 Performs adaptive video sampling, variance-of-Laplacian sharpness scoring,
 inter-frame optical flow analysis for fast rotation and rotation-in-place detection,
 deduplication, and quality warning generation.
+
+Optimized for long video sequences (several minutes) via two-pass zero-RAM streaming:
+- Pass 1: Streams video frames without retaining raw image arrays in RAM, extracting
+  only 320x180 thumbnails and sharpness scores.
+- Adaptive keyframe budget curve: Dynamically bounds target keyframes based on duration
+  and quality preset (Draft: 180, Standard: 300, High: 380) to respect the 8 GB VRAM budget.
+- Pass 2: Sequential retrieval using cap.grab() for skipped frames and cap.retrieve()
+  ONLY for selected keyframe indices. Zero seeking, zero redundant decoding.
 """
 
 import json
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import cv2
 import numpy as np
 from app.pipelines.base import Stage, JobContext, StageResult
+
+
+def compute_adaptive_keyframe_budget(
+    duration: float,
+    quality: str = "standard",
+    max_frames_override: Optional[int] = None
+) -> Tuple[int, float]:
+    """
+    Computes adaptive target keyframe count and effective target fps based on duration
+    and quality tier to respect 8 GB VRAM budget while ensuring thorough room coverage.
+
+    Diminishing returns curve:
+    - T <= 30s: N = min(120, round(T * 3.3))
+    - 30s < T <= 90s: N = min(200, 100 + round((T - 30) * 1.6))
+    - 90s < T <= 180s: N = min(280, 200 + round((T - 90) * 0.8))
+    - T > 180s: N = min(max_budget, 280 + round((T - 180) * 0.2))
+    """
+    quality_lower = (quality or "standard").lower()
+    if quality_lower == "draft":
+        max_budget = 180
+    elif quality_lower == "high":
+        max_budget = 380
+    else:
+        max_budget = 300
+
+    if max_frames_override is not None:
+        max_budget = int(max_frames_override)
+
+    if duration <= 30.0:
+        n = min(120, round(duration * 3.3))
+    elif duration <= 90.0:
+        n = min(200, 100 + round((duration - 30.0) * 1.6))
+    elif duration <= 180.0:
+        n = min(280, 200 + round((duration - 90.0) * 0.8))
+    else:
+        n = min(max_budget, 280 + round((duration - 180.0) * 0.2))
+
+    target_frames = max(40, min(max_budget, int(n)))
+    effective_fps = target_frames / duration if duration > 0 else 3.3
+    return target_frames, effective_fps
 
 
 class FrameExtractionStage(Stage):
@@ -53,7 +101,7 @@ class FrameExtractionStage(Stage):
         step = 16
         y_indices, x_indices = np.mgrid[step:h-step:step, step:w-step:step]
         pts_prev = np.column_stack((x_indices.ravel(), y_indices.ravel())).astype(np.float32)
-        
+
         # Predicted points based on flow
         flow_samples = flow[y_indices.ravel(), x_indices.ravel()]
         pts_curr = pts_prev + flow_samples
@@ -88,41 +136,53 @@ class FrameExtractionStage(Stage):
         duration = total_video_frames / video_fps if video_fps > 0 else 30.0
 
         options = ctx.params.get("options", {})
-        target_fps = float(options.get("target_fps", 3.3))
+        quality = ctx.params.get("quality", "standard")
         uniform_sampling = bool(options.get("uniform_sampling", False))
-        max_frames_bound = int(options.get("max_frames", 600 if options.get("target_fps") else 180))
-        target_frames = int(max(60, min(max_frames_bound, round(duration * target_fps))))
+
+        # Compute adaptive keyframe budget based on duration and quality preset
+        max_override = options.get("max_frames")
+        if max_override is not None:
+            max_override = int(max_override)
+        target_frames, effective_target_fps = compute_adaptive_keyframe_budget(
+            duration=duration,
+            quality=quality,
+            max_frames_override=max_override
+        )
 
         frames_dir = ctx.workdir / "frames"
         frames_dir.mkdir(parents=True, exist_ok=True)
 
         if uniform_sampling:
-            sample_step = video_fps / target_fps
+            sample_step = video_fps / effective_target_fps if effective_target_fps > 0 else 1.0
             target_indices = [int(round(i * sample_step)) for i in range(target_frames) if int(round(i * sample_step)) < total_video_frames]
-            ctx.log_cb(f"[FrameExtraction] Uniform sampling enabled: extracting {len(target_indices)} frames at {target_fps:.1f} fps.")
+            ctx.log_cb(f"[FrameExtraction] Uniform sampling enabled: extracting {len(target_indices)} frames at {effective_target_fps:.1f} fps.")
             target_set = set(target_indices)
-            saved_count = 0
+
+            # Pass 2 streaming with cap.grab() and cap.retrieve()
             curr_idx = 0
+            saved_count = 0
             while True:
                 if ctx.cancel_token.is_cancelled():
                     cap.release()
                     raise RuntimeError("Frame extraction cancelled by user.")
-                ret, frame = cap.read()
-                if not ret:
+                if not cap.grab():
                     break
                 if curr_idx in target_set:
-                    out_path = frames_dir / f"frame_{saved_count:04d}.jpg"
-                    cv2.imwrite(str(out_path), frame)
-                    saved_count += 1
+                    ret, frame = cap.retrieve()
+                    if ret:
+                        out_path = frames_dir / f"frame_{saved_count:04d}.jpg"
+                        cv2.imwrite(str(out_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                        saved_count += 1
                 curr_idx += 1
             cap.release()
+
             ctx.log_cb(f"[FrameExtraction] Uniform extraction complete: saved {saved_count} frames.")
             report = {
                 "total_video_frames": total_video_frames,
                 "video_fps": round(video_fps, 2),
                 "duration_seconds": round(duration, 2),
                 "sampling_mode": "uniform",
-                "target_fps": target_fps,
+                "target_fps": round(effective_target_fps, 2),
                 "extracted_frames": saved_count
             }
             report_path = ctx.workdir / "frame_extraction_report.json"
@@ -134,22 +194,22 @@ class FrameExtractionStage(Stage):
                 metadata=report
             )
 
-        # Sample candidate frames at 2x rate for adaptive windowing
-        candidate_interval = max(1, int(round(video_fps / (target_fps * 2.0))))
+        # Candidate sampling interval at 2x rate for adaptive windowing
+        candidate_interval = max(1, int(round(video_fps / (effective_target_fps * 2.0))))
 
         ctx.log_cb(
             f"[FrameExtraction] Video: {total_video_frames} frames ({duration:.1f}s @ {video_fps:.1f} fps). "
-            f"Target frames: {target_frames}, candidate sample interval: every {candidate_interval} frames."
+            f"Quality='{quality}' -> Target frames: {target_frames} (~{effective_target_fps:.2f} fps), "
+            f"Candidate interval: every {candidate_interval} frames."
         )
 
-        frames_dir = ctx.workdir / "frames"
-        frames_dir.mkdir(parents=True, exist_ok=True)
-
+        # -------------------------------------------------------------
+        # Pass 1: Streaming Candidate Evaluation (Zero full-frame RAM retention)
+        # -------------------------------------------------------------
         candidates: List[Dict[str, Any]] = []
         frame_idx = 0
         quality_warnings: List[str] = []
 
-        # Read candidates and compute metrics
         while True:
             if ctx.cancel_token.is_cancelled():
                 cap.release()
@@ -163,13 +223,13 @@ class FrameExtractionStage(Stage):
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 # Sharpness via variance of Laplacian
                 sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-                # Downscaled grayscale for optical flow analysis
+                # Downscaled thumbnail for optical flow analysis (320x180 = 57 KB)
                 small_gray = cv2.resize(gray, (320, 180), interpolation=cv2.INTER_AREA)
 
+                # Store ONLY metadata and small thumbnail (never full-resolution frame)
                 candidates.append({
                     "frame_idx": frame_idx,
                     "timestamp": frame_idx / video_fps,
-                    "frame": frame,
                     "gray_small": small_gray,
                     "sharpness": sharpness
                 })
@@ -177,12 +237,12 @@ class FrameExtractionStage(Stage):
             frame_idx += 1
 
         cap.release()
-        ctx.log_cb(f"[FrameExtraction] Evaluated {len(candidates)} candidate frames.")
+        ctx.log_cb(f"[FrameExtraction] Pass 1 complete: evaluated {len(candidates)} candidate frames in streaming mode.")
 
         if not candidates:
             raise RuntimeError("No candidate frames could be extracted from video.")
 
-        # Compute sharpness threshold (adaptive: 20th percentile or 40.0)
+        # Compute sharpness threshold (adaptive: 15th percentile or 25.0)
         all_sharpness = [c["sharpness"] for c in candidates]
         sharpness_threshold = max(25.0, float(np.percentile(all_sharpness, 15)))
 
@@ -252,11 +312,41 @@ class FrameExtractionStage(Stage):
             step = max(1, len(candidates) // target_frames)
             kept_candidates = [candidates[i] for i in range(0, len(candidates), step)]
 
-        # Save kept frames to disk
-        ctx.log_cb(f"[FrameExtraction] Saving {len(kept_candidates)} selected frames to {frames_dir.name}...")
-        for i, cand in enumerate(kept_candidates):
-            frame_filename = frames_dir / f"frame_{i:04d}.jpg"
-            cv2.imwrite(str(frame_filename), cand["frame"], [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        # Map frame indices for Pass 2 streaming retrieval
+        # Sort by frame_idx to ensure monotonic sequential decoding
+        kept_candidates.sort(key=lambda x: x["frame_idx"])
+        kept_indices = {c["frame_idx"] for c in kept_candidates}
+
+        # -------------------------------------------------------------
+        # Pass 2: Sequential Targeted Frame Writing using cap.grab() / cap.retrieve()
+        # -------------------------------------------------------------
+        ctx.log_cb(f"[FrameExtraction] Pass 2: Streaming and writing {len(kept_candidates)} selected frames to {frames_dir.name}...")
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Could not reopen video file for Pass 2: {video_path}")
+
+        curr_idx = 0
+        saved_count = 0
+        while True:
+            if ctx.cancel_token.is_cancelled():
+                cap.release()
+                raise RuntimeError("Frame extraction cancelled by user.")
+
+            # Fast grab (only demuxes packet header, skips full color decoding for skipped frames)
+            if not cap.grab():
+                break
+
+            if curr_idx in kept_indices:
+                ret, frame = cap.retrieve()
+                if ret:
+                    frame_filename = frames_dir / f"frame_{saved_count:04d}.jpg"
+                    cv2.imwrite(str(frame_filename), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                    saved_count += 1
+
+            curr_idx += 1
+
+        cap.release()
+        ctx.log_cb(f"[FrameExtraction] Pass 2 complete: successfully saved {saved_count} frames to disk.")
 
         # Generate warnings
         if dropped_blur_count > len(candidates) * 0.35:
@@ -277,7 +367,7 @@ class FrameExtractionStage(Stage):
         report = {
             "total_video_frames": total_video_frames,
             "candidate_frames_evaluated": len(candidates),
-            "frames_kept": len(kept_candidates),
+            "frames_kept": saved_count,
             "frames_dropped_blur": dropped_blur_count,
             "frames_dropped_duplicate": dropped_duplicate_count,
             "frames_dropped_fast_motion": dropped_fast_motion_count,
@@ -291,7 +381,7 @@ class FrameExtractionStage(Stage):
             json.dump(report, f, indent=2)
 
         ctx.log_cb(
-            f"[FrameExtraction] Complete: {len(kept_candidates)} frames kept (mean sharpness: {mean_kept_sharpness:.1f}). "
+            f"[FrameExtraction] Complete: {saved_count} frames kept (mean sharpness: {mean_kept_sharpness:.1f}). "
             f"Dropped: {dropped_blur_count} blur, {dropped_duplicate_count} dup, {dropped_fast_motion_count} fast rot."
         )
         if quality_warnings:

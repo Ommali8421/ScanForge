@@ -90,6 +90,7 @@ export const NewScan: React.FC<Props> = ({ capabilities, onJobCreated }) => {
             file={file}
             onFileSelect={setFile}
             maxUploadMb={capabilities?.limits.max_upload_mb || 2048}
+            maxVideoSeconds={capabilities?.limits.max_video_seconds || 600}
           />
         </div>
 

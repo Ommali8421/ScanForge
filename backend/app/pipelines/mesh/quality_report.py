@@ -154,3 +154,4 @@ class QualityReportStage(Stage):
             output_files=[out_json],
             metadata=report_data
         )
+

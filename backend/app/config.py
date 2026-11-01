@@ -4,7 +4,7 @@ Loads application configuration from environment variables with Pydantic Setting
 """
 
 from pathlib import Path
-from typing import List, Literal
+from typing import List, Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
@@ -39,9 +39,12 @@ class Settings(BaseSettings):
 
     # Uploads & Limits
     SCANFORGE_MAX_UPLOAD_MB: int = 2048
-    SCANFORGE_MAX_VIDEO_SECONDS: int = 180
+    SCANFORGE_MAX_VIDEO_SECONDS: int = 600
     SCANFORGE_MAX_FRAMES_PHOTO: int = 300
     SCANFORGE_MAX_FRAMES_3DGS: int = 300
+    SCANFORGE_HIGH_FRAME_THRESHOLD: int = 150
+    SCANFORGE_ANCHOR_KEYFRAMES: int = 45
+    SCANFORGE_VOCAB_TREE_PATH: Optional[str] = None
 
     # Job Execution & Timeouts
     SCANFORGE_CONCURRENCY: int = 1

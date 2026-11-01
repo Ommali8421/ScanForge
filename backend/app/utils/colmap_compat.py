@@ -254,6 +254,40 @@ def build_vocab_tree_matcher_args(
     return args
 
 
+def build_matches_importer_args(
+    version: Tuple[int, int, int],
+    database_path: str,
+    match_list_path: str,
+    match_type: str = "pairs",
+    use_gpu: bool = True,
+    threads: int = 4,
+    supported_flags: Optional[Set[str]] = None,
+) -> List[str]:
+    """
+    Build CLI args for colmap matches_importer.
+    Used for offline strided anchor-frame loop closure.
+    """
+    args = [
+        "--database_path", str(database_path),
+        "--match_list_path", str(match_list_path),
+        "--match_type", str(match_type),
+    ]
+
+    is_v313 = is_version_3_13_or_newer(version)
+
+    if is_v313:
+        args.extend(["--FeatureMatching.use_gpu", "1" if use_gpu else "0"])
+        args.extend(["--FeatureMatching.num_threads", str(threads)])
+    else:
+        args.extend(["--SiftMatching.use_gpu", "1" if use_gpu else "0"])
+        args.extend(["--SiftMatching.num_threads", str(threads)])
+
+    if supported_flags is not None:
+        _validate_critical_flags("matches_importer", args, supported_flags, ["use_gpu", "threads"])
+
+    return args
+
+
 def build_mapper_args(
     version: Tuple[int, int, int],
     database_path: str,
@@ -489,12 +523,19 @@ def configure_loop_detection(
     """
     # 1. Check if a local file is explicitly specified and exists
     local_path = None
-    if custom_vocab_path and Path(custom_vocab_path).is_file():
-        local_path = str(Path(custom_vocab_path).resolve())
-    else:
-        env_path = os.environ.get("SCANFORGE_VOCAB_TREE_PATH")
-        if env_path and Path(env_path).is_file():
-            local_path = str(Path(env_path).resolve())
+    candidates = []
+    if custom_vocab_path:
+        candidates.append(Path(custom_vocab_path))
+    env_path = os.environ.get("SCANFORGE_VOCAB_TREE_PATH")
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.append(Path("/data/models/vocab_tree_flickr100K_words32K.bin"))
+    candidates.append(Path("/opt/colmap/vocab_tree_flickr100K_words32K.bin"))
+
+    for c in candidates:
+        if c.is_file():
+            local_path = str(c.resolve())
+            break
 
     if local_path:
         msg = f"[SfM] Loop detection enabled using local vocabulary tree: {local_path}"

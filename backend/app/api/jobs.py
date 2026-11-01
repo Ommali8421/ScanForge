@@ -6,6 +6,7 @@ Handles job submission, retrieval, cancellation, downloads, calibration, and rep
 import json
 import math
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional, List
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends
@@ -470,20 +471,90 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
             if art_dir.exists():
                 (art_dir / "quality_report.json").write_text(rep_json)
 
-            # Ensure PBR material defaults
+            # Synchronize mesh.glb with the scaled GLB
+            out_mesh_glb = workdir / "mesh.glb"
+            shutil.copy2(out_glb, out_mesh_glb)
+            if art_dir.exists():
+                shutil.copy2(out_glb, art_dir / "mesh.glb")
+
+            # Synchronize PLY, STL, XYZ, OBJ ZIP, FBX, USDZ deliverables so /download/* never serves 1.0x stale geometry
             try:
-                from pygltflib import GLTF2
-                for p in [out_glb, preview_glb, art_dir / "preview_textured.glb"]:
-                    if p.exists():
-                        gltf = GLTF2().load(str(p))
-                        for mat in gltf.materials:
-                            if mat.pbrMetallicRoughness:
-                                mat.pbrMetallicRoughness.metallicFactor = 0.0
-                                mat.pbrMetallicRoughness.roughnessFactor = 1.0
-                            mat.doubleSided = True
-                        gltf.save(str(p))
-            except Exception:
-                pass
+                # 1. mesh.ply
+                for p_ply in [workdir / "mesh.ply", art_dir / "mesh.ply"]:
+                    if p_ply.exists():
+                        m_ply = trimesh.load(str(p_ply), process=False)
+                        if hasattr(m_ply, "vertices"):
+                            m_ply.vertices = m_ply.vertices * new_factor
+                            m_ply.export(str(p_ply))
+
+                # 2. mesh.stl
+                for p_stl in [workdir / "mesh.stl", art_dir / "mesh.stl"]:
+                    if p_stl.exists():
+                        m_stl = trimesh.load(str(p_stl), process=False)
+                        if hasattr(m_stl, "vertices"):
+                            m_stl.vertices = m_stl.vertices * new_factor
+                            m_stl.export(str(p_stl))
+
+                # 3. mesh.xyz
+                for p_xyz in [workdir / "mesh.xyz", art_dir / "mesh.xyz"]:
+                    if p_xyz.exists():
+                        arr = np.loadtxt(str(p_xyz))
+                        if len(arr.shape) == 2 and arr.shape[1] >= 3:
+                            arr[:, 0:3] *= new_factor
+                            np.savetxt(str(p_xyz), arr, fmt="%.6f", delimiter=" ")
+
+                # 4. mesh_obj.zip
+                for p_zip in [workdir / "mesh_obj.zip", art_dir / "mesh_obj.zip"]:
+                    if p_zip.exists():
+                        import zipfile
+                        import io
+                        buf = io.BytesIO()
+                        with zipfile.ZipFile(p_zip, "r") as zin:
+                            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
+                                for item in zin.infolist():
+                                    data_bytes = zin.read(item.filename)
+                                    if item.filename == "mesh.obj":
+                                        lines = data_bytes.decode("utf-8", errors="ignore").splitlines()
+                                        scaled_lines = []
+                                        for line in lines:
+                                            if line.startswith("v "):
+                                                parts = line.split()
+                                                if len(parts) >= 4:
+                                                    vx = float(parts[1]) * new_factor
+                                                    vy = float(parts[2]) * new_factor
+                                                    vz = float(parts[3]) * new_factor
+                                                    scaled_lines.append(f"v {vx:.6f} {vy:.6f} {vz:.6f}")
+                                                    continue
+                                            scaled_lines.append(line)
+                                        zout.writestr(item, "\n".join(scaled_lines).encode("utf-8"))
+                                    else:
+                                        zout.writestr(item, data_bytes)
+                        p_zip.write_bytes(buf.getvalue())
+
+                # 5. mesh.fbx & mesh.usdz via Blender if previously generated
+                from app.utils.tool_resolve import resolve_blender
+                blender_bin = resolve_blender()
+                if shutil.which(blender_bin):
+                    scripts_dir = Path(__file__).parents[2] / "scripts"
+                    fbx_script = scripts_dir / "export_fbx.py"
+                    usdz_script = scripts_dir / "export_usdz.py"
+                    if (workdir / "mesh.fbx").exists() and fbx_script.exists():
+                        subprocess.run(
+                            [blender_bin, "-b", "-P", str(fbx_script), "--", str(out_glb), str(workdir / "mesh.fbx"), up_opt],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
+                        )
+                        if art_dir.exists() and (workdir / "mesh.fbx").exists():
+                            shutil.copy2(workdir / "mesh.fbx", art_dir / "mesh.fbx")
+
+                    if (workdir / "mesh.usdz").exists() and usdz_script.exists():
+                        subprocess.run(
+                            [blender_bin, "-b", "-P", str(usdz_script), "--", str(out_glb), str(workdir / "mesh.usdz"), up_opt],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
+                        )
+                        if art_dir.exists() and (workdir / "mesh.usdz").exists():
+                            shutil.copy2(workdir / "mesh.usdz", art_dir / "mesh.usdz")
+            except Exception as e:
+                logger.warning(f"Error syncing secondary deliverable formats: {e}")
         except Exception as e:
             logger.warning(f"Error during inline recalibration: {e}")
 

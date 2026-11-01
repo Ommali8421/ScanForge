@@ -281,35 +281,54 @@ def determine_openmvs_resolution_level(
     image_width: int,
     image_height: int,
     vram_gb: Optional[float] = None,
-    quality: str = "standard"
+    quality: str = "standard",
+    frame_count: int = 100
 ) -> int:
     """
-    OpenMVS working resolution determined from actual image size and VRAM tier (Requirement P2c.a).
-    478x850 house clip -> level 0.
-    ~1080x1800 tour -> level 0 on 8 GB if standard/high; level 1 if draft or VRAM < 6 GB.
-    Images > 2000px -> level 1 on 8 GB.
+    OpenMVS working resolution determined jointly from image size, frame count (total megapixel load),
+    and available VRAM tier (Requirement P2c.a & AGENTS.md Section 5).
+
+    Megapixel load = frame_count * (W * H / 1e6).
+    On 8 GB VRAM:
+    - Small sequence (load <= 180 MP, e.g. <= 85 1080p frames or 478x850 clip) -> level 0 for standard/high.
+    - Medium/high sequence (load > 180 MP, e.g. 90-220 1080p frames) -> level 1 (540p) to keep VRAM < 6 GB.
+    - Very long sequence (load > 450 MP, e.g. 220+ 1080p frames) -> level 1 initially for high, level 2 for standard/draft.
+    - Images > 2000px -> level 1 on 8 GB.
     """
     if vram_gb is None:
         vram_gb = get_available_vram_gb()
 
     max_dim = max(image_width, image_height)
     quality_lower = quality.lower()
+    total_megapixels = (float(image_width * image_height) / 1e6) * float(max(1, frame_count))
 
-    if max_dim <= 1000:
-        # Small video frames (e.g. 478x850 house clip) always run at full resolution
-        return 0
-
-    if max_dim <= 2000:
-        # 1080p / 1080x1800 portrait
-        if vram_gb >= 7.0 and quality_lower in ("high", "standard"):
-            return 0  # fits on 8 GB RTX 4060
-        return 1
-
-    # High resolution (> 2000px)
-    if vram_gb >= 12.0 and quality_lower == "high":
-        return 0
-    elif vram_gb >= 6.0:
-        return 1
-    else:
+    if quality_lower == "draft":
         return 2
+
+    # Very large individual frames (> 2000px)
+    if max_dim > 2000:
+        if vram_gb >= 12.0 and quality_lower == "high" and total_megapixels <= 200:
+            return 0
+        elif vram_gb >= 6.0 and total_megapixels <= 350:
+            return 1
+        else:
+            return 2
+
+    # 1080p or smaller frames
+    if vram_gb < 6.0:
+        return 2 if total_megapixels > 100 else 1
+
+    if vram_gb <= 8.5:  # 8 GB VRAM budget (RTX 4060)
+        if total_megapixels > 450.0:
+            return 1 if quality_lower == "high" else 2
+        elif total_megapixels > 180.0:
+            return 1
+        else:
+            # Short sequence (<= 180 MP) fits in 8 GB at full resolution
+            return 0
+
+    # VRAM > 8.5 GB (12 GB+ cards)
+    if total_megapixels > 600.0:
+        return 1
+    return 0
 
