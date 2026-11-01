@@ -32,6 +32,14 @@ def main():
     try:
         redis_conn = Redis.from_url(settings.SCANFORGE_REDIS_URL)
         redis_conn.ping()
+
+        # Amendment 4: Register worker capabilities in Redis so API container accurately reports FBX/USDZ
+        import shutil
+        from app.utils.tool_resolve import resolve_blender
+        blender_path = resolve_blender()
+        has_blender = shutil.which(blender_path) is not None
+        redis_conn.set("scanforge:worker:blender_available", "1" if has_blender else "0")
+        logger.info(f"Worker capability registered: blender_available={'1' if has_blender else '0'} ({blender_path})")
     except Exception as e:
         logger.error(f"Cannot connect to Redis at {settings.SCANFORGE_REDIS_URL}: {e}")
         sys.exit(1)

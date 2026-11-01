@@ -7,6 +7,10 @@ from app.pipelines.mesh.room_analysis import RoomAnalysisStage
 from app.pipelines.mesh.plane_repair import PlaneRepairStage
 from app.pipelines.mesh.decimate import DecimateStage
 from app.pipelines.mesh.poisson_ab import PoissonABStage
+from app.pipelines.mesh.floor_align import FloorAlignAndScaleStage
+from app.pipelines.mesh.exporters import MeshExportStage
+from app.pipelines.mesh.quality_report import QualityReportStage
+from app.pipelines.mesh.canonical import CanonicalMesh
 
 __all__ = [
     "MeshCleanupStage",
@@ -14,5 +18,8 @@ __all__ = [
     "PlaneRepairStage",
     "DecimateStage",
     "PoissonABStage",
+    "FloorAlignAndScaleStage",
+    "MeshExportStage",
+    "QualityReportStage",
+    "CanonicalMesh",
 ]
-

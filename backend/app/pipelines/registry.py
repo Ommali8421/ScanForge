@@ -34,6 +34,9 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             PlaneRepairStage,
             DecimateStage,
             PoissonABStage,
+            FloorAlignAndScaleStage,
+            MeshExportStage,
+            QualityReportStage,
         )
         stages.extend([
             OpenMVSInterfaceStage(),
@@ -45,6 +48,9 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             DecimateStage(),
             OpenMVSTextureStage(),
             PoissonABStage(),
+            FloorAlignAndScaleStage(),
+            MeshExportStage(),
+            QualityReportStage(),
         ])
 
     return Pipeline(scan_type=scan_type, stages=stages)

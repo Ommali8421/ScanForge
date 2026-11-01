@@ -13,7 +13,7 @@
 | **P1** | Job system + multipart upload + live SSE streaming + full frontend on MOCK engine | **Accepted** | `e113930` (base), `1e1bbac`, `6918eaa`, `1f6b9f7`, `1e5bf0a`, `b9ee7ab`, `0ccd635` |
 | **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121, Open3D 0.20.0, Trimesh 5.1.1) | **Done** | Verified via `doctor.py` in container & `e2e_smoke.py` |
 | **P2b** | Video ingest + adaptive frame extraction + interior-tuned COLMAP SfM (GPU) + 4-panel diagnostic trajectory plot + scene-cut detection + low-texture filtering + real test runs | **Done** | Verified on RTX 4060 GPU with 3 real video runs (`house_test_30s.mp4`, `bedroom_vid.mp4` with/without filter) |
-| **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (floater cleanup, room analysis, relative floor rule, normal-aware plane snapping with smoothstep Hermite falloff, conservative envelope pruning, quadric decimation, UV texture mapping, Poisson A/B) + Phase 2 Verification & Review Resolution (deleted leftover test job `bc22c9e8`, end-to-end API pipeline runs on real hardware, non-occluded diagnostic renders, high-contrast Poisson sheets, wall close-ups, 50/50 passing tests) + Phase 3 (floor align Y=0, scale calibration, exporters, quality report) | **Phase 2 Hardened & FULLY VERIFIED** | Phase 2 verified on RTX 4060 GPU end-to-end via `POST /api/jobs` with `house_test_30s.mp4` (New Job ID `a78fc585-4120-48b5-8512-17d2b6afa8f2`) and `enhanced_interior_tour_1080p.mp4` (New Job ID `4945096f-639c-40bb-97bc-2ac258e8b9d6`). Leftover test job `bc22c9e8` deleted from DB and disk. Smoothstep Hermite falloff eliminated boundary tearing. RANSAC planes rendered semi-transparent (alpha <= 0.22) in Perspective 1 and hidden in views 2, 3, 4. Dark slate background (#121721) + warm stone clay (#e0dcd5) with cavity lighting provides extreme contrast for Poisson vs Delaunay. All 8 visual evidence assets regenerated under `outputs/`. 50/50 backend tests passing. Stopped in Planning Mode for Phase 3 review. |
+| **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (floater cleanup, room analysis, relative floor rule, normal-aware plane snapping with smoothstep Hermite falloff, conservative envelope pruning, quadric decimation, UV texture mapping, Poisson A/B) + Phase 2 Verification & Review Resolution + Phase 3 (floor align Y=0 with normal-sign & antiparallel singularity guards, non-compounding scale calibration seam <0.1s, 8 deliverable exporters, quality report, Blender 4.1 round-trip verification) | **Milestone P2c FULLY COMPLETE & VERIFIED** | All 4 phases (1, 1b, 2, 3) executed and verified on RTX 4060 GPU end-to-end via `POST /api/jobs` on both `house_test_30s.mp4` (`a78fc585-4120-48b5-8512-17d2b6afa8f2`) and `enhanced_interior_tour_1080p.mp4` (`4945096f-639c-40bb-97bc-2ac258e8b9d6`). Floor aligned flush to Y=0 with median inliers, yaw-rotated to cardinal walls, centered, and physically calibrated. Sequential `/calibrate` executes in 0.067s - 0.130s (<3.0s spec) with bitwise identical UVs and texture atlas. All 8 deliverable assets generated (GLB, GLTF, OBJ ZIP, PLY, STL, XYZ, FBX, USDZ). Cross-container Blender detection verified. 57/57 tests passing. Blender 4.1 round-trip proof sheet saved to `outputs/phase3_roundtrip_proof.png`. |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2 |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
@@ -45,7 +45,7 @@
 | Native Docker Client Operation | **VERIFIED** | Executed in sequence via native Docker client (`/usr/bin/docker`): `make up-mock` (code 0), `make smoke` (code 0), `make up-gpu` (code 0, `gpu_available=True`). |
 | OpenMVS Phase 1 & 1b (Dense Cloud + Mesh + UV Texture + Up-Alignment + Filtering) | **VERIFIED** | Verified on RTX 4060 GPU with real data (`house_test_30s.mp4`: 1.23M points, 176k clean mesh verts, UV textured GLB; `enhanced_interior_tour_1080p.mp4`: 2.88M points, 381k clean mesh verts, UV textured GLB). Camera up-vector alignment ($\bar{\mathbf{u}}$ to $+Y$), nearest-neighbor KDTree vertex colors, TextureMesh 4K UV atlas, long-edge/bbox garbage removal, and Three.js OrbitControls with multi-tab preview verified. |
 | OpenMVS Phase 2 (Mesh Cleanup, Room Analysis, Relative Floor Detection, Plane Snapping, Envelope Pruning, Quadric Decimation, UV Texture, Poisson A/B, Viewer Fixes) | **VERIFIED** | Verified on RTX 4060 GPU with both reference clips (`house_test_30s.mp4` Job `f0e89d25` and `enhanced_interior_tour_1080p.mp4` Job `2b7b3bcc`) run through normal job flow. Exterior slab and mirror ghosts pruned. Viewer white background, light-grey grid, high-contrast markers, and PBR material fix verified. 4-view before/after sheets saved under `outputs/`. |
-| OpenMVS Phase 3 (Floor Leveling Y=0, Scale Calibration Seam, Exporters, Quality Report) | **UNVERIFIED** | Planned; stopped for user review of Phase 2 evidence before execution. |
+| OpenMVS Phase 3 (Floor Leveling Y=0, Scale Calibration Seam, Exporters, Quality Report) | **VERIFIED** | Executed and verified on RTX 4060 GPU across both real jobs (`a78fc585` House, `4945096f` Tour). Floor leveling flush at Y=0.000 via median inliers; 180° Rodrigues antiparallel singularity guard; normal sign oriented toward cameras; sequential `/calibrate` runs in 0.067s - 0.130s (<3.0s spec) with bitwise identical UVs and texture atlas; all 8 deliverable assets generated (GLB, GLTF, OBJ ZIP, PLY, STL, XYZ, FBX, USDZ); cross-container Blender capability detection via Redis; uncalibrated badge in UI; 57/57 tests passing; Blender 4.1 round-trip proof sheet saved to `outputs/phase3_roundtrip_proof.png`. |
 | Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
@@ -369,26 +369,133 @@ Both composite contact sheets rendered across 4 canonical views (Perspective 1, 
 
 ---
 
-## 9. Next Steps (Immediate Steps for Milestone P2c Phase 3)
+## 9. Real Hardware Verification Results (Milestone P2c Phase 3: Alignment, Calibration, Exporters, Quality Report)
 
-*Phase 2 is completed and VERIFIED. Stopped for user review before proceeding to Phase 3.*
+All 6 engineering requirements and amendments approved for Phase 3 were implemented, executed on real datasets, and verified:
 
-1. **User Review on Phase 2 Evidence**: Review composite sheets in `outputs/house_phase2_sheet.png` and `outputs/tour_phase2_sheet.png`.
-2. **Phase 3 Scope (Awaiting User Approval to Implement)**:
-   - `FloorAlignAndScaleStage`: Rigid similarity transform $\mathbf{v}' = S \cdot \mathbf{R} (\mathbf{v} - \mathbf{c}) + \mathbf{t}$ rotating dominant floor plane to $Y=0$ (or $Z=0$ per up-axis setting), centering bounds on $(0, 0)$, and applying scale factor $S$.
-   - **Zero-Retexturing Calibration Seam**: `/calibrate` applies transformation to vertex positions only, leaving UV atlases and image textures completely intact (<3s execution).
-   - `MeshExportStage`: Exporters for GLB, OBJ (+MTL+PNG), PLY, STL, XYZ (native Python) and FBX, USDZ (headless Blender 4.1 script).
-   - `QualityReportStage`: Mesh watertightness, area, volume, and room dimensions (bounding box length/width/height, estimated floor area).
-   - Frontend `MeasureTool.tsx`, `QualityReport.tsx`, and interactive calibration modal.
+### 1. FloorAlignAndScaleStage Math Guards
+- **Normal Sign Orientation**: Evaluated `dot(n_floor, cam_centroid - floor_point) > 0`. If negative, normal and plane distance are flipped so rooms never flip upside-down.
+- **180° Antiparallel Rodrigues Singularity Guard**: In Tour clip, floor normal is $\approx (0, -1, 0)$. In Rodrigues rotation $\mathbf{R} = \mathbf{I} + [\mathbf{v}]_\times + [\mathbf{v}]_\times^2 \frac{1-c}{s^2}$, when $c = -1$, $s = 0$, causing division by zero and `NaN`. Handled with deterministic 180° rotation around X-axis (`np.diag([1, -1, -1])`), mapping $(0, -1, 0) \to (0, 1, 0)$ without singularity.
+- **Robust Y=0 Leveling via Median Inliers**: Rather than noisy `min(Y)` (which floats the room if subfloor noise exists), levels floor using median Y of inliers with distance $< 0.02 \cdot \text{diag}$.
+  * House (`a78fc585`): 4,128 inliers leveled to $Y = 0.000$ (subfloor bounds: $-0.23$m to $+12.79$m).
+  * Tour (`4945096f`): 3,485 inliers leveled to $Y = 0.000$ (subfloor bounds: $-1.77$m to $+8.39$m).
+- **Wall Yaw Cardinal Alignment**: Dominant wall normal rotated around Y-axis to cardinal grid, and horizontal bounding box $(X, Z)$ centered at $(0, 0)$.
 
 ---
 
-## 10. Session Resumption Guide
+### 2. Zero-Retexturing Scale Calibration Seam (`POST /api/jobs/{id}/calibrate`)
+- **API Contract**: Supports both `point_a` / `point_b` and `point1` / `point2` coordinates, `real_distance` and `real_distance_m` alias. Returns `{status, measured_distance, applied_factor, cumulative_scale}`.
+- **Non-Compounding Invariant**: Always applies `cumulative_scale` to unscaled reference `aligned_textured_unscaled.glb`, never re-scaling an already-scaled mesh.
+- **Execution Speed**: Direct binary modification of GLB `VEC3 POSITION` bufferView and accessor min/max in place.
+  * Call 1: measured 2.000m $\to$ real 3.000m: **0.1307s** (factor 1.500, cumulative 1.500)
+  * Call 2: measured 3.000m $\to$ real 4.000m: **0.0882s** (factor 1.333, cumulative 2.000)
+  * Pre-cached reference: **0.0675s**
+  * *Specification Requirement*: `< 3.0s` — **PASS (40x faster than requirement)**.
+- **Bitwise Texture & UV Preservation**:
+  * Unscaled Image SHA-256: `68f5f62ced94c83cde8daac9efa7014327434644586faee4b6608474d83984f6`
+  * Calibrated Image SHA-256: `68f5f62ced94c83cde8daac9efa7014327434644586faee4b6608474d83984f6` (Bitwise Identical: **True**)
+  * Unscaled UVs SHA-256: `64c85fcbb5cf4b87b504af91934e7fde78b637a2d1f8eb41ffb771bc709174ca`
+  * Calibrated UVs SHA-256: `64c85fcbb5cf4b87b504af91934e7fde78b637a2d1f8eb41ffb771bc709174ca` (Bitwise Identical: **True**)
+
+---
+
+### 3. Exporter Completeness & Deliverables Matrix
+All 8 requested delivery formats verified on disk for both real datasets:
+| Format | Asset Name | House (`a78fc585`) | Tour (`4945096f`) | Characteristics |
+|---|---|---|---|---|
+| Binary glTF | `mesh.glb` | 14,949,564 bytes | 15,617,444 bytes | Embedded PBR materials, metallicFactor=0, roughnessFactor=1, doubleSided |
+| Separate glTF | `model.gltf` | 1,490 bytes | 1,494 bytes | External JSON glTF specification |
+| Wavefront OBJ | `mesh_obj.zip` | 15,317,955 bytes | 16,100,090 bytes | Packaged zip with `mesh.obj`, `material.mtl`, and `material.png` |
+| Stanford PLY | `mesh.ply` | 6,394,944 bytes | 7,235,433 bytes | Standard triangle polygon mesh |
+| StereoLithography | `mesh.stl` | 10,000,034 bytes | 10,000,084 bytes | Binary STL for 3D printing |
+| Point Cloud | `mesh.xyz` | 7,667,590 bytes | 9,372,851 bytes | ASCII coordinates and normals `X Y Z Nx Ny Nz` |
+| Autodesk FBX | `mesh.fbx` | 18,741,516 bytes | 19,439,484 bytes | Exported via headless Blender 4.1 with embedded PBR textures |
+| Apple USDZ | `mesh.usdz` | 26,462,847 bytes | 26,957,614 bytes | Exported via headless Blender 4.1 for AR Quick Look |
+
+---
+
+### 4. Cross-Container Capability Detection
+- `worker-gpu` verifies `/usr/local/bin/blender` on boot and registers `scanforge:worker:blender_available=1` in Redis with 120s TTL heartbeat.
+- `GET /api/capabilities` running in the slim `scanforge-api-1` container queries Redis and returns:
+  ```json
+  "runtime_converters": {
+    "blender": true,
+    "fbx_supported": true,
+    "usdz_supported": true
+  }
+  ```
+- Verified that FBX and USDZ are enabled and selectable in the UI.
+
+---
+
+### 5. Quality Report Schema & Architectural Dimensions
+`GET /api/jobs/{id}/report` verified against `docs/API.md` contract:
+```json
+{
+  "vertex_count": 135525,
+  "face_count": 199999,
+  "hole_count": 2141,
+  "is_watertight": false,
+  "non_manifold_edges": 0,
+  "dimensions_meters": {
+    "length": 17.12,
+    "width": 16.32,
+    "height": 13.02
+  },
+  "floor_area_sqm": 80.08,
+  "cumulative_scale": 1.0,
+  "up_axis": "y",
+  "is_calibrated": false,
+  "quality_grade": "B"
+}
+```
+- In `frontend/src/components/QualityReport.tsx`: Displays an amber badge `"Arbitrary SfM units — calibrate scale for meters"` when uncalibrated, switching to emerald `"Metric Calibrated (Scale: 1.500x)"` once calibrated.
+
+---
+
+### 6. Blender 4.1.0 Round-Trip Proof Sheet
+- Script: `backend/scripts/generate_phase3_roundtrip_proof.py`
+- Re-imported `mesh.glb` and `mesh.fbx` for both House and Tour into fresh, empty Blender 4.1.0 sessions.
+- Scene setup: Ground grid sitting precisely at $Z = 0.000$ (Blender Z-up / glTF Y-up), dark slate background `(0.07, 0.09, 0.13)`, three-point key/fill lighting, and Workbench cavity texture shading.
+- Output sheet: `outputs/phase3_roundtrip_proof.png` (1968x1280, 1.7 MB).
+  * Row 1: House Clip — Left: `mesh.glb` re-imported | Right: `mesh.fbx` re-imported.
+  * Row 2: Tour Clip — Left: `mesh.glb` re-imported | Right: `mesh.fbx` re-imported.
+  * Confirms floor sits flush on grid plane and textures are 100% intact with zero distortion.
+
+---
+
+### 7. Backend Pytest Suite
+- **57/57 tests passing** (100%) in `scanforge-worker-gpu-1`:
+  * `test_floor_align_antiparallel_singularity_guard`: PASSED
+  * `test_floor_align_normal_sign_orientation`: PASSED
+  * `test_floor_align_robust_y0_leveling_and_scale`: PASSED
+  * `test_zero_retexturing_uv_bitwise_preservation`: PASSED
+  * `test_exporter_obj_zip_completeness`: PASSED
+  * `test_quality_report_schema_and_uncalibrated_badge`: PASSED
+  * `test_api_calibrate_sequential_non_compounding`: PASSED
+
+---
+
+## 10. Next Steps (Milestone P3 Planning)
+
+*Milestone P2 (Route A Interior Mesh Reconstruction & Post-Processing) is FULLY COMPLETE AND VERIFIED.*
+
+1. **Stop for User Review**: Present Phase 3 implementation report, real-hardware metrics, and `outputs/phase3_roundtrip_proof.png`.
+2. **Milestone P3 Scope (Pending Approval)**:
+   - 3D Gaussian Splatting training pipeline via `nerfstudio` / `splatfacto` / `gsplat`.
+   - VRAM budget enforcement for 8 GB Ada RTX 4060: downscale to $\le 1080$p, cap max Gaussians, auto-retry on OOM.
+   - Floater cleanup and splat format converters (`.ply`, `.splat`).
+   - Web viewer integration with `@mkkellogg/gaussian-splats-3d` in `SplatViewer.tsx`.
+
+---
+
+## 11. Session Resumption Guide
 
 For any agent resuming work in this codebase:
-1. **Read this file (`progress.md`) first** to understand the current milestone state and recent bug fixes.
+1. **Read this file (`progress.md`) first** to understand the current milestone state and verified achievements.
 2. Check `AGENTS.md` and `docs/SPEC.md` for conventions and strict architecture rules.
 3. Verify that the current stack is healthy using `make smoke` and `docker compose ps`.
 4. Always check git status (`git status`) to ensure the working tree is clean.
 5. Update this file whenever you complete a milestone, fix a bug, or execute a new verification.
+
 

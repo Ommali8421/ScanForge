@@ -84,4 +84,8 @@ export interface JobReport {
   floor_area_sqm: number;
   cumulative_scale: number;
   up_axis: string;
+  is_calibrated?: boolean;
+  is_watertight?: boolean;
+  non_manifold_edges?: number;
+  quality_grade?: string;
 }

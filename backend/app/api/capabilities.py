@@ -15,11 +15,32 @@ from app.utils.tool_resolve import resolve_blender
 
 
 def check_blender_available() -> bool:
-    """Detect if headless Blender executable is present or real engine mode is active."""
+    """
+    Detect if headless Blender executable is present locally, registered by worker in Redis,
+    or real engine mode is active.
+    """
+    # 1. Local environment check
+    blender_path = resolve_blender()
+    if shutil.which(blender_path) is not None:
+        return True
+
+    # 2. Worker registration in Redis
+    try:
+        from app.deps import get_redis_client
+        r = get_redis_client()
+        val = r.get("scanforge:worker:blender_available")
+        if val in (b"1", "1", 1):
+            return True
+        if val in (b"0", "0", 0):
+            return False
+    except Exception:
+        pass
+
+    # 3. Real GPU mode fallback (Blender 4.1.0 is baked into worker-gpu image)
     if settings.SCANFORGE_ENGINE == "real":
         return True
-    blender_path = resolve_blender()
-    return shutil.which(blender_path) is not None or (blender_path and shutil.which(blender_path) is not None)
+
+    return False
 
 
 def check_gpu_available() -> bool:
