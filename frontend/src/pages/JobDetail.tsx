@@ -13,6 +13,7 @@ import {
 import { useJobEvents } from "../api/useJobEvents";
 import { StatusBadge } from "../components/StatusBadge";
 import { MeshViewer } from "../components/MeshViewer";
+import { SplatViewer } from "../components/SplatViewer";
 import { MeasureTool } from "../components/MeasureTool";
 import { QualityReport } from "../components/QualityReport";
 import { LogPanel } from "../components/LogPanel";
@@ -322,6 +323,25 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
         <div className="space-y-6">
           {/* 3D Viewport with HUD overlays */}
           {(() => {
+            if (job?.scan_type === "gaussian_splat") {
+              const splatArtifact =
+                job.artifacts?.find((a) => a.filename.endsWith(".splat")) ||
+                job.artifacts?.find((a) => a.filename.endsWith(".ply")) ||
+                job.artifacts?.find((a) => a.filename.endsWith(".spz"));
+              const splatUrl = splatArtifact
+                ? splatArtifact.download_url
+                : `/api/jobs/${job.id}/artifacts/cleaned_splat.splat`;
+
+              return (
+                <SplatViewer
+                  splatUrl={splatUrl}
+                  jobId={job.id}
+                  onDownload={(fmt) => window.open(getDownloadUrl(job.id, fmt), "_blank")}
+                  availableFormats={job.output_formats || ["splat", "ply", "zip"]}
+                />
+              );
+            }
+
             let targetArtifact: Artifact | undefined;
             let displayLabel = "Textured Mesh (Metric / SfM)";
 

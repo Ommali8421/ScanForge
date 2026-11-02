@@ -95,19 +95,27 @@ RUN git clone --depth 1 https://github.com/cdcseacave/VCG.git /src/vcglib && \
     if [ -d /opt/openmvs/bin/OpenMVS ]; then cp -rs /opt/openmvs/bin/OpenMVS/* /opt/openmvs/bin/; fi
 
 # ==============================================================================
-# Stage 3: Python Runtime with PyTorch, Open3D, Trimesh, FFmpeg, and Blender
+# Stage 3: Python Runtime with PyTorch, Nerfstudio, Open3D, Trimesh, FFmpeg, and Blender
 # ==============================================================================
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/opt/venv/bin:/opt/colmap/bin:/opt/openmvs/bin:/opt/openmvs/bin/OpenMVS:${PATH}"
 ENV LD_LIBRARY_PATH="/opt/openmvs/lib:/opt/colmap/lib:${LD_LIBRARY_PATH}"
 ENV PYTHONPATH="/workspace/backend:${PYTHONPATH}"
+ENV MAX_JOBS=2
+ENV TORCH_CUDA_ARCH_LIST="8.9"
+ENV CUDA_HOME="/usr/local/cuda"
+ENV TCNN_CUDA_ARCHITECTURES="89"
 
-# Install system dependencies, libraries for OpenMVS/COLMAP, and deadsnakes Python 3.11
+# Install system dependencies, libraries for OpenMVS/COLMAP, build tools for gsplat, and deadsnakes Python 3.11
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    ninja-build \
+    cmake \
     software-properties-common \
     ca-certificates \
     curl \
@@ -147,9 +155,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN curl -sSL https://download.blender.org/release/Blender4.1/blender-4.1.0-linux-x64.tar.xz | tar -xJ -C /opt/ && \
     ln -sf /opt/blender-4.1.0-linux-x64/blender /usr/local/bin/blender
 
-# Copy compiled binaries from builder stages and symlink to /usr/local/bin
-COPY --from=colmap-builder /opt/colmap /opt/colmap
-COPY --from=openmvs-builder /opt/openmvs /opt/openmvs
+# Copy compiled binaries from existing worker image and symlink to /usr/local/bin
+COPY --from=scanforge-worker-gpu:latest /opt/colmap /opt/colmap
+COPY --from=scanforge-worker-gpu:latest /opt/openmvs /opt/openmvs
 RUN ln -sf /opt/colmap/bin/colmap /usr/local/bin/colmap && \
     if [ -d /opt/openmvs/bin/OpenMVS ]; then \
       for f in /opt/openmvs/bin/OpenMVS/*; do \
@@ -170,18 +178,27 @@ RUN python3.11 -m venv /opt/venv && \
     ln -sf /opt/venv/bin/pip /usr/local/bin/pip && \
     ln -sf /opt/venv/bin/pip /usr/local/bin/pip3
 
+# Copy pip constraints file
+COPY docker/constraints.txt /opt/constraints.txt
+
 # Install PyTorch with CUDA 12.1 and headless OpenCV
 RUN --mount=type=cache,target=/root/.cache/pip \
-    /opt/venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
+    /opt/venv/bin/pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 --index-url https://download.pytorch.org/whl/cu121 && \
     /opt/venv/bin/pip install opencv-python-headless
 
-# Install backend dependencies (Open3D, Trimesh, FastAPI, etc. - no nerfstudio yet)
+# Install gsplat, nerfstudio, and spz with constraints and find-links (PyTorch never overwritten)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    /opt/venv/bin/pip install -c /opt/constraints.txt --find-links https://docs.gsplat.studio/whl/ gsplat && \
+    /opt/venv/bin/pip install -c /opt/constraints.txt nerfstudio && \
+    (/opt/venv/bin/pip install -c /opt/constraints.txt spz || echo "spz fallback")
+
+# Install backend dependencies (Open3D, Trimesh, FastAPI, etc.)
 WORKDIR /workspace
 COPY backend /workspace/backend
 COPY scripts /workspace/scripts
 RUN ln -s /workspace/scripts /workspace/backend/scripts
 RUN --mount=type=cache,target=/root/.cache/pip \
-    /opt/venv/bin/pip install -e /workspace/backend[dev]
+    /opt/venv/bin/pip install -c /opt/constraints.txt -e /workspace/backend[dev]
 
 WORKDIR /workspace/backend
 CMD ["python3", "-m", "app.queue.worker", "--queue", "scanforge_gpu"]

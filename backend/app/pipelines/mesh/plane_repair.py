@@ -53,6 +53,120 @@ def smoothstep(edge0: float, edge1: float, x: float) -> float:
     return t * t * (3.0 - 2.0 * t)
 
 
+def patch_planar_holes(mesh: trimesh.Trimesh, active_planes: list, scene_diagonal: float, ctx: JobContext) -> int:
+    """
+    Identifies boundary edge cycles that lie completely on an active dominant plane
+    (e.g., floor, ceiling, or major interior wall) and bridges them using boundary-constrained
+    Delaunay triangulation, while strictly preserving unobserved open space (windows/doorways).
+    """
+    import networkx as nx
+    from scipy.spatial import Delaunay
+    from shapely.geometry import Polygon, Point
+    from trimesh.grouping import group_rows
+
+    if len(mesh.faces) < 3:
+        return 0
+
+    # 1. Identify boundary edges (edges with exactly 1 adjacent face)
+    boundary_groups = group_rows(mesh.edges_sorted, require_count=1)
+    if len(boundary_groups) < 3:
+        return 0
+
+    boundary = mesh.edges[boundary_groups]
+    # Build undirected boundary graph and extract cycle basis
+    g = nx.from_edgelist(boundary)
+    try:
+        holes = nx.cycle_basis(g)
+    except Exception:
+        return 0
+
+    if not holes:
+        return 0
+
+    new_faces_list = []
+    planar_hole_count = 0
+    max_hole_diam = 0.35 * scene_diagonal
+
+    for cycle in holes:
+        if len(cycle) < 3 or len(cycle) > 60:
+            # Skip degenerate or overly complex multi-room cycles
+            continue
+
+        cycle_pts = mesh.vertices[cycle]
+        bbox_min = np.min(cycle_pts, axis=0)
+        bbox_max = np.max(cycle_pts, axis=0)
+        hole_diam = float(np.linalg.norm(bbox_max - bbox_min))
+
+        if hole_diam > max_hole_diam:
+            # Do not patch large building-scale openings or multi-room gaps
+            continue
+
+        # Check if cycle lies tightly on any active dominant plane
+        matching_plane = None
+        for plane in active_planes:
+            n_vec = plane["normal"]
+            d_val = plane["d"]
+            dists = np.abs(np.dot(cycle_pts, n_vec) + d_val)
+            # All vertices of the hole must be within 1.5% scene diagonal of the plane
+            if np.max(dists) <= (0.015 * scene_diagonal):
+                matching_plane = plane
+                break
+
+        if matching_plane is None:
+            # Window or doorway boundary spanning across walls or non-planar open space: KEEP OPEN!
+            continue
+
+        plane_norm = matching_plane["normal"]
+        # Construct 2D projection basis (u, v) on the plane
+        if abs(plane_norm[1]) > 0.9:
+            u_vec = np.cross(np.array([1.0, 0.0, 0.0]), plane_norm)
+        else:
+            u_vec = np.cross(np.array([0.0, 1.0, 0.0]), plane_norm)
+        u_norm = np.linalg.norm(u_vec)
+        if u_norm < 1e-6:
+            continue
+        u_vec = u_vec / u_norm
+        v_vec = np.cross(plane_norm, u_vec)
+
+        # 2D coordinates of the cycle
+        pts_2d = np.column_stack([np.dot(cycle_pts, u_vec), np.dot(cycle_pts, v_vec)])
+
+        try:
+            poly_2d = Polygon(pts_2d)
+            if not poly_2d.is_valid:
+                poly_2d = poly_2d.buffer(0)
+            if poly_2d.is_empty or poly_2d.area < 1e-6:
+                continue
+
+            # Triangulate using Delaunay on 2D boundary points
+            tri = Delaunay(pts_2d)
+            buffered_poly = poly_2d.buffer(1e-6)
+
+            for simplex in tri.simplices:
+                centroid = Point(pts_2d[simplex].mean(axis=0))
+                if buffered_poly.covers(centroid):
+                    idx0, idx1, idx2 = cycle[simplex[0]], cycle[simplex[1]], cycle[simplex[2]]
+                    # Normal winding check
+                    face_norm = np.cross(
+                        mesh.vertices[idx1] - mesh.vertices[idx0],
+                        mesh.vertices[idx2] - mesh.vertices[idx0]
+                    )
+                    if np.dot(face_norm, plane_norm) < 0:
+                        new_faces_list.append([idx0, idx2, idx1])
+                    else:
+                        new_faces_list.append([idx0, idx1, idx2])
+
+            planar_hole_count += 1
+        except Exception:
+            continue
+
+    if new_faces_list:
+        mesh.extend_faces(np.array(new_faces_list, dtype=int))
+        mesh.remove_degenerate_faces()
+
+    return planar_hole_count
+
+
 class PlaneRepairStage(Stage):
     """
     Snaps planar vertices and removes spurious out-of-envelope geometry in SfM frame.
@@ -256,6 +370,14 @@ class PlaneRepairStage(Stage):
             mesh.update_faces(~drop_mask)
             mesh.remove_unreferenced_vertices()
 
+        # 3. Planar-Aware Boundary Hole Filling
+        patched_holes = patch_planar_holes(mesh, active_planes, scene_diagonal, ctx)
+        if patched_holes > 0:
+            ctx.log_cb(
+                f"[PlaneRepair] Planar-aware hole filling: bridged {patched_holes} interior boundary tear(s) "
+                f"on dominant planes."
+            )
+
         output_ply = ctx.workdir / "mesh_repaired.ply"
         mesh.export(str(output_ply))
         ctx.log_cb(
@@ -269,6 +391,7 @@ class PlaneRepairStage(Stage):
             metadata={
                 "vertices_snapped": vertices_moved,
                 "percentage_vertices_snapped": round(pct_moved, 2),
+                "planar_holes_patched": patched_holes,
                 "max_displacement": round(max_displacement, 5),
                 "max_displacement_diagonal_fraction": round(max_disp_fraction, 5),
                 "dropped_below_floor_faces": dropped_floor_count,

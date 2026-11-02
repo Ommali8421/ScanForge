@@ -104,14 +104,13 @@ export async function calibrateScale(
     }),
   });
   if (!res.ok) {
-    let errMsg = "Failed submitting calibration";
-    try {
-      const errData = await res.json();
-      if (errData && errData.detail) {
-        errMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
-      }
-    } catch (_) {}
-    throw new Error(errMsg);
+    const err = await res.json().catch(() => null);
+    const detail = typeof err?.detail === "string"
+      ? err.detail
+      : Array.isArray(err?.detail)
+      ? err.detail.map((d: any) => d.msg || JSON.stringify(d)).join(", ")
+      : err?.detail ? JSON.stringify(err.detail) : null;
+    throw new Error(detail || "Calibration failed");
   }
   return res.json();
 }

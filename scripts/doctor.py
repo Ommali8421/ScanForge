@@ -68,13 +68,13 @@ def check_disk_space():
         )
 
 
-def check_command(name: str, cmd: list[str], hint: str = "", critical: bool = False):
+def check_command(name: str, cmd: list[str], hint: str = "", critical: bool = False, timeout: int = 5):
     found = shutil.which(cmd[0]) is not None
     if not found:
         print_status(name, False, "Not found in PATH", hint)
         return False
     try:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
         ok = (res.returncode == 0) or ("OpenMVS" in res.stdout)
         details = res.stdout.splitlines()[0] if res.stdout else "Available"
         print_status(name, ok, details, hint)
@@ -166,6 +166,8 @@ def main():
     check_command("OpenMVS ReconstructMesh", ["ReconstructMesh", "--help"], "OpenMVS ReconstructMesh is required for real GPU photogrammetry.")
     check_command("OpenMVS TextureMesh", ["TextureMesh", "--help"], "OpenMVS TextureMesh is required for real GPU photogrammetry.")
     check_command("Blender", ["blender", "--version"], "Blender is required for FBX/USDZ conversions.")
+    check_command("Nerfstudio ns-train", ["ns-train", "--help"], "Nerfstudio ns-train is required for 3D Gaussian Splatting.", timeout=15)
+    check_command("Nerfstudio ns-export", ["ns-export", "--help"], "Nerfstudio ns-export is required for 3D Gaussian Splatting.", timeout=15)
 
     print("\n--- Python Environment ---")
     try:
@@ -175,6 +177,23 @@ def main():
         print_status("PyTorch", True, f"v{torch.__version__} (CUDA: {cuda_avail}, Device: {cuda_dev})")
     except ImportError:
         print_status("PyTorch", False, "Not installed in active Python environment", "Install via pip in worker environment.")
+
+    try:
+        import gsplat
+        print_status("gsplat", True, f"v{gsplat.__version__}")
+    except ImportError:
+        print_status("gsplat", False, "Not installed in active Python environment", "Install gsplat for 3D Gaussian Splatting.")
+
+    try:
+        import nerfstudio
+        try:
+            import importlib.metadata
+            ns_ver = importlib.metadata.version("nerfstudio")
+        except Exception:
+            ns_ver = getattr(nerfstudio, "__version__", "installed")
+        print_status("Nerfstudio", True, f"v{ns_ver}")
+    except ImportError:
+        print_status("Nerfstudio", False, "Not installed in active Python environment", "Install nerfstudio for 3D Gaussian Splatting.")
 
     try:
         import open3d

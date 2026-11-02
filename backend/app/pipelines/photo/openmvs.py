@@ -279,6 +279,9 @@ class OpenMVSDensifyStage(Stage):
                 "-o", "scene_dense.mvs",
                 "--resolution-level", str(res_level),
                 "--max-threads", str(effective_threads),
+                "--number-views", "10",
+                "--number-views-fuse", "2",
+                "--geometric-iters", "3",
                 "-v", "2",
             ]
             if attempt > 0:

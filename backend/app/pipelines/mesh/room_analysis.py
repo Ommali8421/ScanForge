@@ -157,8 +157,12 @@ class RoomAnalysisStage(Stage):
         input_ply = ctx.workdir / "mesh_cleaned.ply"
         if not input_ply.exists():
             input_ply = ctx.workdir / "scene_dense_mesh.ply"
-        if not input_ply.exists():
-            raise FileNotFoundError(f"[RoomAnalysis] Cleaned mesh not found at {input_ply}")
+
+        pts_3d_file = ctx.workdir / "sparse_txt" / "points3D.txt"
+        if not pts_3d_file.exists():
+            pts_3d_file = ctx.workdir / "sparse" / "0" / "points3D.txt"
+        if not input_ply.exists() and not pts_3d_file.exists():
+            raise FileNotFoundError(f"[RoomAnalysis] Neither cleaned mesh ({input_ply}) nor sparse points ({pts_3d_file}) found")
 
         # 1. Parse camera trajectory & gravity up-vector
         centers, _, u_grav = parse_camera_poses_from_workdir(ctx.workdir)
@@ -172,9 +176,26 @@ class RoomAnalysisStage(Stage):
             f"Median camera height: {cam_median_height:.3f}, p25 camera height: {p25_cam:.3f} (SfM units)."
         )
 
-        # 2. Load mesh and calculate scene bounds & vertex height percentiles
-        mesh = trimesh.load(str(input_ply), process=False)
-        vertices = mesh.vertices
+        # 2. Load mesh or sparse points and calculate scene bounds & vertex height percentiles
+        if input_ply.exists():
+            mesh = trimesh.load(str(input_ply), process=False)
+            vertices = np.asarray(mesh.vertices, dtype=float)
+        else:
+            ctx.log_cb(f"[RoomAnalysis] Loading 3D points from sparse SfM cloud: {pts_3d_file.name}...")
+            pts = []
+            with open(pts_3d_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        pts.append([float(parts[1]), float(parts[2]), float(parts[3])])
+            vertices = np.array(pts, dtype=float) if pts else np.zeros((0, 3), dtype=float)
+
+        if len(vertices) == 0:
+            vertices = centers.copy() if len(centers) > 0 else np.zeros((1, 3), dtype=float)
+
         bbox_min = np.min(vertices, axis=0)
         bbox_max = np.max(vertices, axis=0)
         scene_diagonal = float(np.linalg.norm(bbox_max - bbox_min))

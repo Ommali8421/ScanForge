@@ -36,23 +36,13 @@ export const NewScan: React.FC<Props> = ({ capabilities, onJobCreated }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    const allowed = capabilities?.format_matrix?.[scanType] || (
-      scanType === "gaussian_splat"
-        ? ["ply", "splat", "spz"]
-        : scanType === "lidar"
-        ? ["glb", "ply", "stl", "xyz"]
-        : ["glb", "gltf", "obj", "fbx", "usdz", "ply", "stl", "xyz"]
-    );
-    const valid = formats.filter((f) => allowed.includes(f));
-    const nextFormats = valid.length > 0
-      ? valid
-      : scanType === "gaussian_splat"
+    const nextFormats = scanType === "gaussian_splat"
       ? ["ply", "splat"]
       : scanType === "lidar"
       ? ["glb", "ply"]
       : ["glb", "obj"];
     setFormats(nextFormats);
-  }, [scanType, capabilities]);
+  }, [scanType]);
 
   // Advanced options
   const [meshRoute, setMeshRoute] = useState<"auto" | "photogrammetry" | "depth_fusion">("auto");
@@ -87,11 +77,27 @@ export const NewScan: React.FC<Props> = ({ capabilities, onJobCreated }) => {
         min_registration_ratio: minRegistrationRatio,
       };
 
+      const allowed = capabilities?.format_matrix?.[scanType] || (
+        scanType === "gaussian_splat"
+          ? ["ply", "splat", "spz"]
+          : scanType === "lidar"
+          ? ["glb", "ply", "stl", "xyz"]
+          : ["glb", "gltf", "obj", "fbx", "usdz", "ply", "stl", "xyz"]
+      );
+      const valid = formats.filter((f) => allowed.includes(f));
+      const submissionFormats = valid.length > 0
+        ? valid
+        : scanType === "gaussian_splat"
+        ? ["ply", "splat"]
+        : scanType === "lidar"
+        ? ["glb", "ply"]
+        : ["glb", "obj"];
+
       const res = await createJob(
         file,
         scanType,
         quality,
-        formats,
+        submissionFormats,
         options,
         (pct) => setUploadPercent(pct)
       );

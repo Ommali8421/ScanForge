@@ -52,6 +52,23 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             MeshExportStage(),
             QualityReportStage(),
         ])
+    elif scan_type in ("gaussian_splat", "3dgs"):
+        from app.pipelines.mesh.room_analysis import RoomAnalysisStage
+        from app.pipelines.gaussian import (
+            PreTrainFloorAlignStage,
+            SplatfactoStage,
+            SplatExportStage,
+            SplatCleanupStage,
+            SplatFormatConverterStage,
+        )
+        stages.extend([
+            RoomAnalysisStage(),
+            PreTrainFloorAlignStage(),
+            SplatfactoStage(),
+            SplatExportStage(),
+            SplatCleanupStage(),
+            SplatFormatConverterStage(),
+        ])
 
     return Pipeline(scan_type=scan_type, stages=stages)
 

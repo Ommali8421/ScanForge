@@ -124,8 +124,10 @@ def run_pipeline_task(job_id: str):
                                 kind = "image"
                             elif suffix in ("json", "txt", "log"):
                                 kind = "report"
-                            elif suffix in ("splat",):
+                            elif suffix in ("splat", "spz"):
                                 kind = "splat"
+                            elif suffix in ("zip", "tar", "gz"):
+                                kind = "archive"
                             elif suffix in ("glb", "obj", "fbx", "stl", "usdz"):
                                 kind = "mesh"
 

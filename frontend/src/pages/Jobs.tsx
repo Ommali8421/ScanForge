@@ -26,6 +26,7 @@ interface Props {
 
 export const Jobs: React.FC<Props> = ({ onSelectJob, onNewScan, capabilities }) => {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [totalScans, setTotalScans] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "running" | "completed" | "failed">("all");
@@ -36,12 +37,17 @@ export const Jobs: React.FC<Props> = ({ onSelectJob, onNewScan, capabilities }) 
     try {
       const data = await fetchJobs(100, 0);
       setJobs(data.items);
+      setTotalScans(data.total);
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    setPage(1);
+  }, [filterStatus, searchQuery]);
 
   useEffect(() => {
     loadJobs();
@@ -72,7 +78,7 @@ export const Jobs: React.FC<Props> = ({ onSelectJob, onNewScan, capabilities }) 
   };
 
   // KPI calculations
-  const totalCount = jobs.length;
+  const totalCount = totalScans || jobs.length;
   const runningCount = jobs.filter((j) =>
     ["queued", "running", "preprocessing", "exporting"].includes(j.status)
   ).length;

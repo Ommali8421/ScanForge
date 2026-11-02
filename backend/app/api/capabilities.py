@@ -66,7 +66,7 @@ def get_capabilities():
     if blender_ok:
         mesh_formats.extend(["fbx", "usdz"])
 
-    splat_formats = ["ply", "splat"]
+    splat_formats = ["ply", "splat", "zip"]
     lidar_formats = ["glb", "ply", "xyz"]
     if blender_ok:
         lidar_formats.extend(["fbx", "usdz"])

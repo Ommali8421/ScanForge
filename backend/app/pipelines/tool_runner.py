@@ -29,7 +29,8 @@ class ToolRunner:
         log_callback: Optional[Callable[[str], None]] = None,
         cancel_token: Optional[CancelToken] = None,
         progress_parser: Optional[Callable[[str], Optional[float]]] = None,
-        env: Optional[dict] = None
+        env: Optional[dict] = None,
+        stdin_input: Optional[str] = "y\n",
     ) -> subprocess.CompletedProcess:
         """
         Execute command list without shell interpolation.
@@ -51,6 +52,7 @@ class ToolRunner:
             command,
             cwd=cwd,
             env=env,
+            stdin=subprocess.PIPE if stdin_input is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -58,6 +60,14 @@ class ToolRunner:
             universal_newlines=True,
             start_new_session=(os.name != "nt")
         )
+
+        if stdin_input is not None and proc.stdin:
+            try:
+                proc.stdin.write(stdin_input)
+                proc.stdin.flush()
+                proc.stdin.close()
+            except Exception:
+                pass
 
         if cancel_token:
             cancel_token.set_active_pid(proc.pid)

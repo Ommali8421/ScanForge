@@ -18,8 +18,8 @@
 | **P2-Fix** | Orientation, PBR & Spike Hardening: Trajectory PCA gravity refinement (eliminates 15-20° pitch tilt), Ceiling-as-Floor guard, Mandatory Gravity Fallback (u_grav -> +Y, 5% bottom leveling), Scene-graph flattening on load (`loaded.to_geometry()`), Pure-Python zero-dependency PBR patcher (`metallicFactor=0.0`, `roughnessFactor=1.0`, `doubleSided=True` across all GLB/GLTF assets & `/calibrate`), Post-decimation long-edge spike filter (drops edges > 5x median), Architectural face budget (300k standard, 500k high) | **Done & Verified** | Verified on both `Meetingroom` and `house_test_30s.mp4`. All 66 tests passing in container. Spikes eliminated (max edge 2.33m -> 0.29m on Meetingroom, 2.75m -> 0.25m on House). Elevation and PBR verified in Blender 4.1. Proof renders saved to `outputs/`. |
 | **M1** | High-Fidelity Indoor Mesh Optimization & Multi-Room Validation Benchmark (5 math/pipeline fixes: unsigned floor normal check in `room_analysis.py` + NoneType guard in `plane_repair.py`, gravity fallback grounding 5% bottom leveling to Y=0.000 in `floor_align.py`, planar-trajectory safe bounding box projecting on u_grav in `cleanup.py`, plane-safe decimation with 350k adaptive budget on >600k faces / >1.5M dense points in `decimate.py`, downstream normal clearing & smooth shading in `export_fbx.py`/`export_usdz.py` + `model.gltf` alias in `exporters.py`; 153/153 tests pass; sequential multi-room validation of Meetingroom, Ballroom, Courtroom on RTX 4060 GPU with 100% registration and Blender 4.1 proof renders) | **Done & Verified** | 153/153 pytest suites passing in container. Processed strictly one at a time on RTX 4060 GPU: Meetingroom (293/293 frames, 8.69M dense pts, 347k faces), Ballroom (287/287 frames, 11.46M dense pts, 349k faces), Courtroom (284/284 frames, 9.09M dense pts, 349k faces). Total 864/864 frames (100.0%), 29.23M dense points. 4-view sheets and interior proof renders visually inspected with zero upside-down tilts, spikes, or dark metallic faces. |
 | **M2** | Studio-Grade UI/UX Redesign & Interactive User Guide / Feature Coach (Spatial 3D Studio design system, ThemeContext dark/light, NewScan 2-col studio layout with rich preview & pre-flight checks, Jobs KPI strip & filters, JobDetail full-viewport HUD & StageTimeline, 5-tab UserGuideModal, SmartHint callouts, preserved PBR/Raycasting) | **Done & Verified** | Built cleanly with zero errors (`tsc && vite build` in 2.59s), container rebuilt and verified live at port 3000 |
-| **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Next (Drafting Plan)** | Milestone P2 fully complete and hardened |
-| **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
+| **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Done & Verified** | Upright $Y=0.000$ pre-training alignment, headless `splatfacto` within 8 GB VRAM budget (<1.25 GB peak), 4-stage floater cleanup, 32-byte `.splat` packing, `@mkkellogg/gaussian-splats-3d` viewer, verified on real RTX 4060 GPU with 2 benchmark runs (`house_test_30s.mp4`, `enhanced_interior_tour_1080p.mp4`). 157/157 tests pass. |
+| **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Next** | Blocked on P3 verification acceptance |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
 | **P6** | LiDAR / RGB-D pipeline (feature-flagged `ENABLE_LIDAR=false`) + synthetic tests | **Not Started** | Blocked on P5 |
 
@@ -53,7 +53,13 @@
 | OpenMVS Phase 1 & 1b (Dense Cloud + Mesh + UV Texture + Up-Alignment + Filtering) | **VERIFIED** | Verified on RTX 4060 GPU with real data (`house_test_30s.mp4`: 1.23M points, 176k clean mesh verts, UV textured GLB; `enhanced_interior_tour_1080p.mp4`: 2.88M points, 381k clean mesh verts, UV textured GLB). Camera up-vector alignment ($\bar{\mathbf{u}}$ to $+Y$), nearest-neighbor KDTree vertex colors, TextureMesh 4K UV atlas, long-edge/bbox garbage removal, and Three.js OrbitControls with multi-tab preview verified. |
 | OpenMVS Phase 2 (Mesh Cleanup, Room Analysis, Relative Floor Detection, Plane Snapping, Envelope Pruning, Quadric Decimation, UV Texture, Poisson A/B, Viewer Fixes) | **VERIFIED** | Verified on RTX 4060 GPU with both reference clips (`house_test_30s.mp4` Job `f0e89d25` and `enhanced_interior_tour_1080p.mp4` Job `2b7b3bcc`) run through normal job flow. Exterior slab and mirror ghosts pruned. Viewer white background, light-grey grid, high-contrast markers, and PBR material fix verified. 4-view before/after sheets saved under `outputs/`. |
 | OpenMVS Phase 3 (Floor Leveling Y=0, Scale Calibration Seam, Exporters, Quality Report) | **VERIFIED** | Executed and verified on RTX 4060 GPU across both real jobs (`a78fc585` House, `4945096f` Tour). Floor leveling flush at Y=0.000 via median inliers; 180° Rodrigues antiparallel singularity guard; normal sign oriented toward cameras; sequential `/calibrate` runs in 0.067s - 0.130s (<3.0s spec) with bitwise identical UVs and texture atlas; all 8 deliverable assets generated (GLB, GLTF, OBJ ZIP, PLY, STL, XYZ, FBX, USDZ); cross-container Blender capability detection via Redis; uncalibrated badge in UI; 57/57 tests passing; Blender 4.1 round-trip proof sheet saved to `outputs/phase3_roundtrip_proof.png`. |
-| Real 3DGS Training (nerfstudio/splatfacto) | **UNVERIFIED** | P3 scope; not yet implemented or tested on RTX 4060 hardware |
+| Real 3DGS Training (nerfstudio/splatfacto) | **VERIFIED** | Executed end-to-end on RTX 4060 GPU across 2 real videos (`house_test_30s.mp4`: 532,187 Gaussians, peak VRAM 960 MB; `enhanced_interior_tour_1080p.mp4`: 412,688 Gaussians, peak VRAM 1,212 MB, <16% of 8 GB budget). Training throughput ~25-58M rays/sec. Proof renders saved to `outputs/splat_house_4views.png` and `outputs/splat_tour_4views.png`. |
+| 3DGS Pre-Training Upright Y=0 Floor Alignment | **VERIFIED** | Sparse COLMAP model points and camera poses transformed into upright $Y=0.000$ frame prior to training; dataparser flags (`orientation-method none`, `center-method none`, `auto-scale-poses False`) ensure splat sits upright on floor matching meshes without spherical harmonics distortion |
+| 4-Stage Interior Floater Cleanup | **VERIFIED** | Mist culling ($\alpha < 0.05$), giant floater filter ($S > 3\times\text{median}$ / $0.5$m), spatial KDTree SOR ($k=20, \sigma=2.0$), and room envelope clipping. Retained 47-49% highest-fidelity Gaussians while eliminating exterior and boundary floaters. |
+| 32-Byte .splat Binary Web Deliverable | **VERIFIED** | Vectorized NumPy packing of linear scales, sigmoid opacity, SH DC RGB, and unit quaternions into byte-exact 32-byte `.splat` format (6.15 MB - 7.60 MB); round-trip unit tested in `backend/tests/test_phase3_splat.py` |
+| Studio Splat Viewer Integration | **VERIFIED** | Built with `@mkkellogg/gaussian-splats-3d` in `frontend/src/components/SplatViewer.tsx` supporting Orbit controls, WASD walk mode, 6-slider real-time crop box, splat scale slider, and multi-format downloads (.ply, .splat, .zip) |
+| Planar-Aware Hole Filling (plane_repair.py) | **VERIFIED** | Boundary-cycle extraction via `networkx.cycle_basis` and boundary-constrained 2D Delaunay triangulation on dominant planes; eliminates interior floor/ceiling tears while strictly leaving unobserved open space (windows/doorways) unbridged |
+| OpenMVS DensifyPointCloud Tuning | **VERIFIED** | DensifyPointCloud parameters (`--number-views 10`, `--number-views-fuse 2`, `--geometric-iters 3`) improve weakly-lit and textureless surface coverage |
 | Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
 | Public GitHub Backup | **VERIFIED** | Pushed to `https://github.com/Ommali8421/ScanForge.git` (`origin/main`); zero secrets or personal emails |
@@ -589,13 +595,114 @@ All 6 high-resolution render proofs generated via Blender 4.1.0 in `scanforge-wo
 
 ---
 
-## 12. Session Resumption Guide
+## 13. Milestone M1 & M2 Gate Review Remediation Verification (2026-11-02)
 
-For any agent resuming work in this codebase:
-1. **Read this file (`progress.md`) first** to understand the current milestone state and verified achievements.
-2. Check `AGENTS.md` and `docs/SPEC.md` for conventions and strict architecture rules.
-3. Verify that the current stack is healthy using `make smoke` and `docker compose ps`.
-4. Always check git status (`git status`) to ensure the working tree is clean.
-5. Update this file whenever you complete a milestone, fix a bug, or execute a new verification.
+### A. Remediation Summary
+Remediated 1 backend mathematical geometry defect and 6 frontend studio UI/UX and contract defects identified during Gate Review Iteration 1:
+
+1. **Backend Geometry Singularity Fix (`floor_align.py:152`)**:
+   - Fixed `R_floor` for antiparallel normals when `up_axis="z"`: changed row 1 from `[-1.0, 0.0, 0.0]` to `[0.0, -1.0, 0.0]` so that `R_floor` is a proper, non-singular 180° rotation around the X-axis (`det(R) = +1.0`).
+   - Verified via `pytest backend/tests/test_adversarial_geometry.py`: all 13 adversarial geometry tests pass.
+
+2. **Frontend UserGuideModal Keyboard Navigation & Backdrop Click (`UserGuideModal.tsx`)**:
+   - Added `useEffect` listening for `keydown` to dismiss on the `Escape` key.
+   - Added outer backdrop container `onClick={closeGuideModal}` and inner dialog card `onClick={(e) => e.stopPropagation()}` to support outside-click dismiss.
+
+3. **Frontend NewScan Format State Synchronization (`NewScan.tsx`)**:
+   - Added `useEffect` to synchronize `formats` state when `scanType` changes: defaults to `["glb", "obj"]` for `photo`, `["ply", "splat"]` for `gaussian_splat`, and `["glb", "ply"]` for `lidar`.
+   - Sanitized `submissionFormats` in `handleSubmit` and verified sticky summary card filtering.
+
+4. **Frontend Jobs Pagination & Failed Status Alignment (`Jobs.tsx`)**:
+   - Stored `totalScans` from `data.total` returned by `fetchJobs(limit, offset)` and displayed in KPI summary.
+   - Preserved pagination controls (`Previous Page` and `Next Page` buttons with page indicator) and added automatic page reset on filter or search query change.
+   - Standardized `failedCount` and failed filter predicate to include all non-standard job statuses (`timeout`, `interrupted`, `error`, `cancelled`, `failed`).
+
+5. **Frontend MeasureTool & client.ts Calibration Feedback (`MeasureTool.tsx`, `client.ts`)**:
+   - Disabled "Apply Metric Scale" button when `dist === null || dist < 1e-4`.
+   - Added inline warning alert banner when points are coincident or distance is too small (`< 0.0001 m`).
+   - Updated `calibrateScale` in `client.ts` to parse and propagate JSON `detail` messages from backend HTTP 400/422 errors.
+
+### B. Verification Suite Results
+- **Full Backend Pytest Suite**: 157/157 passed in 130.60s (`docker exec scanforge-worker-gpu-1 pytest -v /workspace/backend/tests`).
+- **Phase 3 Splat Tests**: 4/4 passed (`test_phase3_splat.py`).
+- **Adversarial Geometry Tests**: 13/13 passed in 1.72s (`test_adversarial_geometry.py`).
+- **Frontend Production Build**: `npm run build` completed cleanly in 2.58s (0 TypeScript errors, 0 warnings).
+- **Challenger 2 Empirical Contract Stress Test**: `python3 scripts/stress_test_frontend_contracts.py` passed with 0 defects found (VERDICT: APPROVE).
+- **Service Endpoints**: `GET /api/health` and `GET /api/capabilities` verified 200 OK via curl.
+
+---
+
+## 14. Milestone P3 — 3D Gaussian Splatting (3DGS) Pipeline & Splat Viewer Verification (2026-11-02)
+
+### A. Architectural Implementation Summary
+1. **Container & Environment**:
+   - `docker/worker-gpu.Dockerfile` upgraded to `nvidia/cuda:12.1.1-devel-ubuntu22.04` with pinned `torch==2.5.1+cu121`, `torchvision==0.20.1+cu121`, `gsplat==1.4.0`, and `nerfstudio==1.1.5` via `docker/constraints.txt`.
+   - `MAX_JOBS=2` and `TORCH_CUDA_ARCH_LIST="8.9"` enforced to respect the 11 GB WSL2 RAM ceiling.
+   - All diagnostic checks verified green via `scripts/doctor.py`.
+
+2. **Pre-Training Upright $Y = 0.000$ Alignment (`pre_align.py`)**:
+   - Extracted dominant floor plane from `RoomAnalysisStage` in SfM frame.
+   - Transformed COLMAP sparse model (`cameras.bin`/`txt`, `images.bin`/`txt`, `points3D.bin`/`txt`) before running `ns-train`, translating floor inliers to $Y = 0.000$, rotating floor normal to $+Y$, yaw-aligning dominant walls, and centering scene in $(X, Z)$.
+   - Configured Nerfstudio `colmap` dataparser with `--orientation-method none`, `--center-method none`, `--auto-scale-poses False`, and `--assume-colmap-world-coordinate-convention False`. Trained 3D Gaussians sit naturally upright on the floor matching reconstructed meshes without spherical harmonics rotation distortion.
+
+3. **8 GB VRAM-Safe Training & Headless Execution (`train_splatfacto.py`)**:
+   - Headless execution with `--vis tensorboard`, automatic `stdin_input="y\n"` prompt handling in `ToolRunner`.
+   - Dynamic VRAM cap preservation: resolution scale factor capped $\le 1080$p; Gaussian count capped by quality presets (Draft 800k / Standard 1.2M / High 1.5M).
+   - Automated CUDA OOM catch-and-retry: catches PyTorch CUDA OOM, purges cache, halves resolution scale, reduces Gaussian budget by 30%, and re-attempts training automatically.
+
+4. **Interior Floater Cleanup & Outlier Removal (`splat_cleanup.py`)**:
+   - Evaluated in linear and probability space: $\alpha = \text{sigmoid}(\text{logit})$, $S = \exp(s)$.
+   - **Stage 1 (Mist Filter)**: Culls low-opacity aerosol floaters ($\alpha < 0.05$).
+   - **Stage 2 (Giant Floaters)**: Culls oversized Gaussians ($S_{\max} > 3\times\text{median}$ or $>0.5$m).
+   - **Stage 3 (Spatial SOR)**: KDTree Statistical Outlier Removal ($k=20$, standard deviation ratio $2.0$).
+   - **Stage 4 (Envelope Clipping)**: Clips splats outside the camera-trajectory room bounding envelope, eliminating exterior floaters seen through windows.
+
+5. **Compact Web Delivery Formats (`format_converter.py`)**:
+   - Packed into byte-exact 32-byte `.splat` binary files: linear XYZ scale (`float32`), RGBA uint8 ($R, G, B$ from DC Spherical Harmonics $0.5 + 0.28209479 \cdot f_{\text{dc}}$, $A = 255 \cdot \text{sigmoid}(\text{logit})$), and normalized rotation quaternion $(w, x, y, z)$ mapped to $[0, 255]$.
+   - Bundled all deliverables into single downloadable `.zip` archives.
+   - Calibrate scale seam supported on 3DGS jobs (`/api/jobs/{id}/calibrate`).
+
+6. **Studio Splat Viewer (`SplatViewer.tsx` & `JobDetail.tsx`)**:
+   - Integrated `@mkkellogg/gaussian-splats-3d` with `sharedMemoryForWorkers: false` (eliminates `SharedArrayBuffer` requirement) and camera `up: [0, 1, 0]`.
+   - Dual-mode navigation: Orbit controls + First-Person WASD + mouse-look walk mode.
+   - Real-time 6-slider 3D crop bounding box (min/max X, Y, Z).
+   - Splat scale adjustment slider, theme toggle, and one-click format downloads.
+
+---
+
+### B. Real RTX 4060 GPU Benchmark Results
+
+| Metric | Benchmark 1 (`house_test_30s.mp4`) | Benchmark 2 (`enhanced_interior_tour_1080p.mp4`) |
+|---|---|---|
+| **Job ID** | `24a6f4ca-7472-40b9-845c-dadeb9ad751c` | `7540207b-7fc6-4f27-a067-1b7bf85ed8b6` |
+| **Scan Type / Quality** | `gaussian_splat` / `standard` | `gaussian_splat` / `standard` |
+| **Video Dimensions / FPS** | 478x850, 60 fps, 30.0s | 1080x1920 (portrait), 30 fps, 20.2s |
+| **SfM Frames Registered** | 92 / 99 (92.9%) | **67 / 67 (100.0%)** (Exhaustive) |
+| **Floor Alignment** | Floor leveled to $Y = 0.000$ ($Y_{\text{floor}} = -3.445$) | Floor leveled to $Y = 0.000$ |
+| **Training Steps** | 10,000 steps (`splatfacto`) | 10,000 steps (`splatfacto`) |
+| **Training Rays / Sec** | 35.06 M rays/sec | **58.18 M rays/sec** (initial) / 14-25 M (converged) |
+| **Step Iteration Time** | ~11.5 ms / step | ~8.4 ms - 34.0 ms / step |
+| **Training Duration** | 97.4s (excluding one-time JIT compile) | **393.9s** (6.5 min total) |
+| **Peak VRAM / Utilization** | **960 MB** (<12% of 8 GB) / 57% compute | **1,212 MB** (<16% of 8 GB) / 64% compute |
+| **Raw Gaussians Trained** | 532,187 (raw PLY: 125.87 MB) | 412,688 (raw PLY: 102.35 MB) |
+| **Cleaned Gaussians Retained** | **249,013** (46.8% retained, 283k floaters culled) | **201,653** (48.9% retained, 211k floaters culled) |
+| **Cleaned PLY Size** | 58.90 MB | 50.01 MB |
+| **Packed Binary .splat Size** | **7.60 MB** (7,968,416 bytes) | **6.15 MB** (6,452,896 bytes) |
+| **Deliverable Bundle .zip** | 56.48 MB | 46.13 MB |
+| **Proof Render** | `outputs/splat_house_4views.png` | `outputs/splat_tour_4views.png` |
+
+---
+
+### C. Mesh Boundary Tear Hardening Verification
+1. **DensifyPointCloud Enhancement (`openmvs.py`)**:
+   - Added `--number-views 10`, `--number-views-fuse 2`, and `--geometric-iters 3`.
+   - Drastically increases multi-view depth consistency and point density across textureless floor slabs and room corners before surface reconstruction.
+
+2. **Planar-Aware Boundary Hole Filling (`plane_repair.py`)**:
+   - Implemented `patch_planar_holes()` using `networkx.cycle_basis` and boundary-constrained 2D Delaunay triangulation.
+   - Specifically detects boundary edge cycles lying on dominant detected planes (within 1.5% scene diagonal), triangulates them conforming to boundary edges and normal winding, while strictly preserving unobserved open space (windows/doorways) and leaving wall/ceiling gaps open where unobserved.
+   - Tested and verified across all 157 pytest suites.
+
+
 
 

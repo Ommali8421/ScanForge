@@ -223,8 +223,10 @@ def download_artifact(id: str, format: str):
         media_type = "text/plain"
     elif fmt == "usdz":
         media_type = "model/vnd.usdz+zip"
-    elif fmt in {"ply", "splat", "fbx"}:
+    elif fmt in {"ply", "splat", "spz", "fbx"}:
         media_type = "application/octet-stream"
+    elif fmt == "zip":
+        media_type = "application/zip"
 
     return FileResponse(
         path=target.file_path,
@@ -580,6 +582,49 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
                 logger.warning(f"Error syncing secondary deliverable formats: {e}")
         except Exception as e:
             logger.warning(f"Error during inline recalibration: {e}")
+
+    # Gaussian Splatting calibration support
+    splat_ply = workdir / "cleaned_splat.ply"
+    if not splat_ply.exists():
+        splat_ply = workdir / "splat.ply"
+    splat_bin = workdir / "cleaned_splat.splat"
+
+    if splat_ply.exists() or splat_bin.exists():
+        try:
+            from app.pipelines.gaussian.format_converter import pack_ply_to_splat
+            from plyfile import PlyData, PlyElement
+            import numpy as np
+
+            unscaled_ply = workdir / "unscaled_splat.ply"
+            if not unscaled_ply.exists() and splat_ply.exists():
+                shutil.copy2(splat_ply, unscaled_ply)
+
+            if unscaled_ply.exists():
+                pdata = PlyData.read(str(unscaled_ply))
+                vdata = pdata["vertex"].data.copy()
+                vdata["x"] = vdata["x"] * cumulative_scale
+                vdata["y"] = vdata["y"] * cumulative_scale
+                vdata["z"] = vdata["z"] * cumulative_scale
+                log_s = np.log(cumulative_scale)
+                vdata["scale_0"] = vdata["scale_0"] + log_s
+                vdata["scale_1"] = vdata["scale_1"] + log_s
+                vdata["scale_2"] = vdata["scale_2"] + log_s
+
+                out_ply = workdir / "cleaned_splat.ply"
+                PlyData([PlyElement.describe(vdata, "vertex")], text=False).write(str(out_ply))
+                shutil.copy2(out_ply, workdir / "model.ply")
+
+                out_splat = workdir / "cleaned_splat.splat"
+                pack_ply_to_splat(out_ply, out_splat, scale_factor=1.0)
+                shutil.copy2(out_splat, workdir / "model.splat")
+
+                if art_dir.exists():
+                    shutil.copy2(out_ply, art_dir / "cleaned_splat.ply")
+                    shutil.copy2(out_ply, art_dir / "model.ply")
+                    shutil.copy2(out_splat, art_dir / "cleaned_splat.splat")
+                    shutil.copy2(out_splat, art_dir / "model.splat")
+        except Exception as e:
+            logger.warning(f"Error during gaussian_splat recalibration: {e}")
 
     # Update job in database
     with Session(engine) as session:

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Ruler, CheckCircle2, RotateCcw, ArrowRight, Zap, Target } from "lucide-react";
+import { Ruler, CheckCircle2, RotateCcw, ArrowRight, Zap, Target, AlertCircle } from "lucide-react";
 import { SmartHint } from "./SmartHint";
 
 interface Props {
@@ -161,6 +161,16 @@ export const MeasureTool: React.FC<Props> = ({
         </div>
       </div>
 
+      {/* Inline Warning if points are coincident or distance is too small */}
+      {dist !== null && dist < 1e-4 && (
+        <div className="p-3 rounded-2xl bg-amber-950/40 border border-amber-500/40 text-amber-300 text-xs flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 flex-shrink-0 text-amber-400" />
+          <span>
+            Selected points are coincident or too close together (&lt; 0.0001 m). Please pick two distinct reference points on the geometry.
+          </span>
+        </div>
+      )}
+
       {/* Real Distance Input & Quick Apply Action */}
       {dist !== null && (
         <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 animate-in fade-in duration-150">
@@ -192,8 +202,8 @@ export const MeasureTool: React.FC<Props> = ({
 
             <button
               onClick={handleApply}
-              disabled={loading}
-              className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-600/20 flex items-center gap-1.5 transition-all disabled:opacity-50"
+              disabled={loading || !dist || dist < 1e-4}
+              className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-600/20 flex items-center gap-1.5 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <span>{loading ? "Calibrating..." : "Apply Metric Scale"}</span>
               <ArrowRight className="w-3.5 h-3.5" />
