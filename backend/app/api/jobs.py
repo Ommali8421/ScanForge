@@ -183,6 +183,7 @@ def list_job_artifacts(id: str):
 
 
 @router.get("/{id}/download/{format}")
+@router.get("/{id}/artifacts/{format}")
 def download_artifact(id: str, format: str):
     job = get_job(id)
     if not job:
@@ -191,8 +192,11 @@ def download_artifact(id: str, format: str):
     fmt = format.lower()
     artifacts = get_job_artifacts(id)
 
-    # Amendment 3: Package OBJ exports as a .zip containing .obj + .mtl + .png
-    if fmt == "obj":
+    # 1. Match by exact filename if a filename with extension was requested
+    target = next((a for a in artifacts if a.filename.lower() == fmt), None)
+
+    # 2. Package OBJ exports as a .zip containing .obj + .mtl + .png
+    if not target and fmt in {"obj", "mesh_obj.zip"}:
         target = next((a for a in artifacts if a.filename == "mesh_obj.zip" or a.format.lower() == "obj"), None)
         if target and Path(target.file_path).exists():
             return FileResponse(
@@ -201,31 +205,55 @@ def download_artifact(id: str, format: str):
                 media_type="application/zip" if target.filename.endswith(".zip") else "model/obj"
             )
 
-    target = next((a for a in artifacts if a.format.lower() == fmt), None)
-    if not target or not Path(target.file_path).exists():
-        # Fallback for gltf/glb
-        if fmt in {"gltf", "glb"}:
-            target = next((a for a in artifacts if a.format.lower() in {"gltf", "glb"}), None)
+    # 3. Match by format or extension
+    if not target:
+        if "." in fmt:
+            ext = fmt.rsplit(".", 1)[1]
+            target = next((a for a in artifacts if a.format.lower() == ext or a.filename.lower().endswith(f".{ext}")), None)
+        else:
+            target = next((a for a in artifacts if a.format.lower() == fmt), None)
 
+    # 4. Fallback for gltf/glb
+    if not target and fmt in {"gltf", "glb"}:
+        target = next((a for a in artifacts if a.format.lower() in {"gltf", "glb"}), None)
+
+    # 5. Direct disk fallback in artifacts directory if file exists
     if not target or not Path(target.file_path).exists():
+        art_dir = storage_service.get_job_artifacts_dir(id)
+        direct_file = art_dir / format
+        if direct_file.exists() and direct_file.is_file():
+            ext = direct_file.suffix.lower().lstrip(".")
+            media_type = "application/octet-stream"
+            if ext in ("glb", "gltf"):
+                media_type = "model/gltf-binary" if ext == "glb" else "model/gltf+json"
+            elif ext in ("splat", "ply", "spz", "fbx"):
+                media_type = "application/octet-stream"
+            elif ext == "zip":
+                media_type = "application/zip"
+            return FileResponse(
+                path=str(direct_file),
+                filename=direct_file.name,
+                media_type=media_type
+            )
         raise HTTPException(status_code=404, detail=f"Artifact format '{format}' not found for job {id}")
 
+    ext = target.filename.rsplit(".", 1)[-1].lower() if "." in target.filename else fmt
     media_type = "application/octet-stream"
-    if fmt in ("glb", "gltf"):
-        media_type = "model/gltf-binary" if fmt == "glb" else "model/gltf+json"
-    elif fmt == "png":
+    if ext in ("glb", "gltf"):
+        media_type = "model/gltf-binary" if ext == "glb" else "model/gltf+json"
+    elif ext == "png":
         media_type = "image/png"
-    elif fmt == "json":
+    elif ext == "json":
         media_type = "application/json"
-    elif fmt == "stl":
+    elif ext == "stl":
         media_type = "model/stl"
-    elif fmt == "xyz":
+    elif ext == "xyz":
         media_type = "text/plain"
-    elif fmt == "usdz":
+    elif ext == "usdz":
         media_type = "model/vnd.usdz+zip"
-    elif fmt in {"ply", "splat", "spz", "fbx"}:
+    elif ext in {"ply", "splat", "spz", "fbx"}:
         media_type = "application/octet-stream"
-    elif fmt == "zip":
+    elif ext == "zip":
         media_type = "application/zip"
 
     return FileResponse(

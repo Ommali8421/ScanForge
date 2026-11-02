@@ -175,13 +175,21 @@ def test_splat_cleanup_mist_and_giant_pruning():
         # Pruning should drop all 15 mist and all 5 giant floaters
         assert len(cleaned_data) <= 80
 
-        # Verify no remaining points have alpha < 0.05
+        # Verify no remaining points have alpha < 0.02
         alphas = 1.0 / (1.0 + np.exp(-cleaned_data["opacity"]))
-        assert np.all(alphas >= 0.05)
+        assert np.all(alphas >= 0.02)
 
-        # Verify no remaining points have scale > 0.5m
-        scales = np.exp(cleaned_data["scale_0"])
-        assert np.all(scales <= 0.50)
+        # Verify no giant bloated isotropic floaters (scale > 0.5m without being a pancake) remain
+        scales_0 = np.exp(cleaned_data["scale_0"])
+        scales_1 = np.exp(cleaned_data["scale_1"])
+        scales_2 = np.exp(cleaned_data["scale_2"])
+        s_max = np.maximum(scales_0, np.maximum(scales_1, scales_2))
+        s_min = np.minimum(scales_0, np.minimum(scales_1, scales_2))
+        aspect = s_min / (s_max + 1e-8)
+        # All remaining large Gaussians must be thin pancakes (aspect < 0.12)
+        oversized = s_max > 0.50
+        if np.any(oversized):
+            assert np.all(aspect[oversized] < 0.12)
 
 
 def test_colmap_pose_alignment_math():

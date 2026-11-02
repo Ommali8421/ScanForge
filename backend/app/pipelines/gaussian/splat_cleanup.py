@@ -50,40 +50,59 @@ class SplatCleanupStage(Stage):
         x = np.asarray(vertex["x"], dtype=np.float32)
         y = np.asarray(vertex["y"], dtype=np.float32)
         z = np.asarray(vertex["z"], dtype=np.float32)
+        pts = np.column_stack([x, y, z])
+
+        # Compute robust scene diagonal D_scene in uncalibrated SfM units (2nd to 98th percentile)
+        p_min_robust = np.percentile(pts, 2, axis=0)
+        p_max_robust = np.percentile(pts, 98, axis=0)
+        d_scene = float(np.linalg.norm(p_max_robust - p_min_robust))
+        if d_scene < 1e-3:
+            d_scene = 10.0
+        ctx.log_cb(f"[SplatCleanup] Robust scene diagonal D_scene: {d_scene:.2f} units.")
 
         opacity_raw = np.asarray(vertex["opacity"], dtype=np.float32)
         s0 = np.asarray(vertex["scale_0"], dtype=np.float32)
         s1 = np.asarray(vertex["scale_1"], dtype=np.float32)
         s2 = np.asarray(vertex["scale_2"], dtype=np.float32)
 
-        # 1. Opacity mist pruning (alpha < 0.05)
+        # 1. Opacity mist pruning (relaxed to alpha < 0.02)
         # Convert raw logit opacity to linear alpha: sigmoid(opacity)
         alpha = 1.0 / (1.0 + np.exp(-np.clip(opacity_raw, -20.0, 20.0)))
-        mask_opacity = alpha >= 0.05
+        mask_opacity = alpha >= 0.02
         ctx.log_cb(
             f"[SplatCleanup] Opacity mist filter: retained {np.sum(mask_opacity):,}/{num_raw:,} "
-            f"({np.sum(mask_opacity)/num_raw*100:.1f}%), dropped {num_raw - np.sum(mask_opacity):,} mist Gaussians (alpha < 0.05)."
+            f"({np.sum(mask_opacity)/num_raw*100:.1f}%), dropped {num_raw - np.sum(mask_opacity):,} mist Gaussians (alpha < 0.02)."
         )
 
-        # 2. Giant floater scale pruning (s_max > 3.0 * median or > 0.5m)
+        # 2. Giant floater scale pruning with Planar Pancake Preservation
         # Convert raw log scale to linear scale: exp(scale)
         scale_linear_0 = np.exp(np.clip(s0, -20.0, 5.0))
         scale_linear_1 = np.exp(np.clip(s1, -20.0, 5.0))
         scale_linear_2 = np.exp(np.clip(s2, -20.0, 5.0))
         s_max = np.maximum(scale_linear_0, np.maximum(scale_linear_1, scale_linear_2))
+        s_min = np.minimum(scale_linear_0, np.minimum(scale_linear_1, scale_linear_2))
+
+        # Thin planar pancakes (aspect ratio s_min / s_max < 0.12) are used by splatfacto
+        # to represent flat walls, floors, and ceilings and must NOT be pruned.
+        aspect_ratio = s_min / (s_max + 1e-8)
+        is_pancake = aspect_ratio < 0.12
 
         valid_scales = s_max[mask_opacity] if np.any(mask_opacity) else s_max
         median_scale = float(np.median(valid_scales)) if len(valid_scales) > 0 else 0.05
-        scale_threshold = min(3.0 * median_scale, 0.50)
+        # Strictly relative to D_scene: never hardcoded 0.5m in uncalibrated SfM space
+        scale_cutoff = min(8.0 * median_scale, 0.08 * d_scene)
 
-        mask_scale = s_max <= scale_threshold
+        # Only cull giant isotropic/3D-bloated floaters that are NOT flat wall/floor pancakes
+        is_giant_bloat = (s_max > scale_cutoff) & (~is_pancake)
+        mask_scale = ~is_giant_bloat
         mask_cand = mask_opacity & mask_scale
         ctx.log_cb(
-            f"[SplatCleanup] Giant floater filter (median scale={median_scale:.4f}m, max cutoff={scale_threshold:.4f}m): "
+            f"[SplatCleanup] Giant bloat filter (median scale={median_scale:.4f}, cutoff={scale_cutoff:.4f}, "
+            f"preserved pancakes={np.sum(is_pancake):,}): "
             f"retained {np.sum(mask_cand):,}/{num_raw:,} ({np.sum(mask_cand)/num_raw*100:.1f}%)."
         )
 
-        # 3. Spatial Statistical Outlier Removal (KDTree SOR: k=20, std_ratio=2.0)
+        # 3. Spatial Statistical Outlier Removal (relaxed to k=20, std_ratio=3.0)
         cand_indices = np.where(mask_cand)[0]
         if len(cand_indices) > 50:
             coords_cand = np.column_stack([x[cand_indices], y[cand_indices], z[cand_indices]])
@@ -96,23 +115,18 @@ class SplatCleanupStage(Stage):
 
             dist_mean = float(np.mean(mean_dist))
             dist_std = float(np.std(mean_dist))
-            sor_cutoff = dist_mean + 2.0 * dist_std
+            sor_cutoff = dist_mean + 3.0 * dist_std
 
             mask_sor_local = mean_dist <= sor_cutoff
             sor_retained_indices = cand_indices[mask_sor_local]
             ctx.log_cb(
-                f"[SplatCleanup] Spatial SOR filter (mean dist={dist_mean:.3f}m, std={dist_std:.3f}m, cutoff={sor_cutoff:.3f}m): "
+                f"[SplatCleanup] Spatial SOR filter (mean dist={dist_mean:.3f}, std={dist_std:.3f}, cutoff={sor_cutoff:.3f}): "
                 f"retained {len(sor_retained_indices):,}/{len(cand_indices):,}."
             )
         else:
             sor_retained_indices = cand_indices
 
-        # 4. Camera-trajectory + room-plane envelope clipping
-        # Read pre_align_metadata or room_analysis to obtain room bounds
-        meta_file = ctx.workdir / "pre_align_metadata.json"
-        analysis_file = ctx.workdir / "room_analysis.json"
-
-        # Read aligned camera positions from aligned_sparse/0/images.txt
+        # 4. Camera-trajectory + room-plane envelope clipping (relative to D_scene)
         aligned_images_txt = ctx.workdir / "aligned_sparse" / "0" / "images.txt"
         cam_positions = []
         if aligned_images_txt.exists():
@@ -132,25 +146,23 @@ class SplatCleanupStage(Stage):
             cams = np.array(cam_positions)
             cam_min = np.min(cams, axis=0)
             cam_max = np.max(cams, axis=0)
-            cam_span = cam_max - cam_min
+            cam_span_h = float(np.max(cam_max[[0, 2]] - cam_min[[0, 2]]))
 
-            # Horizontal margin: expand by max(1.5 * span, 2.5m)
-            x_margin = max(1.5 * cam_span[0], 2.5)
-            z_margin = max(1.5 * cam_span[2], 2.5)
+            # Generous room bounds: cameras look outward into large rooms, hallways, and ceilings
+            margin_h = max(0.50 * d_scene, 2.5 * cam_span_h)
+            x_min = float(cam_min[0] - margin_h)
+            x_max = float(cam_max[0] + margin_h)
+            z_min = float(cam_min[2] - margin_h)
+            z_max = float(cam_max[2] + margin_h)
 
-            # Vertical clearance: floor is at Y=0.0, allow small subfloor margin -0.25m
-            y_min = -0.25
-            y_max = max(cam_max[1] + 1.8, 4.0)
-
-            x_min = cam_min[0] - x_margin
-            x_max = cam_max[0] + x_margin
-            z_min = cam_min[2] - z_margin
-            z_max = cam_max[2] + z_margin
+            # Subfloor buffer below Y=0.00 floor, generous height ceiling clearance
+            y_min = -0.10 * d_scene
+            y_max = max(float(cam_max[1] + 0.40 * d_scene), float(p_max_robust[1] + 0.15 * d_scene))
         else:
             # Fallback bounds from coordinate spread
-            x_min, x_max = -20.0, 20.0
-            y_min, y_max = -0.25, 8.0
-            z_min, z_max = -20.0, 20.0
+            x_min, x_max = float(p_min_robust[0] - 0.3 * d_scene), float(p_max_robust[0] + 0.3 * d_scene)
+            y_min, y_max = -0.10 * d_scene, float(p_max_robust[1] + 0.3 * d_scene)
+            z_min, z_max = float(p_min_robust[2] - 0.3 * d_scene), float(p_max_robust[2] + 0.3 * d_scene)
 
         ctx.log_cb(
             f"[SplatCleanup] Room envelope bounds: X=[{x_min:.2f}, {x_max:.2f}], "

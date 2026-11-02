@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-ScanForge 3DGS Proof Renderer
+ScanForge 3DGS Proof Renderer (CUDA gsplat rasterization)
 Renders 4 high-resolution diagnostic proof views of a 3D Gaussian Splat model:
-1. Perspective 3D Overview
-2. Eye-Level Interior Walkthrough (Y = 1.5m)
-3. Side Elevation (validating Y = 0.00 floor leveling)
-4. Floor Plan Top-Down (XZ orthographic plane)
+1. Interior Eye-Level Walkthrough (Camera A from COLMAP trajectory)
+2. Interior Eye-Level Walkthrough (Camera B from COLMAP trajectory)
+3. Elevated 3/4 Cutaway Overview (looking at room center from elevated angle)
+4. Floor Plan Top-Down (XZ Layout looking down from above)
 """
 
 import sys
@@ -16,193 +16,305 @@ from PIL import Image, ImageDraw, ImageFont
 from plyfile import PlyData
 
 
+def make_w2c(eye, lookat, up=np.array([0.0, 1.0, 0.0])):
+    """Constructs an OpenCV-convention World-to-Camera (W2C) 4x4 matrix."""
+    eye = np.array(eye, dtype=float)
+    lookat = np.array(lookat, dtype=float)
+    up = np.array(up, dtype=float)
+
+    # Forward: camera Z points from eye toward lookat
+    z_cam = lookat - eye
+    z_len = np.linalg.norm(z_cam)
+    if z_len < 1e-6:
+        z_cam = np.array([0.0, 0.0, 1.0])
+    else:
+        z_cam = z_cam / z_len
+
+    # Camera right X: in OpenCV (X right, Y down, Z forward)
+    # With world up +Y, camera down is -up, so right X = Z x (-up)
+    x_cam = np.cross(z_cam, -up)
+    if np.linalg.norm(x_cam) < 1e-6:
+        x_cam = np.cross(z_cam, np.array([0.0, 0.0, 1.0]))
+    x_cam = x_cam / np.linalg.norm(x_cam)
+
+    # Camera down Y = Z x X
+    y_cam = np.cross(z_cam, x_cam)
+    y_cam = y_cam / np.linalg.norm(y_cam)
+
+    # R transforms world to camera: [X_cam; Y_cam; Z_cam]
+    R = np.vstack([x_cam, y_cam, z_cam])
+    t = -R @ eye
+
+    w2c = np.eye(4, dtype=np.float32)
+    w2c[:3, :3] = R
+    w2c[:3, 3] = t
+    return w2c
+
+
+def parse_colmap_cameras(workdir: Path):
+    """Parses registered camera poses and intrinsics from aligned_sparse or sparse."""
+    from scipy.spatial.transform import Rotation as R
+
+    sparse_dirs = [
+        workdir / "aligned_sparse" / "0",
+        workdir / "sparse" / "0",
+        workdir / "nerfstudio_data" / "sparse" / "0",
+    ]
+    target_sparse = None
+    for d in sparse_dirs:
+        if (d / "images.txt").exists():
+            target_sparse = d
+            break
+
+    if not target_sparse:
+        return [], 800.0, 800.0, 540.0, 900.0, 1080, 1800
+
+    # Read cameras.txt for intrinsics
+    fx, fy, cx, cy = 800.0, 800.0, 540.0, 900.0
+    w_orig, h_orig = 1080, 1800
+    cam_file = target_sparse / "cameras.txt"
+    if cam_file.exists():
+        for line in cam_file.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) >= 5:
+                # CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]
+                w_orig = int(parts[2])
+                h_orig = int(parts[3])
+                model = parts[1].upper()
+                if model == "SIMPLE_RADIAL" and len(parts) >= 7:
+                    f = float(parts[4])
+                    fx = fy = f
+                    cx = float(parts[5])
+                    cy = float(parts[6])
+                elif model in {"PINHOLE", "OPENCV"} and len(parts) >= 8:
+                    fx = float(parts[4])
+                    fy = float(parts[5])
+                    cx = float(parts[6])
+                    cy = float(parts[7])
+                break
+
+    # Read images.txt for camera poses
+    images_txt = target_sparse / "images.txt"
+    cams = []
+    lines = images_txt.read_text().splitlines()
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 10 and any(parts[9].lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
+            qw, qx, qy, qz = map(float, parts[1:5])
+            tx, ty, tz = map(float, parts[5:8])
+            img_name = parts[9]
+            r_mat = R.from_quat([qx, qy, qz, qw]).as_matrix()
+            w2c = np.eye(4, dtype=np.float32)
+            w2c[:3, :3] = r_mat
+            w2c[:3, 3] = [tx, ty, tz]
+            cams.append({
+                "name": img_name,
+                "w2c": w2c,
+                "center": -r_mat.T @ np.array([tx, ty, tz])
+            })
+
+    return cams, fx, fy, cx, cy, w_orig, h_orig
+
+
 def render_splat_views(ply_path: str, output_image_path: str):
+    p_path = Path(ply_path)
+    if not p_path.exists():
+        raise FileNotFoundError(f"PLY file not found: {ply_path}")
+
     print(f"Loading 3DGS PLY: {ply_path}...")
-    ply = PlyData.read(ply_path)["vertex"]
+    ply = PlyData.read(str(p_path))["vertex"]
     pts = np.column_stack([ply["x"], ply["y"], ply["z"]]).astype(np.float32)
-
-    # Convert SH DC coefficients to RGB
-    C0 = 0.28209479177387814
-    sh = np.column_stack([ply["f_dc_0"], ply["f_dc_1"], ply["f_dc_2"]]).astype(np.float32)
-    rgb = np.clip((0.5 + C0 * sh) * 255.0, 0, 255).astype(np.uint8)
-
-    # Convert log-scale to linear scale for splat sizing
-    s0 = np.exp(np.clip(np.asarray(ply["scale_0"]), -10.0, 2.0))
-    s1 = np.exp(np.clip(np.asarray(ply["scale_1"]), -10.0, 2.0))
-    s2 = np.exp(np.clip(np.asarray(ply["scale_2"]), -10.0, 2.0))
-    scales = np.maximum(s0, np.maximum(s1, s2)).astype(np.float32)
-
     num_points = len(pts)
-    center = np.median(pts, axis=0)
-    p_min = pts.min(axis=0)
-    p_max = pts.max(axis=0)
-    span = p_max - p_min
+
+    p_min_rob = np.percentile(pts, 2, axis=0)
+    p_max_rob = np.percentile(pts, 98, axis=0)
+    center = (p_min_rob + p_max_rob) / 2.0
+    span = p_max_rob - p_min_rob
     diag = float(np.linalg.norm(span))
 
     print(f"Gaussians: {num_points:,}")
-    print(f"Bounds: X=[{p_min[0]:.2f}, {p_max[0]:.2f}], Y=[{p_min[1]:.2f}, {p_max[1]:.2f}], Z=[{p_min[2]:.2f}, {p_max[2]:.2f}]")
-    print(f"Center: [{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}], Diag: {diag:.2f}m")
+    print(f"Bounds: X=[{p_min_rob[0]:.2f}, {p_max_rob[0]:.2f}], Y=[{p_min_rob[1]:.2f}, {p_max_rob[1]:.2f}], Z=[{p_min_rob[2]:.2f}, {p_max_rob[2]:.2f}]")
+    print(f"Robust Center: [{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}], Span: [{span[0]:.2f}, {span[1]:.2f}, {span[2]:.2f}], Diag: {diag:.2f} units")
 
-    w, h = 960, 540
+    # Discover workdir from PLY path
+    workdir = p_path.parent
+    if workdir.name in {"splat_export", "outputs"}:
+        workdir = workdir.parent
 
-    def render_pinhole(eye, lookat, up, fov_deg=60.0):
-        eye = np.array(eye, dtype=np.float32)
-        lookat = np.array(lookat, dtype=np.float32)
-        up = np.array(up, dtype=np.float32)
+    colmap_cams, orig_fx, orig_fy, orig_cx, orig_cy, w_orig, h_orig = parse_colmap_cameras(workdir)
 
-        z_cam = lookat - eye
-        z_dist = np.linalg.norm(z_cam)
-        if z_dist < 1e-6:
-            z_cam = np.array([0, 0, -1], dtype=np.float32)
+    # Check CUDA and gsplat availability
+    has_cuda_gsplat = False
+    try:
+        import torch
+        import gsplat
+        if torch.cuda.is_available():
+            has_cuda_gsplat = True
+    except Exception as e:
+        print(f"CUDA/gsplat not available ({e}), falling back to CPU projection.")
+
+    panel_w, panel_h = 1280, 960
+
+    if has_cuda_gsplat:
+        import torch
+        import gsplat
+
+        print("Initializing GPU tensors for gsplat.rasterization...")
+        means = torch.tensor(pts, dtype=torch.float32, device="cuda")
+        quats = torch.tensor(
+            np.column_stack([ply["rot_0"], ply["rot_1"], ply["rot_2"], ply["rot_3"]]),
+            dtype=torch.float32,
+            device="cuda"
+        )
+        quats = torch.nn.functional.normalize(quats, p=2, dim=-1)
+
+        s0 = np.exp(np.clip(np.asarray(ply["scale_0"]), -20.0, 5.0))
+        s1 = np.exp(np.clip(np.asarray(ply["scale_1"]), -20.0, 5.0))
+        s2 = np.exp(np.clip(np.asarray(ply["scale_2"]), -20.0, 5.0))
+        scales = torch.tensor(np.column_stack([s0, s1, s2]), dtype=torch.float32, device="cuda")
+
+        opacities_raw = np.asarray(ply["opacity"], dtype=np.float32)
+        opacities = torch.tensor(1.0 / (1.0 + np.exp(-np.clip(opacities_raw, -20.0, 20.0))), dtype=torch.float32, device="cuda")
+
+        C0 = 0.28209479177387814
+        sh_0 = torch.tensor(np.column_stack([ply["f_dc_0"], ply["f_dc_1"], ply["f_dc_2"]]), dtype=torch.float32, device="cuda")
+        colors = torch.clamp(0.5 + C0 * sh_0, 0.0, 1.0)
+
+        # Helper to render single view with gsplat
+        def render_gsplat(w2c_mat, fx_in=None, fy_in=None, cx_in=None, cy_in=None):
+            sx = panel_w / float(w_orig)
+            sy = panel_h / float(h_orig)
+            fx = (fx_in if fx_in is not None else orig_fx) * sx
+            fy = (fy_in if fy_in is not None else orig_fy) * sy
+            cx = (cx_in if cx_in is not None else orig_cx) * sx
+            cy = (cy_in if cy_in is not None else orig_cy) * sy
+
+            K = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]], dtype=torch.float32, device="cuda").unsqueeze(0)
+            viewmats = torch.tensor(w2c_mat, dtype=torch.float32, device="cuda").unsqueeze(0)
+
+            with torch.no_grad():
+                out, _, _ = gsplat.rasterization(
+                    means=means,
+                    quats=quats,
+                    scales=scales,
+                    opacities=opacities,
+                    colors=colors,
+                    viewmats=viewmats,
+                    Ks=K,
+                    width=panel_w,
+                    height=panel_h,
+                    near_plane=0.01,
+                    far_plane=1e6,
+                    radius_clip=0.0,
+                    eps2d=0.3,
+                )
+            img_np = (torch.clamp(out[0], 0.0, 1.0).cpu().numpy() * 255.0).astype(np.uint8)
+            return Image.fromarray(img_np)
+
+        # 1. Camera A (Interior Walkthrough)
+        print("Rendering View 1: Interior Walkthrough View A...")
+        if colmap_cams:
+            idx1 = min(int(len(colmap_cams) * 0.25), len(colmap_cams) - 1)
+            cam1 = colmap_cams[idx1]
+            title1 = f"View 1: Interior Walkthrough ({cam1['name']})"
+            img1 = render_gsplat(cam1["w2c"])
         else:
-            z_cam = z_cam / z_dist
+            title1 = "View 1: Interior Eye-Level Walkthrough"
+            eye1 = center + np.array([0.0, 0.5, -0.6 * span[2]])
+            w2c1 = make_w2c(eye1, center + np.array([0.0, 0.0, 0.5 * span[2]]))
+            img1 = render_gsplat(w2c1, fx_in=1000.0, fy_in=1000.0, cx_in=panel_w/2.0, cy_in=panel_h/2.0)
 
-        x_cam = np.cross(z_cam, up)
-        x_norm = np.linalg.norm(x_cam)
-        if x_norm < 1e-6:
-            x_cam = np.array([1, 0, 0], dtype=np.float32)
+        # 2. Camera B (Interior Walkthrough)
+        print("Rendering View 2: Interior Walkthrough View B...")
+        if colmap_cams and len(colmap_cams) > 1:
+            idx2 = min(int(len(colmap_cams) * 0.70), len(colmap_cams) - 1)
+            cam2 = colmap_cams[idx2]
+            title2 = f"View 2: Interior Walkthrough ({cam2['name']})"
+            img2 = render_gsplat(cam2["w2c"])
         else:
-            x_cam = x_cam / x_norm
+            title2 = "View 2: Interior Reverse Walkthrough"
+            eye2 = center + np.array([0.0, 0.5, 0.6 * span[2]])
+            w2c2 = make_w2c(eye2, center - np.array([0.0, 0.0, 0.5 * span[2]]))
+            img2 = render_gsplat(w2c2, fx_in=1000.0, fy_in=1000.0, cx_in=panel_w/2.0, cy_in=panel_h/2.0)
 
-        y_cam = np.cross(x_cam, z_cam)
+        # 3. Elevated 3/4 Cutaway Overview
+        print("Rendering View 3: Elevated 3/4 Cutaway Overview...")
+        eye3 = center + np.array([-1.2 * span[0], 1.4 * span[1] + 1.2, -1.2 * span[2]])
+        w2c3 = make_w2c(eye3, center)
+        title3 = "View 3: Elevated 3/4 Cutaway Overview"
+        f_ov = 1000.0
+        img3 = render_gsplat(w2c3, fx_in=f_ov, fy_in=f_ov, cx_in=panel_w/2.0, cy_in=panel_h/2.0)
 
-        # World to camera transform
-        rel = pts - eye
-        cx = np.dot(rel, x_cam)
-        cy = np.dot(rel, y_cam)
-        cz = np.dot(rel, z_cam)
+        # 4. Floor Plan Top-Down (XZ Layout)
+        print("Rendering View 4: Floor Plan Top-Down (XZ Layout)...")
+        eye4 = center + np.array([0.0, max(span[0], span[2]) * 1.5, 0.0])
+        w2c4 = make_w2c(eye4, center, up=np.array([0.0, 0.0, -1.0]))
+        title4 = "View 4: Floor Plan Top-Down (XZ Layout)"
+        f_top = 900.0
+        img4 = render_gsplat(w2c4, fx_in=f_top, fy_in=f_top, cx_in=panel_w/2.0, cy_in=panel_h/2.0)
 
-        # In front of camera
-        valid = cz > 0.2
-        cx, cy, cz = cx[valid], cy[valid], cz[valid]
-        c_rgb = rgb[valid]
-        c_scale = scales[valid]
+    else:
+        # Fallback to CPU projection for non-CUDA test environments
+        print("Using CPU point projection fallback...")
+        def render_cpu(eye, lookat, up):
+            w2c = make_w2c(eye, lookat, up)
+            R = w2c[:3, :3]
+            t = w2c[:3, 3]
+            cam_pts = (R @ pts.T).T + t
+            valid = cam_pts[:, 2] > 0.1
+            cx_p, cy_p, cz_p = cam_pts[valid, 0], cam_pts[valid, 1], cam_pts[valid, 2]
+            f = 800.0
+            px = np.clip(panel_w / 2.0 + (cx_p / cz_p) * f, 0, panel_w - 1).astype(int)
+            py = np.clip(panel_h / 2.0 + (cy_p / cz_p) * f, 0, panel_h - 1).astype(int)
+            canvas = np.zeros((panel_h, panel_w, 3), dtype=np.uint8)
+            canvas[py, px] = [200, 200, 200]
+            return Image.fromarray(canvas)
 
-        f = (h / 2.0) / math.tan(math.radians(fov_deg / 2.0))
-        px = (w / 2.0 + (cx / cz) * f).astype(np.int32)
-        py = (h / 2.0 - (cy / cz) * f).astype(np.int32)
-        r_pix = np.clip(((c_scale / cz) * f * 1.5), 1, 8).astype(np.int32)
+        title1 = "View 1: Interior View A"
+        img1 = render_cpu(center + [0, 0.5, -5], center, [0, 1, 0])
+        title2 = "View 2: Interior View B"
+        img2 = render_cpu(center + [0, 0.5, 5], center, [0, 1, 0])
+        title3 = "View 3: Elevated Overview"
+        img3 = render_cpu(center + [-8, 8, -8], center, [0, 1, 0])
+        title4 = "View 4: Floor Plan Top-Down"
+        img4 = render_cpu(center + [0, 15, 0], center, [0, 0, -1])
 
-        # Filter within screen bounds
-        on_screen = (px >= 0) & (px < w) & (py >= 0) & (py < h)
-        px = px[on_screen]
-        py = py[on_screen]
-        cz = cz[on_screen]
-        c_rgb = c_rgb[on_screen]
-        r_pix = r_pix[on_screen]
+    # Assemble 2x2 Composite Sheet (2560 x 1920)
+    print("Assembling 2560x1920 4-panel proof sheet...")
+    sheet = Image.new("RGB", (panel_w * 2, panel_h * 2 + 60), color=(15, 17, 23))
+    sheet.paste(img1, (0, 0))
+    sheet.paste(img2, (panel_w, 0))
+    sheet.paste(img3, (0, panel_h))
+    sheet.paste(img4, (panel_w, panel_h))
 
-        # Sort back-to-front by depth
-        order = np.argsort(-cz)
-        px = px[order]
-        py = py[order]
-        c_rgb = c_rgb[order]
-        r_pix = r_pix[order]
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
 
-        # Draw onto canvas (dark slate background)
-        img = Image.new("RGB", (w, h), (18, 20, 26))
-        draw = ImageDraw.Draw(img)
-
-        # Fast vectorized pixel splatting with small disk stamps
-        for i in range(len(px)):
-            x0, y0 = px[i], py[i]
-            rad = r_pix[i]
-            col = tuple(int(c) for c in c_rgb[i])
-            if rad <= 1:
-                draw.point((x0, y0), fill=col)
-            else:
-                draw.ellipse((x0 - rad, y0 - rad, x0 + rad, y0 + rad), fill=col)
-
-        return img
-
-    def render_ortho(axis_u, axis_v, range_u, range_v, invert_v=True):
-        u = np.dot(pts, axis_u)
-        v = np.dot(pts, axis_v)
-
-        px = ((u - range_u[0]) / (range_u[1] - range_u[0]) * (w - 40) + 20).astype(np.int32)
-        if invert_v:
-            py = ((range_v[1] - v) / (range_v[1] - range_v[0]) * (h - 40) + 20).astype(np.int32)
-        else:
-            py = ((v - range_v[0]) / (range_v[1] - range_v[0]) * (h - 40) + 20).astype(np.int32)
-
-        on_screen = (px >= 0) & (px < w) & (py >= 0) & (py < h)
-        px = px[on_screen]
-        py = py[on_screen]
-        c_rgb = rgb[on_screen]
-
-        img = Image.new("RGB", (w, h), (18, 20, 26))
-        draw = ImageDraw.Draw(img)
-
-        # Draw grid lines
-        for gx in range(50, w, 100):
-            draw.line([(gx, 0), (gx, h)], fill=(32, 36, 48), width=1)
-        for gy in range(50, h, 100):
-            draw.line([(0, gy), (w, gy)], fill=(32, 36, 48), width=1)
-
-        # Splat points
-        for i in range(len(px)):
-            draw.point((px[i], py[i]), fill=tuple(int(c) for c in c_rgb[i]))
-
-        return img
-
-    print("Rendering View 1: Perspective Overview...")
-    # Perspective Overview
-    eye_persp = [center[0] - span[0] * 0.9, center[1] + span[1] * 1.3, center[2] - span[2] * 0.9]
-    v1 = render_pinhole(eye_persp, center, [0, 1, 0], fov_deg=65.0)
-
-    print("Rendering View 2: Eye-Level Interior Walkthrough...")
-    # Eye-Level Walkthrough (Y = 1.5m above floor)
-    eye_walk = [center[0] - span[0] * 0.1, 1.5, p_min[2] + 2.0]
-    lookat_walk = [center[0], 1.5, center[2] + span[2] * 0.4]
-    v2 = render_pinhole(eye_walk, lookat_walk, [0, 1, 0], fov_deg=75.0)
-
-    print("Rendering View 3: Side Elevation (Floor Level Check)...")
-    # Side elevation: X vs Y
-    v3 = render_ortho(
-        axis_u=[1, 0, 0],
-        axis_v=[0, 1, 0],
-        range_u=[p_min[0] - 1.0, p_max[0] + 1.0],
-        range_v=[-0.5, p_max[1] + 1.0],
-        invert_v=True
-    )
-    # Draw Y=0 floor reference line on View 3
-    draw3 = ImageDraw.Draw(v3)
-    y0_py = int((p_max[1] + 1.0 - 0.0) / (p_max[1] + 1.5) * (h - 40) + 20)
-    draw3.line([(0, y0_py), (w, y0_py)], fill=(40, 200, 120), width=2)
-    draw3.text((30, y0_py - 20), "Y = 0.000m Floor Datum", fill=(40, 200, 120))
-
-    print("Rendering View 4: Floor Plan Top-Down (XZ)...")
-    # Top-Down Floor Plan: X vs Z
-    v4 = render_ortho(
-        axis_u=[1, 0, 0],
-        axis_v=[0, 0, 1],
-        range_u=[p_min[0] - 1.0, p_max[0] + 1.0],
-        range_v=[p_min[2] - 1.0, p_max[2] + 1.0],
-        invert_v=True
-    )
-
-    # Composite into 2x2 sheet (1920 x 1080)
-    sheet = Image.new("RGB", (w * 2, h * 2), (12, 14, 18))
-    sheet.paste(v1, (0, 0))
-    sheet.paste(v2, (w, 0))
-    sheet.paste(v3, (0, h))
-    sheet.paste(v4, (w, h))
-
-    draw_sheet = ImageDraw.Draw(sheet)
-    # Overlay titles
-    titles = [
-        ((20, 20), "1. PERSPECTIVE ROOM OVERVIEW (3DGS SPLATFACTO)", (255, 255, 255)),
-        ((w + 20, 20), "2. EYE-LEVEL INTERIOR WALKTHROUGH (Y = 1.50m)", (255, 255, 255)),
-        ((20, h + 20), "3. SIDE ELEVATION (FLOOR LEVEL Y = 0.000m VERIFIED)", (80, 220, 140)),
-        ((w + 20, h + 20), "4. FLOOR PLAN TOP-DOWN (XZ INTERIOR BOUNDS)", (255, 255, 255)),
+    # Draw titles on each panel
+    panels = [
+        (title1, 20, 20),
+        (title2, panel_w + 20, 20),
+        (title3, 20, panel_h + 20),
+        (title4, panel_w + 20, panel_h + 20),
     ]
-    for pos, text, col in titles:
-        # Draw backdrop pill
-        bbox = draw_sheet.textbbox(pos, text)
-        draw_sheet.rectangle((bbox[0]-6, bbox[1]-4, bbox[2]+6, bbox[3]+4), fill=(0, 0, 0, 200))
-        draw_sheet.text(pos, text, fill=col)
+    for text, px, py in panels:
+        # Background pill
+        draw.rectangle([px - 6, py - 4, px + len(text) * 8 + 12, py + 22], fill=(10, 14, 20))
+        draw.text((px, py), text, fill=(56, 189, 248), font=font)
 
-    # Header banner
-    draw_sheet.rectangle((0, 0, w * 2, 14), fill=(34, 197, 94))
+    # Info footer
+    footer_text = (
+        f"ScanForge 3DGS Verification | Model: {p_path.name} | Gaussians: {num_points:,} | "
+        f"Bounds: X=[{p_min_rob[0]:.2f}, {p_max_rob[0]:.2f}], Y=[{p_min_rob[1]:.2f}, {p_max_rob[1]:.2f}], Z=[{p_min_rob[2]:.2f}, {p_max_rob[2]:.2f}] | "
+        f"CUDA Rasterizer: {'gsplat 1.4.0' if has_cuda_gsplat else 'CPU Fallback'}"
+    )
+    draw.text((25, panel_h * 2 + 20), footer_text, fill=(148, 163, 184), font=font)
 
     out_p = Path(output_image_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
@@ -211,6 +323,7 @@ def render_splat_views(ply_path: str, output_image_path: str):
 
 
 if __name__ == "__main__":
-    ply_arg = sys.argv[1] if len(sys.argv) > 1 else "/tmp/cleaned_splat.ply"
-    out_arg = sys.argv[2] if len(sys.argv) > 2 else "outputs/splat_house_4views.png"
-    render_splat_views(ply_arg, out_arg)
+    if len(sys.argv) < 3:
+        print("Usage: python3 render_splat_views.py <splat.ply> <output.png>")
+        sys.exit(1)
+    render_splat_views(sys.argv[1], sys.argv[2])

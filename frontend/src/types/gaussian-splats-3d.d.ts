@@ -2,6 +2,7 @@ declare module '@mkkellogg/gaussian-splats-3d' {
   export const SceneFormat: {
     Splat: number;
     Ply: number;
+    KSplat: number;
     Ksplat: number;
     Spz: number;
   };
@@ -17,3 +18,4 @@ declare module '@mkkellogg/gaussian-splats-3d' {
     splatMesh: any;
   }
 }
+

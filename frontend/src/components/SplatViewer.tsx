@@ -89,13 +89,17 @@ export const SplatViewer: React.FC<Props> = ({
     let viewer: any = null;
 
     try {
-      // Determine format from URL
+      // Determine format from URL with explicit fallback
       let format = GaussianSplats3D.SceneFormat.Splat;
       const lower = splatUrl.toLowerCase();
-      if (lower.endsWith(".ply")) {
+      if (lower.endsWith(".ply") || lower.includes("/ply") || lower.includes("format=ply")) {
         format = GaussianSplats3D.SceneFormat.Ply;
-      } else if (lower.endsWith(".spz")) {
+      } else if (lower.endsWith(".spz") || lower.includes("/spz") || lower.includes("format=spz")) {
         format = GaussianSplats3D.SceneFormat.Spz;
+      } else if (lower.endsWith(".ksplat") || lower.includes("/ksplat")) {
+        format = GaussianSplats3D.SceneFormat.KSplat;
+      } else {
+        format = GaussianSplats3D.SceneFormat.Splat;
       }
 
       viewer = new GaussianSplats3D.Viewer({

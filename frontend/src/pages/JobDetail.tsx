@@ -325,12 +325,12 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
           {(() => {
             if (job?.scan_type === "gaussian_splat") {
               const splatArtifact =
-                job.artifacts?.find((a) => a.filename.endsWith(".splat")) ||
-                job.artifacts?.find((a) => a.filename.endsWith(".ply")) ||
-                job.artifacts?.find((a) => a.filename.endsWith(".spz"));
+                job.artifacts?.find((a) => a.format === "splat" || a.filename.endsWith(".splat")) ||
+                job.artifacts?.find((a) => a.format === "ply" || a.filename.endsWith(".ply")) ||
+                job.artifacts?.find((a) => a.format === "spz" || a.filename.endsWith(".spz"));
               const splatUrl = splatArtifact
-                ? splatArtifact.download_url
-                : `/api/jobs/${job.id}/artifacts/cleaned_splat.splat`;
+                ? `/api/jobs/${job.id}/download/${splatArtifact.filename}`
+                : `/api/jobs/${job.id}/download/model.splat`;
 
               return (
                 <SplatViewer
