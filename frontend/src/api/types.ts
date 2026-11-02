@@ -11,6 +11,18 @@ export interface JobOptions {
   units?: "m" | "cm" | "mm";
   mask_background?: boolean;
   min_registration_ratio?: number;
+  sfm_telemetry?: {
+    registered_frames: number;
+    total_frames: number;
+    registration_ratio: number;
+    point_count: number;
+    mean_reprojection_error: number;
+    peak_vram_mb: number;
+    peak_ram_mb: number;
+    matcher_used: string;
+    sfm_duration_seconds: number;
+  };
+  [key: string]: any;
 }
 
 export interface Artifact {
@@ -76,6 +88,17 @@ export interface JobReport {
   vertex_count: number;
   face_count: number;
   hole_count: number;
+  gaussian_count?: number;
+  raw_gaussian_count?: number;
+  retention_pct?: number;
+  bounds?: {
+    min_x: number;
+    max_x: number;
+    min_y: number;
+    max_y: number;
+    min_z: number;
+    max_z: number;
+  };
   dimensions_meters: {
     length: number;
     width: number;

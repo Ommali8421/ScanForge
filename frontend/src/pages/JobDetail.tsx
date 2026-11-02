@@ -66,12 +66,14 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
 
         if (data.artifacts?.some((a) => a.filename === "sfm_report.json")) {
           try {
-            const res = await fetch(getDownloadUrl(jobId, "json"));
+            const res = await fetch(`/api/jobs/${jobId}/artifacts/sfm_report.json`);
             if (res.ok) {
               const sfm = await res.json();
               setSfmReport(sfm);
             }
-          } catch {}
+          } catch (e) {
+            console.error("Failed to load sfm_report.json:", e);
+          }
         }
 
         try {
@@ -325,17 +327,23 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
           {(() => {
             if (job?.scan_type === "gaussian_splat") {
               const splatArtifact =
-                job.artifacts?.find((a) => a.format === "splat" || a.filename.endsWith(".splat")) ||
-                job.artifacts?.find((a) => a.format === "ply" || a.filename.endsWith(".ply")) ||
-                job.artifacts?.find((a) => a.format === "spz" || a.filename.endsWith(".spz"));
+                job.artifacts?.find((a) => a.filename === "model.splat") ||
+                job.artifacts?.find((a) => a.filename === "cleaned_splat.splat") ||
+                job.artifacts?.find((a) => a.filename.endsWith(".splat")) ||
+                job.artifacts?.find((a) => a.filename === "model.ply") ||
+                job.artifacts?.find((a) => a.filename === "cleaned_splat.ply") ||
+                job.artifacts?.find((a) => a.filename.endsWith(".ply")) ||
+                job.artifacts?.find((a) => a.filename.endsWith(".spz"));
               const splatUrl = splatArtifact
-                ? `/api/jobs/${job.id}/download/${splatArtifact.filename}`
-                : `/api/jobs/${job.id}/download/model.splat`;
+                ? `/api/jobs/${job.id}/artifacts/${splatArtifact.filename}`
+                : `/api/jobs/${job.id}/download/splat/model.splat`;
 
               return (
                 <SplatViewer
                   splatUrl={splatUrl}
                   jobId={job.id}
+                  splatCount={report?.gaussian_count}
+                  bounds={report?.bounds}
                   onDownload={(fmt) => window.open(getDownloadUrl(job.id, fmt), "_blank")}
                   availableFormats={job.output_formats || ["splat", "ply", "zip"]}
                 />
@@ -442,12 +450,44 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
-                {job.artifacts
-                  .filter((art) => !art.filename.endsWith(".json") && !art.filename.endsWith(".png"))
-                  .map((art: Artifact) => (
+                {(() => {
+                  const all = job.artifacts || [];
+                  const hasModelSplat = all.some((a) => a.filename === "model.splat");
+                  const hasModelPly = all.some((a) => a.filename === "model.ply");
+                  const hasModelGlb = all.some((a) => a.filename === "model.glb" || a.filename === "mesh.glb");
+
+                  const deliverables = all.filter((art) => {
+                    const fn = art.filename.toLowerCase();
+                    // Exclude non-deliverable files
+                    if (
+                      fn.endsWith(".json") ||
+                      fn.endsWith(".png") ||
+                      fn.endsWith(".jpg") ||
+                      fn.endsWith(".mp4") ||
+                      fn.endsWith(".mov") ||
+                      fn.endsWith(".avi") ||
+                      fn.endsWith(".log") ||
+                      fn.endsWith(".yml") ||
+                      fn.endsWith(".yaml") ||
+                      fn === "frames" ||
+                      fn === "sparse.ply" ||
+                      fn === "splat.ply"
+                    ) {
+                      return false;
+                    }
+                    // Deduplicate cleaned vs model
+                    if (hasModelSplat && fn === "cleaned_splat.splat") return false;
+                    if (hasModelPly && fn === "cleaned_splat.ply") return false;
+                    if (hasModelGlb && (fn.startsWith("preview_") || fn.startsWith("scene_"))) return false;
+
+                    const validExts = [".splat", ".ply", ".spz", ".glb", ".gltf", ".zip", ".fbx", ".usdz", ".stl", ".xyz"];
+                    return validExts.some((ext) => fn.endsWith(ext));
+                  });
+
+                  return deliverables.map((art: Artifact) => (
                     <a
                       key={art.id}
-                      href={getDownloadUrl(job.id, art.format)}
+                      href={art.download_url || `/api/jobs/${job.id}/artifacts/${art.filename}`}
                       download={art.filename}
                       className="p-3.5 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 hover:border-cyan-500/50 hover:bg-zinc-900 text-white text-xs font-semibold flex items-center justify-between group transition-all shadow-sm"
                     >
@@ -464,7 +504,8 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
                         {(art.size_bytes / 1024).toFixed(0)} KB
                       </span>
                     </a>
-                  ))}
+                  ));
+                })()}
               </div>
             </div>
           )}
@@ -524,60 +565,67 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
       )}
 
       {/* SfM Metrics & Trajectory Plot */}
-      {(sfmReport || job.artifacts?.some((a) => a.filename === "camera_path.png")) && (
-        <div className="bg-zinc-950/80 border border-zinc-800 rounded-3xl p-6 shadow-xl space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-white tracking-tight">
-              SfM Camera Trajectory & Convergence Metrics
-            </h3>
-            {sfmReport && (
-              <span className="text-xs text-cyan-400 font-mono font-bold">
-                {sfmReport.registered_frames} / {sfmReport.total_frames} frames registered (
-                {(sfmReport.registration_ratio * 100).toFixed(1)}%)
-              </span>
+      {(() => {
+        const activeSfm = sfmReport || job.options?.sfm_telemetry;
+        if (!activeSfm && !job.artifacts?.some((a) => a.filename === "camera_path.png")) {
+          return null;
+        }
+
+        return (
+          <div className="bg-zinc-950/80 border border-zinc-800 rounded-3xl p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white tracking-tight">
+                SfM Camera Trajectory & Convergence Metrics
+              </h3>
+              {activeSfm && (
+                <span className="text-xs text-cyan-400 font-mono font-bold">
+                  {activeSfm.registered_frames} / {activeSfm.total_frames} frames registered (
+                  {(activeSfm.registration_ratio * 100).toFixed(1)}%)
+                </span>
+              )}
+            </div>
+
+            {activeSfm && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-3.5">
+                  <div className="text-zinc-400 font-medium">Sparse 3D Points</div>
+                  <div className="text-white font-bold text-base font-mono mt-0.5 tabular-nums">
+                    {activeSfm.point_count?.toLocaleString()}
+                  </div>
+                </div>
+                <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-3.5">
+                  <div className="text-zinc-400 font-medium">Reprojection Error</div>
+                  <div className="text-white font-bold text-base font-mono mt-0.5 tabular-nums">
+                    {activeSfm.mean_reprojection_error} px
+                  </div>
+                </div>
+                <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-3.5">
+                  <div className="text-zinc-400 font-medium">Peak VRAM / RAM</div>
+                  <div className="text-white font-bold text-base font-mono mt-0.5 tabular-nums">
+                    {activeSfm.peak_vram_mb} MB / {activeSfm.peak_ram_mb} MB
+                  </div>
+                </div>
+                <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-3.5">
+                  <div className="text-zinc-400 font-medium">Matcher / Duration</div>
+                  <div className="text-white font-bold text-base font-mono mt-0.5 tabular-nums">
+                    {activeSfm.matcher_used} ({activeSfm.sfm_duration_seconds}s)
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {job.artifacts?.some((a: Artifact) => a.filename === "camera_path.png") && (
+              <div className="border border-zinc-800 rounded-2xl overflow-hidden bg-black flex justify-center p-2">
+                <img
+                  src={`/api/jobs/${job.id}/artifacts/camera_path.png`}
+                  alt="Camera Trajectory"
+                  className="max-h-96 object-contain"
+                />
+              </div>
             )}
           </div>
-
-          {sfmReport && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-3.5">
-                <div className="text-zinc-400 font-medium">Sparse 3D Points</div>
-                <div className="text-white font-bold text-base font-mono mt-0.5 tabular-nums">
-                  {sfmReport.point_count?.toLocaleString()}
-                </div>
-              </div>
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-3.5">
-                <div className="text-zinc-400 font-medium">Reprojection Error</div>
-                <div className="text-white font-bold text-base font-mono mt-0.5 tabular-nums">
-                  {sfmReport.mean_reprojection_error} px
-                </div>
-              </div>
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-3.5">
-                <div className="text-zinc-400 font-medium">Peak VRAM / RAM</div>
-                <div className="text-white font-bold text-base font-mono mt-0.5 tabular-nums">
-                  {sfmReport.peak_vram_mb} MB / {sfmReport.peak_ram_mb} MB
-                </div>
-              </div>
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-3.5">
-                <div className="text-zinc-400 font-medium">Matcher / Duration</div>
-                <div className="text-white font-bold text-base font-mono mt-0.5 tabular-nums">
-                  {sfmReport.matcher_used} ({sfmReport.sfm_duration_seconds}s)
-                </div>
-              </div>
-            </div>
-          )}
-
-          {job.artifacts?.some((a: Artifact) => a.filename === "camera_path.png") && (
-            <div className="border border-zinc-800 rounded-2xl overflow-hidden bg-black flex justify-center p-2">
-              <img
-                src={getDownloadUrl(job.id, "png")}
-                alt="Camera Trajectory"
-                className="max-h-96 object-contain"
-              />
-            </div>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {/* Terminal Log Console */}
       <LogPanel logs={allLogs} jobId={job.id} />

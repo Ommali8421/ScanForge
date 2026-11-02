@@ -106,9 +106,9 @@ class DimensionsMeters(BaseModel):
 
 
 class JobReport(BaseModel):
-    vertex_count: int
-    face_count: int
-    hole_count: int
+    vertex_count: int = 0
+    face_count: int = 0
+    hole_count: int = 0
     dimensions_meters: DimensionsMeters
     floor_area_sqm: float
     cumulative_scale: float
@@ -117,6 +117,10 @@ class JobReport(BaseModel):
     is_watertight: bool = False
     non_manifold_edges: int = 0
     quality_grade: str = "B"
+    gaussian_count: Optional[int] = None
+    raw_gaussian_count: Optional[int] = None
+    retention_pct: Optional[float] = None
+    bounds: Optional[Dict[str, float]] = None
 
 
 class CapabilitiesResponse(BaseModel):

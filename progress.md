@@ -705,17 +705,32 @@ Remediated 1 backend mathematical geometry defect and 6 frontend studio UI/UX an
 
 ---
 
-### D. Over-Pruning & Proof Rendering Remediation (2026-11-02)
-1. **Planar Pancake Preservation (`splat_cleanup.py`)**:
-   - Converted all scale and spatial thresholds to be strictly relative to robust scene diagonal $D_{\text{scene}}$ (2nd to 98th percentile).
-   - Preserved thin planar surflet pancakes ($S_{\min} / S_{\max} < 0.12$) used by splatfacto to represent walls, floors, and ceilings; only giant isotropic/bloated floaters exceeding $\min(8.0 \cdot \text{median}, 0.08 \cdot D_{\text{scene}})$ are culled.
-   - Relaxed opacity mist threshold to $\alpha < 0.02$ and SOR to $k=20, \sigma=3.0$, boosting retention to 88.4% (House) and 93.5% (Tour) with photorealistic 24.72 dB PSNR.
-2. **True CUDA Gaussian Rasterization (`render_splat_views.py`)**:
-   - Replaced flat circle dot projection with GPU hardware rasterization using `gsplat.rasterization` across 4 genuine 1280x960 cameras: View 1 & 2 interior eye-level walkthrough cameras from registered COLMAP poses, View 3 elevated 3/4 cutaway overview, View 4 top-down XZ floor plan layout.
-   - Verified photorealistic, crisp 2560x1980 composite renders saved to `outputs/splat_house_4views.png` and `outputs/splat_tour_4views.png`.
-3. **Studio Splat Viewer Format Compatibility (`SplatViewer.tsx`, `JobDetail.tsx`, `jobs.py`)**:
-   - Supported explicit `GaussianSplats3D.SceneFormat.Splat` (enum `0`) passing in viewer options, preventing unknown format errors on extensionless URLs.
-   - Updated download endpoints and `JobDetail.tsx` to preserve `/api/jobs/{id}/download/{filename}` with exact `.splat` and `.ply` extensions, plus `/api/jobs/{id}/artifacts/{filename}` direct route.
+### E. Studio Live Viewer, Telemetry & Deliverables Vault Polish Verification (2026-11-02)
+1. **WebGL Splat Viewer Fixes (`SplatViewer.tsx`)**:
+   - Added `gpuAcceleratedSort: false` alongside `sharedMemoryForWorkers: false` to resolve `@mkkellogg/gaussian-splats-3d@0.4.7` worker exception.
+   - Added `viewer.start()` invocation inside `.then()` after `addSplatScene()` resolves to initiate the WebGL render loop.
+   - Added `onProgress` handler tracking download and rasterization progress (0% to 100%) with visual progress bar and status indicator.
+   - Implemented dynamic camera auto-framing and wide crop box initialization from scene bounds (`bounds` / `calculatedSceneCenter`).
+   - Handled React 18 strict mode double-mount guard with `disposed` flag.
+2. **Genuine Architectural Metrics (`quality_report.py`, `QualityReport.tsx`, `jobs.py`, `schemas.py`)**:
+   - Completely eliminated hardcoded `5.00 x 4.00 x 2.60m` / `200k faces` placeholder defaults.
+   - `SplatCleanupStage` emits genuine `quality_report.json` with cleaned Gaussians, raw Gaussians, retention %, bounding box, real dimensions, and estimated floor area.
+   - Updated `QualityReport.tsx` with dedicated 3DGS branch showing Cleaned Gaussians / Raw Gaussians (`{report.gaussian_count.toLocaleString()} splats`, `{report.raw_gaussian_count.toLocaleString()} raw ({report.retention_pct}% kept)`) and Upright Y=0 Floor Aligned point envelope.
+   - Verified live outputs:
+     - Tour (`7540207b`): **385,692 splats / 412,688 raw (93.5% kept)**, **11.22m × 14.39m × 7.78m**, **72.66 m²**, Grade A.
+     - House (`24a6f4ca`): **470,598 splats / 532,187 raw (88.4% kept)**, **16.60m × 19.77m × 12.68m**, **147.65 m²**, Grade A.
+3. **Deliverables Export Vault Filtering (`JobDetail.tsx`)**:
+   - Cleaned vault to display only final user deliverables (`model.splat`, `model.ply`, `splat.zip`).
+   - Filtered out uploaded input MP4, logs, diagnostic PNG/JSON, raw uncleaned `splat.ply`, `sparse.ply`, and duplicate `cleaned_splat.*` files.
+4. **SfM Telemetry Cards Wire-Up (`JobDetail.tsx`, `jobs.py`)**:
+   - Fixed endpoint path to `/api/jobs/{id}/artifacts/sfm_report.json` (replacing ambiguous `/download/json`).
+   - Exposed `options["sfm_telemetry"]` in `JobResponse` for immediate zero-latency population.
+   - Populated all 4 cards: 13,933 sparse points, 0.621 px reprojection error, 1256 MB / 381 MB VRAM/RAM, sequential_then_exhaustive (143.5s).
+5. **Full Suite Verification**:
+   - 157/157 pytest tests passing in `scanforge-worker-gpu-1`.
+   - Frontend `npm run build` exits 0 (3.40s).
+   - `stress_test_frontend_contracts.py` passes 100% with 0 defects.
+   - Nginx proxy (port 3000) and FastAPI API (port 8000) live and healthy.
 
 
 

@@ -102,31 +102,61 @@ export const QualityReport: React.FC<Props> = ({ report, onActivateMeasure }) =>
           </span>
         </div>
 
-        {/* Mesh Density */}
-        <div className="bg-zinc-900/60 p-4 rounded-2xl border border-zinc-800/80 shadow-inner flex flex-col justify-between">
-          <span className="text-[11px] text-zinc-400 font-medium block mb-1">
-            Mesh Topology
-          </span>
-          <div className="text-base font-bold text-white font-mono tabular-nums my-1">
-            {report.face_count.toLocaleString()} faces
+        {/* Mesh Density or Splat Density */}
+        {report.gaussian_count != null ? (
+          <div className="bg-zinc-900/60 p-4 rounded-2xl border border-zinc-800/80 shadow-inner flex flex-col justify-between">
+            <span className="text-[11px] text-zinc-400 font-medium block mb-1">
+              Splat Density
+            </span>
+            <div className="text-base font-bold text-white font-mono tabular-nums my-1">
+              {report.gaussian_count.toLocaleString()} splats
+            </div>
+            <span className="text-[10px] text-zinc-400 font-mono block">
+              {report.raw_gaussian_count
+                ? `${report.raw_gaussian_count.toLocaleString()} raw (${report.retention_pct ?? 100}% kept)`
+                : "Cleaned Gaussians"}
+            </span>
           </div>
-          <span className="text-[10px] text-zinc-400 font-mono block">
-            {report.vertex_count.toLocaleString()} vertices
-          </span>
-        </div>
+        ) : (
+          <div className="bg-zinc-900/60 p-4 rounded-2xl border border-zinc-800/80 shadow-inner flex flex-col justify-between">
+            <span className="text-[11px] text-zinc-400 font-medium block mb-1">
+              Mesh Topology
+            </span>
+            <div className="text-base font-bold text-white font-mono tabular-nums my-1">
+              {report.face_count.toLocaleString()} faces
+            </div>
+            <span className="text-[10px] text-zinc-400 font-mono block">
+              {report.vertex_count.toLocaleString()} vertices
+            </span>
+          </div>
+        )}
 
-        {/* Scale & Manifold Integrity */}
-        <div className="bg-zinc-900/60 p-4 rounded-2xl border border-zinc-800/80 shadow-inner flex flex-col justify-between">
-          <span className="text-[11px] text-zinc-400 font-medium block mb-1">
-            Manifold Integrity
-          </span>
-          <div className="text-base font-bold text-indigo-300 font-mono tabular-nums my-1">
-            {report.cumulative_scale.toFixed(3)}x Scale
+        {/* Scale & Manifold Integrity or Splat Envelope */}
+        {report.gaussian_count != null ? (
+          <div className="bg-zinc-900/60 p-4 rounded-2xl border border-zinc-800/80 shadow-inner flex flex-col justify-between">
+            <span className="text-[11px] text-zinc-400 font-medium block mb-1">
+              Spatial Envelope
+            </span>
+            <div className="text-base font-bold text-indigo-300 font-mono tabular-nums my-1">
+              {report.cumulative_scale.toFixed(3)}x Scale
+            </div>
+            <span className="text-[10px] text-emerald-400 font-medium block">
+              Upright Y=0 Floor Aligned
+            </span>
           </div>
-          <span className="text-[10px] text-emerald-400 font-medium block">
-            {report.is_watertight ? "Watertight Manifold" : "Planar Open Boundaries"}
-          </span>
-        </div>
+        ) : (
+          <div className="bg-zinc-900/60 p-4 rounded-2xl border border-zinc-800/80 shadow-inner flex flex-col justify-between">
+            <span className="text-[11px] text-zinc-400 font-medium block mb-1">
+              Manifold Integrity
+            </span>
+            <div className="text-base font-bold text-indigo-300 font-mono tabular-nums my-1">
+              {report.cumulative_scale.toFixed(3)}x Scale
+            </div>
+            <span className="text-[10px] text-emerald-400 font-medium block">
+              {report.is_watertight ? "Watertight Manifold" : "Planar Open Boundaries"}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

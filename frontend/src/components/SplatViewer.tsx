@@ -24,6 +24,19 @@ interface Props {
   splatUrl: string; // URL to .splat, .ply, or .spz
   jobId?: string;
   splatCount?: number;
+  bounds?: {
+    min_x: number;
+    max_x: number;
+    min_y: number;
+    max_y: number;
+    min_z: number;
+    max_z: number;
+  };
+  dimensions?: {
+    length: number;
+    width: number;
+    height: number;
+  };
   onDownload?: (format: string) => void;
   availableFormats?: string[];
 }
@@ -32,6 +45,8 @@ export const SplatViewer: React.FC<Props> = ({
   splatUrl,
   jobId: _jobId,
   splatCount,
+  bounds,
+  dimensions: _dimensions,
   onDownload,
   availableFormats = ["splat", "ply", "zip"],
 }) => {
@@ -39,6 +54,8 @@ export const SplatViewer: React.FC<Props> = ({
   const viewerRef = useRef<any>(null);
 
   const [loading, setLoading] = useState(true);
+  const [loadProgress, setLoadProgress] = useState(0);
+  const [loadingStage, setLoadingStage] = useState("Streaming 3D Gaussian Splats...");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [theme, setTheme] = useState<SplatTheme>("dark-slate");
   const [splatScale, setSplatScale] = useState(1.0);
@@ -47,12 +64,12 @@ export const SplatViewer: React.FC<Props> = ({
 
   // 6-slider crop box state
   const [cropBox, setCropBox] = useState<CropBox>({
-    minX: -10,
-    maxX: 10,
+    minX: -15,
+    maxX: 15,
     minY: -0.5,
-    maxY: 6,
-    minZ: -10,
-    maxZ: 10,
+    maxY: 8,
+    minZ: -15,
+    maxZ: 15,
   });
 
   const getThemeBg = (t: SplatTheme) => {
@@ -83,6 +100,8 @@ export const SplatViewer: React.FC<Props> = ({
     if (!containerRef.current || !splatUrl) return;
 
     setLoading(true);
+    setLoadProgress(0);
+    setLoadingStage("Connecting to 3DGS WebGL Stream...");
     setLoadError(null);
 
     let disposed = false;
@@ -108,6 +127,9 @@ export const SplatViewer: React.FC<Props> = ({
         initialCameraPosition: [0, 1.6, 3.5],
         initialCameraLookAt: [0, 1.0, 0],
         sharedMemoryForWorkers: false, // Prevents Chrome/Edge SharedArrayBuffer crashes
+        gpuAcceleratedSort: false,     // MUST be false when sharedMemoryForWorkers is false in v0.4.7!
+        antialiased: true,
+        sphericalHarmonicsDegree: 0,
         selfDrivenMode: true,
         useBuiltInControls: true,
       });
@@ -122,11 +144,84 @@ export const SplatViewer: React.FC<Props> = ({
           position: [0, 0, 0],
           rotation: [0, 0, 0, 1],
           scale: [1, 1, 1],
+          onProgress: (percent: number) => {
+            if (!disposed) {
+              const p = Math.min(Math.round(percent), 100);
+              setLoadProgress(p);
+              if (p >= 100) {
+                setLoadingStage("Rasterizing 3D Gaussian Splats...");
+              } else {
+                setLoadingStage(`Downloading Splat Payload... ${p}%`);
+              }
+            }
+          },
         })
         .then(() => {
-          if (!disposed) {
-            setLoading(false);
+          if (disposed) return;
+
+          // 1. MUST start viewer animation loop!
+          try {
+            viewer.start();
+          } catch (e) {
+            console.debug("viewer.start error:", e);
           }
+
+          // 2. Dynamic camera & crop auto-framing
+          try {
+            let cx = 0, cy = 1.0, cz = 0;
+            let span = 5.0;
+
+            if (bounds) {
+              cx = (bounds.min_x + bounds.max_x) / 2;
+              cy = (bounds.min_y + bounds.max_y) / 2;
+              cz = (bounds.min_z + bounds.max_z) / 2;
+              span = Math.max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z, 4.0);
+
+              const pad = Math.max(span * 0.2, 2.0);
+              setCropBox({
+                minX: Math.floor(bounds.min_x - pad),
+                maxX: Math.ceil(bounds.max_x + pad),
+                minY: Math.floor(Math.min(-0.5, bounds.min_y - 0.5)),
+                maxY: Math.ceil(bounds.max_y + pad),
+                minZ: Math.floor(bounds.min_z - pad),
+                maxZ: Math.ceil(bounds.max_z + pad),
+              });
+            } else if (viewer.splatMesh?.calculatedSceneCenter) {
+              const sc = viewer.splatMesh.calculatedSceneCenter;
+              cx = sc.x;
+              cy = sc.y;
+              cz = sc.z;
+              span = (viewer.splatMesh.maxSplatDistanceFromSceneCenter || 5.0) * 1.5;
+              setCropBox({
+                minX: Math.floor(cx - span),
+                maxX: Math.ceil(cx + span),
+                minY: Math.floor(Math.min(-0.5, cy - span * 0.5)),
+                maxY: Math.ceil(cy + span),
+                minZ: Math.floor(cz - span),
+                maxZ: Math.ceil(cz + span),
+              });
+            }
+
+            if (viewer.camera) {
+              viewer.camera.near = 0.05;
+              viewer.camera.far = 2000.0;
+              viewer.camera.updateProjectionMatrix();
+
+              // Place eye-level camera slightly back from centroid looking slightly down
+              const camY = Math.max(cy + 0.5, 1.4);
+              viewer.camera.position.set(cx, camY, cz + span * 0.65);
+              if (viewer.controls?.target) {
+                viewer.controls.target.set(cx, cy, cz);
+                if (typeof viewer.controls.update === "function") {
+                  viewer.controls.update();
+                }
+              }
+            }
+          } catch (e) {
+            console.debug("Camera auto-framing exception:", e);
+          }
+
+          setLoading(false);
         })
         .catch((err: any) => {
           if (!disposed) {
@@ -152,7 +247,7 @@ export const SplatViewer: React.FC<Props> = ({
       }
       viewerRef.current = null;
     };
-  }, [splatUrl]);
+  }, [splatUrl, bounds]);
 
   // WASD walk mode key listeners
   useEffect(() => {
@@ -211,9 +306,26 @@ export const SplatViewer: React.FC<Props> = ({
 
   const handleResetView = () => {
     if (viewerRef.current?.camera) {
-      viewerRef.current.camera.position.set(0, 1.6, 3.5);
-      if (viewerRef.current.controls?.target) {
-        viewerRef.current.controls.target.set(0, 1.0, 0);
+      if (bounds) {
+        const cx = (bounds.min_x + bounds.max_x) / 2;
+        const cy = (bounds.min_y + bounds.max_y) / 2;
+        const cz = (bounds.min_z + bounds.max_z) / 2;
+        const span = Math.max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z, 4.0);
+        viewerRef.current.camera.position.set(cx, Math.max(cy + 0.5, 1.4), cz + span * 0.65);
+        if (viewerRef.current.controls?.target) {
+          viewerRef.current.controls.target.set(cx, cy, cz);
+          if (typeof viewerRef.current.controls.update === "function") {
+            viewerRef.current.controls.update();
+          }
+        }
+      } else {
+        viewerRef.current.camera.position.set(0, 1.6, 3.5);
+        if (viewerRef.current.controls?.target) {
+          viewerRef.current.controls.target.set(0, 1.0, 0);
+          if (typeof viewerRef.current.controls.update === "function") {
+            viewerRef.current.controls.update();
+          }
+        }
       }
     }
   };
@@ -231,7 +343,7 @@ export const SplatViewer: React.FC<Props> = ({
 
   return (
     <div
-      className="relative w-full h-[650px] lg:h-[750px] rounded-3xl overflow-hidden border border-zinc-800/80 shadow-2xl transition-colors duration-300"
+      className="relative w-full h-[560px] lg:h-[650px] rounded-3xl overflow-hidden border border-zinc-800/80 shadow-2xl transition-colors duration-300"
       style={{ backgroundColor: getThemeBg(theme) }}
     >
       {/* 3DGS Canvas Container */}
@@ -239,13 +351,19 @@ export const SplatViewer: React.FC<Props> = ({
 
       {/* Loading Overlay */}
       {loading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/70 backdrop-blur-md z-30 transition-opacity">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/80 backdrop-blur-md z-30 transition-opacity">
           <div className="w-12 h-12 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin mb-4" />
-          <p className="text-sm font-mono text-zinc-300 tracking-wider">
-            Streaming 3D Gaussian Splats...
+          <p className="text-sm font-mono text-zinc-200 tracking-wider font-semibold">
+            {loadingStage}
           </p>
-          <span className="text-xs font-mono text-zinc-500 mt-1">
-            Y=0 floor aligned • 32-byte web stream
+          <div className="w-48 h-1.5 bg-zinc-800 rounded-full overflow-hidden mt-3">
+            <div
+              className="h-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all duration-300"
+              style={{ width: `${Math.max(loadProgress, 5)}%` }}
+            />
+          </div>
+          <span className="text-xs font-mono text-zinc-500 mt-2">
+            Y=0 floor aligned • WebGL CUDA-compatible stream
           </span>
         </div>
       )}
