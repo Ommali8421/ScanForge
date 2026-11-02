@@ -91,11 +91,12 @@ class PlaneRepairStage(Stage):
         # Build list of active dominant planes (floor + walls)
         active_planes = []
         # Floor plane
-        active_planes.append({
-            "name": "floor",
-            "normal": np.array(chosen_floor["normal"], dtype=float),
-            "d": float(chosen_floor["d"]),
-        })
+        if chosen_floor is not None:
+            active_planes.append({
+                "name": "floor",
+                "normal": np.array(chosen_floor["normal"], dtype=float),
+                "d": float(chosen_floor["d"]),
+            })
         # Wall planes
         for i, wp in enumerate(wall_planes):
             active_planes.append({
@@ -106,7 +107,7 @@ class PlaneRepairStage(Stage):
 
         ctx.log_cb(
             f"[PlaneRepair] Loaded {len(active_planes)} active dominant plane(s) "
-            f"(1 floor, {len(wall_planes)} walls). Scene diagonal: {scene_diagonal:.3f}."
+            f"({1 if chosen_floor is not None else 0} floor, {len(wall_planes)} walls). Scene diagonal: {scene_diagonal:.3f}."
         )
 
         mesh = trimesh.load(str(input_ply), process=False)
@@ -214,11 +215,14 @@ class PlaneRepairStage(Stage):
             inside_cam_envelope = np.zeros(len(mesh.faces), dtype=bool)
 
         # Floor pruning: strictly outside camera envelope AND beyond floor plane with margin
-        floor_n = np.array(chosen_floor["normal"], dtype=float)
-        floor_d = float(chosen_floor["d"])
-        below_floor_margin = 0.01 * scene_diagonal
-        face_signed_floor = np.dot(face_centers, floor_n) + floor_d
-        below_floor_faces = (face_signed_floor < -below_floor_margin) & (~inside_cam_envelope)
+        if chosen_floor is not None:
+            floor_n = np.array(chosen_floor["normal"], dtype=float)
+            floor_d = float(chosen_floor["d"])
+            below_floor_margin = 0.01 * scene_diagonal
+            face_signed_floor = np.dot(face_centers, floor_n) + floor_d
+            below_floor_faces = (face_signed_floor < -below_floor_margin) & (~inside_cam_envelope)
+        else:
+            below_floor_faces = np.zeros(len(mesh.faces), dtype=bool)
 
         # Wall envelope pruning: require at least 2 strong wall planes (>= 1000 inliers)
         # Never prune on a single weak or single active wall plane to avoid half-space slicing.

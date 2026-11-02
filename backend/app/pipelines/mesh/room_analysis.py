@@ -251,14 +251,14 @@ class RoomAnalysisStage(Stage):
         wall_planes = []
 
         for p in detected_planes:
-            n = np.array(p["normal"])
-            d = p["d"]
+            n = np.array(p["normal"], dtype=float)
+            d = float(p["d"])
             cos_up = float(np.dot(n, u_grav))
 
-            # If nearly parallel to gravity up: horizontal
-            if abs(cos_up) >= 0.80:
-                # Orient normal strictly pointing in +u_grav direction
-                if cos_up < 0:
+            # Open3D RANSAC normals have arbitrary +/- sign: check unsigned cos_up >= 0.906 (<= 25 degrees from vertical)
+            if abs(cos_up) >= 0.906:
+                # Orient normal strictly pointing in +u_grav direction BEFORE testing floor qualification
+                if cos_up < 0.0:
                     n = -n
                     d = -d
                     cos_up = -cos_up
@@ -384,6 +384,7 @@ class RoomAnalysisStage(Stage):
             "cam_bbox_max": [float(x) for x in cam_max],
             "floor_candidates": floor_candidates,
             "chosen_floor_plane": chosen_floor,
+            "gravity_fallback": bool(chosen_floor is None),
             "wall_planes": wall_planes,
             "total_dominant_planes_detected": len(detected_planes),
             "level_center_transform": T_level_center.tolist(),

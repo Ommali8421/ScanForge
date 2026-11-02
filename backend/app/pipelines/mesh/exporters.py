@@ -122,6 +122,7 @@ class MeshExportStage(Stage):
         out_glb = ctx.workdir / "mesh.glb"
         try:
             ctx.log_cb(f"[{self.name}] Exporting binary glTF -> mesh.glb...")
+            export_mesh.vertex_normals = None
             export_mesh.export(str(out_glb))
             from app.pipelines.mesh.floor_align import fix_glb_pbr_materials
             fix_glb_pbr_materials(out_glb)
@@ -135,7 +136,7 @@ class MeshExportStage(Stage):
         if "gltf" in requested_formats:
             try:
                 out_gltf = ctx.workdir / "mesh.gltf"
-                ctx.log_cb(f"[{self.name}] Exporting separate glTF -> mesh.gltf...")
+                ctx.log_cb(f"[{self.name}] Exporting separate glTF -> mesh.gltf and model.gltf alias...")
                 gltf_files = trimesh.exchange.gltf.export_gltf(export_mesh, embed_buffers=False)
                 if isinstance(gltf_files, dict):
                     for fname, fbytes in gltf_files.items():
@@ -154,9 +155,22 @@ class MeshExportStage(Stage):
                             except Exception:
                                 pass
                             exported_files.append(target)
+
+                    # Ensure both mesh.gltf and model.gltf alias exist
+                    mesh_gltf = ctx.workdir / "mesh.gltf"
+                    model_gltf = ctx.workdir / "model.gltf"
+                    if model_gltf.exists() and not mesh_gltf.exists():
+                        shutil.copyfile(model_gltf, mesh_gltf)
+                        exported_files.append(mesh_gltf)
+                    elif mesh_gltf.exists() and not model_gltf.exists():
+                        shutil.copyfile(mesh_gltf, model_gltf)
+                        exported_files.append(model_gltf)
                 else:
                     out_gltf.write_text(str(gltf_files))
                     exported_files.append(out_gltf)
+                    model_gltf = ctx.workdir / "model.gltf"
+                    model_gltf.write_text(str(gltf_files))
+                    exported_files.append(model_gltf)
             except Exception as e:
                 ctx.log_cb(f"[{self.name}] Warning: glTF export failed: {e}")
 

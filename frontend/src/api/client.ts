@@ -103,7 +103,16 @@ export async function calibrateScale(
       real_distance: realDistance,
     }),
   });
-  if (!res.ok) throw new Error("Failed submitting calibration");
+  if (!res.ok) {
+    let errMsg = "Failed submitting calibration";
+    try {
+      const errData = await res.json();
+      if (errData && errData.detail) {
+        errMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+      }
+    } catch (_) {}
+    throw new Error(errMsg);
+  }
   return res.json();
 }
 

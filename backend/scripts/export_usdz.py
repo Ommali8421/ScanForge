@@ -27,6 +27,17 @@ def main():
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.gltf(filepath=in_glb)
 
+    mesh_objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    for obj in mesh_objs:
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        try:
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+        except Exception:
+            pass
+        for poly in obj.data.polygons:
+            poly.use_smooth = True
+
     # Blender 4.1 native USDZ export with textures
     bpy.ops.wm.usd_export(
         filepath=out_usdz,

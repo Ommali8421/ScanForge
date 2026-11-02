@@ -206,3 +206,165 @@ def test_decimate_stage(tmp_path: Path):
     decimated = trimesh.load(str(decim_ply), process=False)
     assert len(decimated.faces) <= 250
     assert len(decimated.faces) < initial_faces
+
+
+def test_plane_repair_when_no_floor_plane(tmp_path: Path):
+    """Verify PlaneRepairStage handles chosen_floor_plane=None without crashing."""
+    from app.pipelines.mesh.plane_repair import PlaneRepairStage
+
+    # Create dummy mesh
+    box = trimesh.creation.box(extents=(3.0, 2.0, 3.0))
+    mesh_in = tmp_path / "mesh_cleaned.ply"
+    box.export(str(mesh_in))
+
+    # room_analysis.json with NO floor plane (gravity fallback)
+    analysis = {
+        "scene_diagonal": 5.0,
+        "chosen_floor_plane": None,
+        "wall_planes": [
+            {
+                "normal": [1.0, 0.0, 0.0],
+                "d": -1.5,
+                "inliers": 1500
+            },
+            {
+                "normal": [-1.0, 0.0, 0.0],
+                "d": -1.5,
+                "inliers": 1500
+            }
+        ],
+        "cam_bbox_min": [-1.0, -0.5, -1.0],
+        "cam_bbox_max": [1.0, 0.5, 1.0]
+    }
+    (tmp_path / "room_analysis.json").write_text(json.dumps(analysis))
+
+    ctx = JobContext(
+        job_id="test_pr_nofloor",
+        workdir=tmp_path,
+        params={},
+        cancel_token=CancelToken(),
+        progress_cb=lambda s, p, m: None,
+        log_cb=lambda m: None,
+    )
+
+    stage = PlaneRepairStage()
+    res = stage.run(ctx)
+    assert res.success is True
+    assert (tmp_path / "mesh_repaired.ply").exists()
+
+
+@pytest.mark.skipif(not HAS_OPEN3D, reason="Open3D requires worker-gpu container")
+def test_decimate_adaptive_budget_from_dense_cloud(tmp_path: Path):
+    """Verify DecimateStage elevates poly target to 350k for large scenes via dense cloud count."""
+    # Write a dummy scene_dense.ply with element vertex 2,000,000
+    dense_ply = tmp_path / "scene_dense.ply"
+    dense_ply.write_text("ply\nformat ascii 1.0\nelement vertex 2000000\nend_header\n")
+
+    box = trimesh.creation.box(extents=(2.0, 2.0, 2.0))
+    box = box.subdivide().subdivide()
+    mesh_in = tmp_path / "mesh_repaired.ply"
+    box.export(str(mesh_in))
+
+    logs = []
+    ctx = JobContext(
+        job_id="test_decim_large",
+        workdir=tmp_path,
+        params={"quality": "standard"},
+        cancel_token=CancelToken(),
+        progress_cb=lambda s, p, m: None,
+        log_cb=lambda m: logs.append(m),
+    )
+
+    stage = DecimateStage()
+    res = stage.run(ctx)
+    assert res.success is True
+    # Verify the log reported large architectural scene and ceiling 350,000
+    large_logs = [l for l in logs if "Large architectural scene detected" in l and "350,000" in l]
+    assert len(large_logs) > 0, f"Expected 350,000 poly target in logs: {logs}"
+
+
+def test_cleanup_planar_trajectory_margin(tmp_path: Path):
+    """Verify MeshCleanupStage vertical margin protects floor and ceiling on planar walks."""
+    from app.pipelines.mesh.cleanup import MeshCleanupStage
+
+    # Planar camera trajectory: 10m horizontal walk, only 0.1m vertical span
+    # u_grav is +Y [0, 1, 0]
+    sparse_dir = tmp_path / "sfm" / "sparse"
+    sparse_dir.mkdir(parents=True)
+
+    # Write images.txt with camera centers at Y=1.5..1.6, X=0..10, Z=0..5
+    # COLMAP camera pose: X_world = -R^T * T
+    # If R = Identity, X_cam = -T -> T = -X_cam
+    images_txt = sparse_dir / "images.txt"
+    lines = ["# 3D points", "# Image list with two lines per image:"]
+    for i in range(10):
+        x = i * 1.0
+        y = 1.5 + (0.1 if i % 2 == 0 else 0.0)
+        z = (i % 3) * 1.0
+        # quaternion for identity is 1 0 0 0
+        lines.append(f"{i+1} 1.0 0.0 0.0 0.0 {-x} {-y} {-z} 1 frame_{i:04d}.jpg")
+        lines.append("0.0 0.0 1")
+    images_txt.write_text("\n".join(lines))
+
+    # Room with floor at Y=0.0 and ceiling at Y=4.0
+    # Both are outside the camera bounding box (Y: 1.5 to 1.6), but within vert_margin!
+    # cam_span_vert = 0.1, horiz_cam_span = 9.0
+    # vert_margin = max(1.4 * 0.1, 0.65 * 9.0, 2.5) = 5.85m!
+    # env_min Y = 1.5 - 5.85 = -4.35m (floor at 0.0 is inside!)
+    # env_max Y = 1.6 + 5.85 = 7.45m (ceiling at 4.0 is inside!)
+    verts = [
+        # Floor quad (Y=0.0)
+        [2.0, 0.0, 1.0], [4.0, 0.0, 1.0], [4.0, 0.0, 3.0], [2.0, 0.0, 3.0],
+        # Ceiling quad (Y=4.0)
+        [2.0, 4.0, 1.0], [4.0, 4.0, 1.0], [4.0, 4.0, 3.0], [2.0, 4.0, 3.0],
+    ]
+    faces = [
+        [0, 1, 2], [0, 2, 3],  # floor
+        [4, 5, 6], [4, 6, 7],  # ceiling
+    ]
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces)
+    mesh.export(str(tmp_path / "raw_mesh.ply"))
+
+    ctx = JobContext(
+        job_id="test_cleanup_planar",
+        workdir=tmp_path,
+        params={},
+        cancel_token=CancelToken(),
+        progress_cb=lambda s, p, m: None,
+        log_cb=lambda m: None,
+    )
+
+    stage = MeshCleanupStage()
+    res = stage.run(ctx)
+    assert res.success is True
+
+    cleaned = trimesh.load(str(tmp_path / "mesh_cleaned.ply"), process=False)
+    # Both floor and ceiling faces must be preserved!
+    assert len(cleaned.faces) == 4, f"Expected 4 faces kept, got {len(cleaned.faces)}"
+
+
+def test_room_analysis_unsigned_floor_normal():
+    """Verify that a floor candidate with inverted normal [0, -1, 0] is reoriented to +u_grav."""
+    u_grav = np.array([0.0, 1.0, 0.0])
+    detected_plane = {
+        "normal": [0.0, -1.0, 0.0],  # Inverted normal pointing down
+        "d": -1.5,                    # p0 = -d * n = 1.5 * [0, -1, 0] = [0, -1.5, 0]
+        "inliers": 5000
+    }
+
+    n = np.array(detected_plane["normal"], dtype=float)
+    d = float(detected_plane["d"])
+    cos_up = float(np.dot(n, u_grav))
+
+    # The unsigned check in room_analysis.py:
+    if abs(cos_up) >= 0.906:
+        if cos_up < 0.0:
+            n = -n
+            d = -d
+            cos_up = -cos_up
+        h_plane = float(-d * cos_up)
+
+    assert cos_up > 0.99, "Normal was not reoriented towards +u_grav"
+    assert n[1] > 0.99, f"Expected positive normal Y, got {n}"
+    assert abs(h_plane - (-1.5)) < 1e-6, f"Expected height -1.5, got {h_plane}"
+

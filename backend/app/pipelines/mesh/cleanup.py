@@ -85,7 +85,85 @@ class MeshCleanupStage(Stage):
                 mesh.update_faces(kept_face_mask)
                 mesh.remove_unreferenced_vertices()
 
-        # 2. Topological repair
+        # 2. Camera-trajectory safe bounding box pruning
+        # Prevents wild Delaunay artifacts outside windows while strictly protecting ceilings and floors
+        try:
+            from app.pipelines.mesh.room_analysis import parse_camera_poses_from_workdir
+            cams, _, u_grav = parse_camera_poses_from_workdir(ctx.workdir)
+            if len(cams) >= 4 and len(mesh.faces) > 0:
+                u_grav = np.array(u_grav, dtype=float)
+                if np.linalg.norm(u_grav) > 1e-6:
+                    u_grav = u_grav / np.linalg.norm(u_grav)
+                else:
+                    u_grav = np.array([0.0, 1.0, 0.0])
+
+                cam_min = np.min(cams, axis=0)
+                cam_max = np.max(cams, axis=0)
+                cam_span = cam_max - cam_min
+
+                vert_axis = int(np.argmax(np.abs(u_grav)))
+                horiz_axes = [i for i in range(3) if i != vert_axis]
+                horiz_cam_span = float(max(cam_span[horiz_axes[0]], cam_span[horiz_axes[1]]))
+
+                # Project camera centers onto u_grav for true vertical span
+                cam_dots = np.dot(cams, u_grav)
+                cam_span_vert = float(np.max(cam_dots) - np.min(cam_dots))
+
+                vert_margin = float(max(1.4 * cam_span_vert, 0.65 * horiz_cam_span, 2.5))
+                horiz_margin = float(max(1.8 * horiz_cam_span, 3.5))
+
+                margins = np.full(3, horiz_margin)
+                margins[vert_axis] = vert_margin
+
+                env_min = cam_min - margins
+                env_max = cam_max + margins
+
+                face_centers = mesh.triangles_center
+                inside_box = np.all((face_centers >= env_min) & (face_centers <= env_max), axis=1)
+                face_dots = np.dot(face_centers, u_grav)
+                inside_vert = (face_dots >= (np.min(cam_dots) - vert_margin)) & (face_dots <= (np.max(cam_dots) + vert_margin))
+                inside_env = inside_box & inside_vert
+
+                dropped_env = int(np.sum(~inside_env))
+                if dropped_env > 0:
+                    mesh.update_faces(inside_env)
+                    mesh.remove_unreferenced_vertices()
+                    ctx.log_cb(
+                        f"[MeshCleanup] Pruned {dropped_env:,} exterior faces outside camera-trajectory envelope "
+                        f"(cam_span_vert={cam_span_vert:.2f}m, horiz_cam_span={horiz_cam_span:.2f}m, "
+                        f"horiz_margin={horiz_margin:.2f}m, vert_margin={vert_margin:.2f}m)."
+                    )
+        except Exception as e:
+            ctx.log_cb(f"[MeshCleanup] Note: Bounding envelope check skipped ({e}).")
+
+        # 3. Pre-repair spike and extreme needle-sliver filtering
+        if len(mesh.faces) > 0:
+            edges = mesh.edges_unique_length
+            if len(edges) > 0:
+                med_edge = float(np.median(edges))
+                tri_edges = mesh.edges_unique[mesh.faces_unique_edges]
+                # Length of 3 edges per face
+                v = mesh.vertices
+                f = mesh.faces
+                e0 = np.linalg.norm(v[f[:, 0]] - v[f[:, 1]], axis=1)
+                e1 = np.linalg.norm(v[f[:, 1]] - v[f[:, 2]], axis=1)
+                e2 = np.linalg.norm(v[f[:, 2]] - v[f[:, 0]], axis=1)
+                max_edge = np.maximum(e0, np.maximum(e1, e2))
+                perim = e0 + e1 + e2
+                areas = mesh.area_faces
+                aspect_ratio = (perim ** 2) / (4.0 * np.sqrt(3.0) * (areas + 1e-12))
+
+                is_spike = (max_edge > 4.5 * med_edge) | ((max_edge > 2.0 * med_edge) & (aspect_ratio > 40.0))
+                dropped_spikes = int(np.sum(is_spike))
+                if dropped_spikes > 0:
+                    mesh.update_faces(~is_spike)
+                    mesh.remove_unreferenced_vertices()
+                    ctx.log_cb(
+                        f"[MeshCleanup] Pruned {dropped_spikes:,} pre-repair needle spikes/slivers "
+                        f"(edge > 4.5x median {med_edge:.4f}m or aspect > 40.0)."
+                    )
+
+        # 4. Topological repair
         mesh.update_faces(mesh.unique_faces())
         mesh.update_faces(mesh.nondegenerate_faces())
         mesh.remove_unreferenced_vertices()

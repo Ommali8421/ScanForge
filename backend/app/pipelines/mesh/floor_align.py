@@ -149,7 +149,7 @@ def compute_floor_alignment_transform(
         else:  # target is Z
             R_floor = np.array([
                 [1.0,  0.0,  0.0],
-                [-1.0, 0.0,  0.0],
+                [0.0, -1.0,  0.0],
                 [0.0,  0.0, -1.0]
             ], dtype=float)
     elif c > 0.999999:
@@ -243,9 +243,8 @@ def apply_alignment_and_scale_to_mesh(
 
     transformed.vertices = V_final
 
-    # Rotate vertex normals if present
-    if hasattr(transformed, "vertex_normals") and len(transformed.vertex_normals) > 0:
-        transformed.vertex_normals = transformed.vertex_normals @ R_total.T
+    # Recompute smooth area-weighted vertex normals (clears OpenMVS noisy split normals)
+    transformed.vertex_normals = None
 
     meta = {
         "R_total": R_total.tolist(),

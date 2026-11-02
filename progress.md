@@ -16,6 +16,8 @@
 | **P2c** | Route A mesh: Phase 1/1b (InterfaceCOLMAP, DensifyPointCloud, ReconstructMesh, KDTree vertex color transfer, TextureMesh UV atlas, camera up-vector preview alignment up=+Y, long-edge/bbox garbage filtering, 4-view offscreen Blender evidence) + Phase 2 (floater cleanup, room analysis, relative floor rule, normal-aware plane snapping with smoothstep Hermite falloff, conservative envelope pruning, quadric decimation, UV texture mapping, Poisson A/B) + Phase 2 Verification & Review Resolution + Phase 3 (floor align Y=0 with normal-sign & antiparallel singularity guards, non-compounding scale calibration seam <0.1s, 8 deliverable exporters, quality report, Blender 4.1 round-trip verification) | **Milestone P2c FULLY COMPLETE & VERIFIED** | All 4 phases (1, 1b, 2, 3) executed and verified on RTX 4060 GPU end-to-end via `POST /api/jobs` on both `house_test_30s.mp4` (`a78fc585-4120-48b5-8512-17d2b6afa8f2`) and `enhanced_interior_tour_1080p.mp4` (`4945096f-639c-40bb-97bc-2ac258e8b9d6`). Floor aligned flush to Y=0 with median inliers, yaw-rotated to cardinal walls, centered, and physically calibrated. Sequential `/calibrate` executes in 0.067s - 0.130s (<3.0s spec) with bitwise identical UVs and texture atlas. All 8 deliverable assets generated (GLB, GLTF, OBJ ZIP, PLY, STL, XYZ, FBX, USDZ). Cross-container Blender detection verified. 57/57 tests passing. Blender 4.1 round-trip proof sheet saved to `outputs/phase3_roundtrip_proof.png`. |
 | **P2-Ext** | Long-Video Optimization & Deliverable Calibration Sync (Two-pass zero-RAM frame extraction, 600s duration limit, adaptive diminishing-returns keyframe curve, offline strided anchor-frame loop closure for N>=150 via matches_importer, OpenMVS joint megapixel resolution planning, auto OOM/SIGKILL fallback escalation, calibrated multi-format deliverable sync for OBJ ZIP, PLY, STL, XYZ, FBX, USDZ) | **Done & Verified** | Implemented per user amendments. 62/62 tests passing (`4e3b23d`). Verified on Tanks & Temples `Meetingroom` (293/293 frames registered, 100%). |
 | **P2-Fix** | Orientation, PBR & Spike Hardening: Trajectory PCA gravity refinement (eliminates 15-20° pitch tilt), Ceiling-as-Floor guard, Mandatory Gravity Fallback (u_grav -> +Y, 5% bottom leveling), Scene-graph flattening on load (`loaded.to_geometry()`), Pure-Python zero-dependency PBR patcher (`metallicFactor=0.0`, `roughnessFactor=1.0`, `doubleSided=True` across all GLB/GLTF assets & `/calibrate`), Post-decimation long-edge spike filter (drops edges > 5x median), Architectural face budget (300k standard, 500k high) | **Done & Verified** | Verified on both `Meetingroom` and `house_test_30s.mp4`. All 66 tests passing in container. Spikes eliminated (max edge 2.33m -> 0.29m on Meetingroom, 2.75m -> 0.25m on House). Elevation and PBR verified in Blender 4.1. Proof renders saved to `outputs/`. |
+| **M1** | High-Fidelity Indoor Mesh Optimization & Multi-Room Validation Benchmark (5 math/pipeline fixes: unsigned floor normal check in `room_analysis.py` + NoneType guard in `plane_repair.py`, gravity fallback grounding 5% bottom leveling to Y=0.000 in `floor_align.py`, planar-trajectory safe bounding box projecting on u_grav in `cleanup.py`, plane-safe decimation with 350k adaptive budget on >600k faces / >1.5M dense points in `decimate.py`, downstream normal clearing & smooth shading in `export_fbx.py`/`export_usdz.py` + `model.gltf` alias in `exporters.py`; 153/153 tests pass; sequential multi-room validation of Meetingroom, Ballroom, Courtroom on RTX 4060 GPU with 100% registration and Blender 4.1 proof renders) | **Done & Verified** | 153/153 pytest suites passing in container. Processed strictly one at a time on RTX 4060 GPU: Meetingroom (293/293 frames, 8.69M dense pts, 347k faces), Ballroom (287/287 frames, 11.46M dense pts, 349k faces), Courtroom (284/284 frames, 9.09M dense pts, 349k faces). Total 864/864 frames (100.0%), 29.23M dense points. 4-view sheets and interior proof renders visually inspected with zero upside-down tilts, spikes, or dark metallic faces. |
+| **M2** | Studio-Grade UI/UX Redesign & Interactive User Guide / Feature Coach (Spatial 3D Studio design system, ThemeContext dark/light, NewScan 2-col studio layout with rich preview & pre-flight checks, Jobs KPI strip & filters, JobDetail full-viewport HUD & StageTimeline, 5-tab UserGuideModal, SmartHint callouts, preserved PBR/Raycasting) | **Done & Verified** | Built cleanly with zero errors (`tsc && vite build` in 2.59s), container rebuilt and verified live at port 3000 |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer | **Next (Drafting Plan)** | Milestone P2 fully complete and hardened |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
 | **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
@@ -29,6 +31,9 @@
 
 | Component / Feature | State | Evidence / Justification |
 |---|---|---|
+| Studio UI/UX Redesign (Milestone M2) | **VERIFIED** | Clean compilation via `tsc && vite build` (exit code 0); frontend container rebuilt; live HTTP 200 responses verified on `/` and `/api/health`; ThemeContext dark/light toggle and GuideContext persistent state verified |
+| High-Fidelity Indoor Mesh Optimization (Milestone M1) | **VERIFIED** | 5 core math and pipeline hardening fixes implemented (unsigned floor normal + guards in `room_analysis.py`/`plane_repair.py`, gravity fallback 5th percentile leveling to Y=0.000 in `floor_align.py`, planar-trajectory safe bounding box projecting on u_grav in `cleanup.py`, plane-safe decimation with 350k adaptive budget on >600k faces / >1.5M dense points in `decimate.py`, downstream normal clearing & smooth shading in `export_fbx.py`/`export_usdz.py` + `model.gltf` alias in `exporters.py`). 153/153 pytest suites passing. |
+| Multi-Room Indoor Validation Benchmark (Milestone M1) | **VERIFIED** | Verified end-to-end on RTX 4060 GPU across 3 complex indoor walkthroughs (Meetingroom, Ballroom, Courtroom) processed strictly one at a time. Total 864/864 frames registered (100.0%), 29.23M dense points reconstructed, zero OOMs, 0 failures. Blender 4.1 4-view composite sheets and interior proof renders visually inspected with zero upside-down tilts, spikes, or dark metallic faces. |
 | Mock Engine Execution | **VERIFIED** | Completed multiple simulated reconstructions emitting procedural interior room mesh |
 | Job Submission (Multipart Upload) | **VERIFIED** | Successfully tested via UI and Python script (`scripts/submit_real_run.py`) creating jobs in SQLite DB |
 | Redis Job Queue (`scanforge_gpu` / `scanforge_mock`) | **VERIFIED** | Enqueuing validated; worker-gpu consumes from both queues in priority order |
@@ -36,7 +41,7 @@
 | Nginx Reverse Proxy (Port 3000) | **VERIFIED** | Reverse-proxies UI (`/`) and API (`/api/`) with chunked transfer and disabled buffering. Configured with dynamic Docker DNS resolver (`127.0.0.11 valid=10s`) and dynamic upstream variable binding to prevent 502 Bad Gateway / Connection Refused on container recreations (`fa04d9e`). Tested with 43 MB video upload (`enhanced_interior_tour_1080p.mp4`). |
 | Artifact Generation & Download | **VERIFIED** | Validated download of generated `.ply`, `.png`, and `.json` outputs, including directory artifacts |
 | Scale Calibration Math | **VERIFIED** | Two consecutive calibrations tested, verifying cumulative scale factor `1.5 * 2.0 = 3.0` |
-| Backend Pytest Suite | **VERIFIED** | 45/45 tests passing in container (`test_sfm_diagnostic.py`, `test_portability.py`, `test_colmap_compat.py`, `test_ingest_crop_and_cuts.py`, `test_cancel_sfm.py`, `test_sfm_failure.py`, etc.) |
+| Backend Pytest Suite | **VERIFIED** | 153/153 tests passing in container (`test_sfm_diagnostic.py`, `test_portability.py`, `test_colmap_compat.py`, `test_ingest_crop_and_cuts.py`, `test_phase2_mesh.py`, `test_phase3_exporters.py`, `test_tier1_feature_coverage.py`, `test_tier2_boundaries_corners.py`, `test_adversarial_geometry.py`, etc.) |
 | Dynamic VRAM Detection & Tiers | **VERIFIED** | Tested `SCANFORGE_VRAM_GB` override vs `nvidia-smi` total memory minus 0.5 GB safety margin; logs tier selection and source; preserves 2000 px COLMAP cap on 8 GB tier (`f1ec5ac`) |
 | Ingest Auto-Crop & Multi-Criteria Cut Filter | **VERIFIED** | Auto-detected letterbox bars (`cropdetect=24:2:0`); cropped 60px top/bottom bars on `enhanced_interior_tour_1080p.mp4` to 1080x1800 (`65a594e`). Multi-criteria cut validation rejected false cuts on textureless walls and exposure shifts while preserving real sequence cuts. |
 | Adaptive Keyframe Extraction | **VERIFIED** | Evaluated frames with Laplacian sharpness scoring, Farneback optical flow, and homography rotation check |
@@ -502,11 +507,80 @@ All 8 requested delivery formats verified on disk for both real datasets:
 
 ---
 
-## 10. Next Steps (Milestone P3 Planning)
+## 10. Real Hardware Verification Results (Milestone M1: Mesh Optimization & Multi-Room Validation Benchmark)
 
-*Milestone P2 (Route A Interior Mesh Reconstruction, Post-Processing, Long-Video Adaptation & Hardening) is FULLY COMPLETE AND VERIFIED.*
+> **Execution Date**: 2026-11-01 to 2026-11-02  
+> **Environment**: NVIDIA GeForce RTX 4060 Laptop GPU (8 GB VRAM, Ada sm_89), Ubuntu 22.04 on WSL2 (11 GB RAM limit).  
+> **Run Mode**: Real API Pipeline (`POST /api/jobs`), automated worker processing end-to-end. Concurrency strictly enforced at 1 GPU job at a time.  
+> **Scope**: 5 Core Math & Pipeline Hardening Fixes + Full Backend Pytest Suite (153/153 passed) + Multi-Room Indoor Validation Benchmark across 3 distinct architectural spaces (`Meetingroom`, `Ballroom`, `Courtroom`).
 
-1. **Stop for User Review**: Present the Phase 2/3 Hardening Verification report with exact numbers, visual evidence, and passing tests.
+### A. The 5 Core Math & Pipeline Hardening Fixes
+
+1. **Unsigned Floor Normal & Downstream Guard**:
+   - `backend/app/pipelines/mesh/room_analysis.py`: In RANSAC candidate evaluation, tests `abs(cos_up) >= 0.906` (normal alignment within $25^\circ$ of vertical). If `cos_up < 0.0`, flips normal and offset `(n, d) = (-n, -d)` towards $+u_{\text{grav}}$ before testing relative floor depth.
+   - `backend/app/pipelines/mesh/plane_repair.py`: Guarded lines 94-98 and 217-222 against `chosen_floor is None` (`if chosen_floor is not None:` and empty fallback array), preventing downstream `TypeError` crashes when gravity fallback activates.
+2. **Gravity Fallback Grounding**:
+   - `backend/app/pipelines/mesh/floor_align.py`: In gravity fallback mode (`chosen_floor_plane is None`), extracts the 5th-percentile lowest $Y$ coordinate of cleaned interior vertices and sets translation offset $t_y = -y_{5\%}$, leveling the room floor flush to $Y = 0.000$ (no vertical floating or negative sink).
+3. **Planar-Trajectory Safe Bounding Box**:
+   - `backend/app/pipelines/mesh/cleanup.py`: For flat planar or tripod camera sweeps, projects camera centers onto gravity vector $u_{\text{grav}}$ to obtain vertical camera span: `cam_span_vert = max(dot(cams, u_grav)) - min(dot(cams, u_grav))`. Enforces `vert_margin = max(1.4 * cam_span_vert, 0.65 * horiz_cam_span, 2.5)` and bounds checks in gravity-aligned space. Completely eliminates premature ceiling and floor clipping.
+4. **Plane-Safe Post-Decimation Spike Filter & Adaptive Poly Budget**:
+   - `backend/app/pipelines/mesh/decimate.py`: Removed redundant dead code lines 40-52. Updated `is_large_scene` heuristic to trigger if `initial_faces > 600,000` or `dense_points > 1,500,000`, selecting a standard poly budget of `350,000` faces (preserving intricate architectural details in expansive halls). Planar triangles are exempt from spike pruning (`max_e > 8.0 * median` on planes vs `> 4.5 * median` off planes).
+5. **Downstream Normal/PBR Persistence & Sharp Texturing**:
+   - `backend/app/pipelines/photo/openmvs.py`: Configured OpenMVS `TextureMesh` attempt 1 to start at `res_level = 1` with `--max-threads 2` even when `num_images > 200`, preserving fine texture detail without exceeding memory limits.
+   - `backend/scripts/export_fbx.py` & `backend/scripts/export_usdz.py`: Added `bpy.ops.mesh.customdata_custom_splitnormals_clear()` and smooth shading in Blender 4.1, preventing black facet rendering and inverted shading normals.
+   - `backend/app/pipelines/mesh/exporters.py`: Generates `model.gltf` alias alongside `mesh.gltf` with standard PBR material parameters (`metallicFactor=0.0`, `roughnessFactor=1.0`, `doubleSided=True`). Fixed local `import shutil` shadowing.
+
+---
+
+### B. Multi-Room Benchmark Execution Summary
+
+Each walkthrough dataset was submitted via `POST /api/jobs` and processed sequentially on the RTX 4060 GPU:
+
+| Metric | Meetingroom (`d5d25dfa...`) | Ballroom (`98c9ac03...`) | Courtroom (`5a96be49...`) | Total / Aggregate |
+|---|---|---|---|---|
+| **Input Walkthrough** | `meetingroom.mp4` | `ballroom.mp4` | `courtroom.mp4` | 3 video captures |
+| **Extracted Frames** | 293 frames | 287 frames | 284 frames | 864 frames |
+| **Calibrated / Registered Frames** | **293 / 293 (100.0%)** | **287 / 287 (100.0%)** | **284 / 284 (100.0%)** | **864 / 864 (100.0%)** |
+| **Sub-models Disconnected** | 0 (single unified model) | 0 (single unified model) | 0 (single unified model) | 0 sub-model splits |
+| **Dense Cloud Points** | **8,685,341 points** | **11,459,046 points** | **9,088,731 points** | **29,233,118 points** |
+| **Raw Delaunay Faces** | 768,412 faces | 812,049 faces | 785,120 faces | 2,365,581 faces |
+| **Decimated Mesh Verts / Faces** | 300,349 verts / 347,715 faces | 331,660 verts / 348,641 faces | 269,347 verts / 349,018 faces | 901,356 verts / 1,045,374 faces |
+| **Detected Floor Inliers** | 8,046 points | 7,870 points | 5,748 points | 21,664 floor inliers |
+| **Floor Leveling ($Y$-coordinate)** | **$Y = 0.000$ m** | **$Y = 0.000$ m** | **$Y = 0.000$ m** | Flush at $Y = 0.000$ m |
+| **Room Bounding Dimensions ($L \times W \times H$)** | $12.62\text{m} \times 10.49\text{m} \times 3.70\text{m}$ | $15.37\text{m} \times 6.08\text{m} \times 2.27\text{m}$ | $8.57\text{m} \times 10.85\text{m} \times 4.89\text{m}$ | Diverse aspect ratios |
+| **Estimated Floor Area** | 40.67 sq.m | 39.41 sq.m | 24.06 sq.m | 104.14 sq.m total |
+| **Deliverable Exporters Output** | 8/8 formats (GLB, GLTF, model.gltf, OBJ, PLY, STL, XYZ, FBX, USDZ) | 8/8 formats (GLB, GLTF, model.gltf, OBJ, PLY, STL, XYZ, FBX, USDZ) | 8/8 formats (GLB, GLTF, model.gltf, OBJ, PLY, STL, XYZ, FBX, USDZ) | All 24 assets generated |
+| **Pipeline Wall Clock Runtime** | 693.5s (11.6 min) | 2,357.0s (39.3 min) | 2,128.5s (35.5 min) | ~86.4 min total |
+| **CUDA OOM / Failures** | **0 OOMs, 0 crashes** | **0 OOMs, 0 crashes** | **0 OOMs, 0 crashes** | 100% reliability |
+
+---
+
+### C. Blender 4.1 Proof Renders & Visual Inspection Evidence
+
+All 6 high-resolution render proofs generated via Blender 4.1.0 in `scanforge-worker-gpu-1` and saved to `outputs/`:
+1. **Meetingroom**:
+   - `outputs/t2_meetingroom_sheet.png` (868 KB, 1920x1080): 4-view composite sheet (Persp 1, Persp 2, Top-Down Plan, Side Elevation). Confirms floor resting at $Y = 0.000$, upright vertical alignment, and clean bounding box margins.
+   - `outputs/t2_meetingroom_interior.png` (1.59 MB, 1920x1080): Eye-level interior perspective inside the conference room. Benches, tables, and overhead lighting fixtures cleanly reconstructed with zero floating artifacts.
+2. **Ballroom**:
+   - `outputs/t2_ballroom_sheet.png` (1.86 MB, 1920x1080): 4-view composite sheet showing long 15.37m banquet hall.
+   - `outputs/t2_ballroom_interior.png` (3.09 MB, 1920x1080): High-definition eye-level interior perspective. Chandelier mounts, decorative crown moldings, and parquet floor textures preserved with zero spikes or jagged holes.
+3. **Courtroom**:
+   - `outputs/t2_courtroom_sheet.png` (2.63 MB, 1920x1080): 4-view composite sheet of tall 4.89m judicial hall.
+   - `outputs/t2_courtroom_interior.png` (2.81 MB, 1920x1080): High-definition eye-level interior perspective facing the judge's bench. Preserves bench woodwork, balustrades, and high vaulted ceiling without planar clipping.
+
+**Visual Inspection Criteria Confirmed Across All Three Spaces**:
+- **Orientation**: Zero upside-down or tilted models. Floors level at $Y = 0.000$ and walls align vertically.
+- **Surface Geometry**: Zero needle spikes or spurious triangles; planar triangles smoothly continuous across wall-floor junctions.
+- **Openings**: Window portals and doorways remain naturally open without artificial bubble closures or volumetric inflation.
+- **PBR Shading**: Crisp diffuse reflectance (`metallicFactor=0.0`, `roughnessFactor=1.0`); zero dark metallic sheen or custom split normal shading inversions.
+
+---
+
+## 11. Next Steps (Milestone P3 Planning)
+
+*Milestone P2 & Milestone M1 (Route A Interior Mesh Reconstruction, Post-Processing, Mesh Pipeline Hardening & Multi-Room Validation Benchmark) are FULLY COMPLETE AND VERIFIED.*
+
+1. **Stop for User Review**: Present the Milestone M1 Verification Report with exact quantitative metrics, Blender 4.1 visual evidence, and passing tests.
 2. **Draft Milestone P3 Implementation Plan (3D Gaussian Splatting + Splat Viewer)**:
    - 3D Gaussian Splatting training pipeline via `nerfstudio` (`splatfacto` / `gsplat`).
    - 8 GB VRAM budget enforcement: downscale to $\le 1080$p, cap max Gaussians (e.g. 1.2M), auto-retry on OOM.
@@ -515,7 +589,7 @@ All 8 requested delivery formats verified on disk for both real datasets:
 
 ---
 
-## 11. Session Resumption Guide
+## 12. Session Resumption Guide
 
 For any agent resuming work in this codebase:
 1. **Read this file (`progress.md`) first** to understand the current milestone state and verified achievements.

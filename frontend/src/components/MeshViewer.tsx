@@ -3,29 +3,54 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { Eye, RotateCw, Crosshair, ZoomIn, ZoomOut, RefreshCw, Sun, Moon, AlertTriangle } from "lucide-react";
+import {
+  Eye,
+  RotateCw,
+  Crosshair,
+  ZoomIn,
+  ZoomOut,
+  RefreshCw,
+  AlertTriangle,
+  Ruler,
+  Palette,
+} from "lucide-react";
+
+export type CanvasTheme = "white" | "light-grey" | "dark-slate";
 
 interface Props {
   modelUrl?: string;
   onPointSelected?: (point: [number, number, number]) => void;
   measureMode?: boolean;
+  onToggleMeasureMode?: () => void;
   pointA?: [number, number, number] | null;
   pointB?: [number, number, number] | null;
   label?: string;
+  activeTab?: "textured" | "dense" | "mesh";
+  onTabChange?: (tab: "textured" | "dense" | "mesh") => void;
+  jobMetadata?: {
+    id: string;
+    scanType?: string;
+    quality?: string;
+  };
 }
 
 export const MeshViewer: React.FC<Props> = ({
   modelUrl,
   onPointSelected,
-  measureMode,
+  measureMode = false,
+  onToggleMeasureMode,
   pointA,
   pointB,
-  label = "raw, uncalibrated (SfM units)"
+  label = "raw, uncalibrated (SfM units)",
+  activeTab = "textured",
+  onTabChange,
+  jobMetadata,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const [wireframe, setWireframe] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(false); // Default to white scene background
+  // Independent canvas theme: white (#ffffff) / light-grey (#f1f5f9) / dark slate (#090d16)
+  const [canvasTheme, setCanvasTheme] = useState<CanvasTheme>("white");
   const [loadingModel, setLoadingModel] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -40,13 +65,34 @@ export const MeshViewer: React.FC<Props> = ({
   const initialCamPos = useRef<THREE.Vector3>(new THREE.Vector3(0, 2, 5));
   const initialTarget = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
 
+  const getCanvasColor = (theme: CanvasTheme) => {
+    switch (theme) {
+      case "light-grey":
+        return "#f1f5f9";
+      case "dark-slate":
+        return "#090d16";
+      case "white":
+      default:
+        return "#ffffff";
+    }
+  };
+
+  const cycleCanvasTheme = () => {
+    setCanvasTheme((prev) => {
+      if (prev === "white") return "light-grey";
+      if (prev === "light-grey") return "dark-slate";
+      return "white";
+    });
+  };
+
   useEffect(() => {
     if (!mountRef.current) return;
     setLoadError(null);
 
-    // 1. Scene setup (Default pure white background)
+    // 1. Scene setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(isDarkMode ? "#090d16" : "#ffffff");
+    const bgColor = getCanvasColor(canvasTheme);
+    scene.background = new THREE.Color(bgColor);
     sceneRef.current = scene;
 
     // 2. Camera setup
@@ -74,7 +120,12 @@ export const MeshViewer: React.FC<Props> = ({
     controlsRef.current = controls;
 
     // 5. Lights (Full multi-source illumination for glTF PBR and unlit geometry)
-    const hemiLight = new THREE.HemisphereLight(0xffffff, isDarkMode ? 0x222222 : 0xcccccc, 1.2);
+    const isDarkCanvas = canvasTheme === "dark-slate";
+    const hemiLight = new THREE.HemisphereLight(
+      0xffffff,
+      isDarkCanvas ? 0x222222 : 0xcccccc,
+      1.2
+    );
     hemiLight.position.set(0, 20, 0);
     scene.add(hemiLight);
 
@@ -93,9 +144,17 @@ export const MeshViewer: React.FC<Props> = ({
     dirLight3.position.set(0, -10, 0); // Upward bounce so ceilings and under-surfaces don't go pitch black
     scene.add(dirLight3);
 
-    // 6. Floor Grid (Light grey grid on white background)
-    const gridColor1 = isDarkMode ? 0x3b82f6 : 0x9ca3af;
-    const gridColor2 = isDarkMode ? 0x1e293b : 0xe5e7eb;
+    // 6. Floor Grid (Adaptive grid colors based on canvas theme)
+    let gridColor1 = 0x9ca3af;
+    let gridColor2 = 0xe5e7eb;
+    if (canvasTheme === "dark-slate") {
+      gridColor1 = 0x3b82f6;
+      gridColor2 = 0x1e293b;
+    } else if (canvasTheme === "light-grey") {
+      gridColor1 = 0x94a3b8;
+      gridColor2 = 0xe2e8f0;
+    }
+
     const grid = new THREE.GridHelper(10, 20, gridColor1, gridColor2);
     grid.position.y = 0;
     gridRef.current = grid;
@@ -150,7 +209,7 @@ export const MeshViewer: React.FC<Props> = ({
               const pcdMat = new THREE.PointsMaterial({
                 size: Math.max(0.015, maxDim * 0.005),
                 vertexColors: hasVertexColors,
-                color: hasVertexColors ? 0xffffff : (isDarkMode ? 0x38bdf8 : 0x0284c7),
+                color: hasVertexColors ? 0xffffff : (isDarkCanvas ? 0x38bdf8 : 0x0284c7),
               });
               pcdObject = new THREE.Points(geometry, pcdMat);
             }
@@ -233,7 +292,6 @@ export const MeshViewer: React.FC<Props> = ({
         );
       }
     } else {
-      // Never fall back to a placeholder box mesh in real mode
       setLoadError("No 3D asset available for this job (0 artifacts registered). This reconstruction did not emit a 3D model.");
     }
 
@@ -288,7 +346,7 @@ export const MeshViewer: React.FC<Props> = ({
       }
       renderer.dispose();
     };
-  }, [modelUrl, onPointSelected, isDarkMode]);
+  }, [modelUrl, onPointSelected, canvasTheme]);
 
   // Update wireframe mode
   useEffect(() => {
@@ -304,7 +362,7 @@ export const MeshViewer: React.FC<Props> = ({
     });
   }, [wireframe]);
 
-  // Update 3D marker spheres for Point A and Point B (High-contrast markers on white and dark backdrops)
+  // Update 3D marker spheres for Point A and Point B
   useEffect(() => {
     if (!markersGroupRef.current) return;
     const group = markersGroupRef.current;
@@ -320,7 +378,6 @@ export const MeshViewer: React.FC<Props> = ({
       sphereA.position.set(pointA[0], pointA[1], pointA[2]);
       group.add(sphereA);
 
-      // Contrast outline ring
       const ringGeoA = new THREE.RingGeometry(0.09, 0.11, 24);
       const ringMatA = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
       const ringA = new THREE.Mesh(ringGeoA, ringMatA);
@@ -346,7 +403,7 @@ export const MeshViewer: React.FC<Props> = ({
 
       if (pointA) {
         // High-contrast measure line
-        const lineMat = new THREE.LineBasicMaterial({ color: 0x9333ea, linewidth: 3 }); // High-contrast purple
+        const lineMat = new THREE.LineBasicMaterial({ color: 0x9333ea, linewidth: 3 });
         const points = [
           new THREE.Vector3(pointA[0], pointA[1], pointA[2]),
           new THREE.Vector3(pointB[0], pointB[1], pointB[2]),
@@ -376,138 +433,195 @@ export const MeshViewer: React.FC<Props> = ({
     controlsRef.current.update();
   };
 
+  const isDarkCanvas = canvasTheme === "dark-slate";
+
   return (
-    <div className={`relative w-full h-[480px] rounded-2xl overflow-hidden border shadow-2xl transition-colors duration-200 ${
-      isDarkMode ? "bg-[#090d16] border-dark-border" : "bg-white border-slate-200"
-    }`}>
+    <div
+      className={`relative w-full h-[520px] sm:h-[600px] rounded-3xl overflow-hidden border shadow-2xl transition-colors duration-200 ${
+        isDarkCanvas
+          ? "bg-[#090d16] border-zinc-800"
+          : canvasTheme === "light-grey"
+          ? "bg-[#f1f5f9] border-slate-300"
+          : "bg-white border-slate-200"
+      }`}
+    >
       <div ref={mountRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
 
-      {/* Explicit Error Display Overlay (Never fall back to placeholder mesh) */}
+      {/* Explicit Error Display Overlay */}
       {loadError && (
-        <div className="absolute inset-0 bg-dark-bg/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20">
+        <div className="absolute inset-0 bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20">
           <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center mb-3">
             <AlertTriangle className="w-6 h-6 text-rose-400" />
           </div>
-          <h4 className="text-sm font-semibold text-white mb-1">Model Unavailable in Viewer</h4>
-          <p className="text-xs text-rose-300 max-w-md font-mono bg-rose-950/40 border border-rose-900/50 p-2.5 rounded-xl mb-3">
+          <h4 className="text-sm font-bold text-white mb-1">Model Unavailable in Viewer</h4>
+          <p className="text-xs text-rose-300 max-w-md font-mono bg-rose-950/40 border border-rose-900/50 p-3 rounded-2xl mb-3">
             {loadError}
           </p>
-          <p className="text-[11px] text-dark-muted max-w-sm">
-            Real mode reconstructions strictly display verified assets. Placeholder meshes are disabled.
+          <p className="text-[11px] text-zinc-400 max-w-sm">
+            ScanForge real-mode pipelines display only verified 3D assets. Facades and dummy boxes are strictly disabled.
           </p>
         </div>
       )}
 
-      {/* Top Banner Status & Mode */}
-      <div className="absolute top-4 left-4 flex items-center space-x-2">
-        <span className={`px-3 py-1 rounded-lg backdrop-blur border text-[11px] font-mono shadow-sm ${
-          isDarkMode
-            ? "bg-dark-card/90 border-dark-border/80 text-dark-muted"
-            : "bg-white/90 border-slate-300 text-slate-700"
-        }`}>
-          {label}
-        </span>
-        {loadingModel && (
-          <span className="px-2.5 py-1 rounded-lg bg-brand-500/20 border border-brand-500/40 text-[11px] text-brand-500 font-medium animate-pulse">
-            Loading 3D asset...
-          </span>
+      {/* TOP-LEFT HUD OVERLAY: Mode Switcher & Metadata Pill */}
+      <div className="absolute top-4 left-4 flex flex-col sm:flex-row items-start sm:items-center gap-2 z-10">
+        {onTabChange && (
+          <div className="flex items-center space-x-1 bg-zinc-950/80 backdrop-blur-md p-1 rounded-2xl border border-zinc-800/80 text-xs shadow-xl">
+            <button
+              onClick={() => onTabChange("textured")}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all ${
+                activeTab === "textured"
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              Textured Mesh
+            </button>
+            <button
+              onClick={() => onTabChange("dense")}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all ${
+                activeTab === "dense"
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              Dense Cloud (PLY)
+            </button>
+            <button
+              onClick={() => onTabChange("mesh")}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all ${
+                activeTab === "mesh"
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              Raw Geometry
+            </button>
+          </div>
         )}
+
+        <div className="flex items-center gap-1.5">
+          {jobMetadata && (
+            <span className="px-2.5 py-1.5 rounded-xl bg-zinc-950/80 backdrop-blur-md border border-zinc-800/80 text-[11px] font-mono text-cyan-300 shadow-md">
+              {jobMetadata.id.slice(0, 8)}
+            </span>
+          )}
+          <span className="px-3 py-1.5 rounded-xl bg-zinc-950/80 backdrop-blur-md border border-zinc-800/80 text-[11px] font-mono text-zinc-300 shadow-md">
+            {label}
+          </span>
+          {loadingModel && (
+            <span className="px-2.5 py-1.5 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-[11px] text-cyan-300 font-mono font-bold animate-pulse shadow-md">
+              Loading 3D asset...
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Floating Action Toolbar */}
-      <div className={`absolute top-4 right-4 flex items-center space-x-1.5 backdrop-blur p-1.5 rounded-xl border text-xs shadow-lg ${
-        isDarkMode ? "bg-dark-card/90 border-dark-border" : "bg-white/90 border-slate-200"
-      }`}>
-        {/* White / Dark Mode Toggle */}
-        <button
-          onClick={() => setIsDarkMode(!isDarkMode)}
-          className={`p-1.5 rounded-lg transition-colors ${
-            isDarkMode ? "text-amber-400 hover:bg-dark-hover" : "text-slate-600 hover:bg-slate-100"
-          }`}
-          title={isDarkMode ? "Switch to white background" : "Switch to dark background"}
-        >
-          {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-        </button>
-
-        <div className={`w-[1px] h-4 mx-0.5 ${isDarkMode ? "bg-dark-border" : "bg-slate-200"}`} />
-
-        <button
-          onClick={() => handleZoom(0.8)}
-          className={`p-1.5 rounded-lg transition-colors ${
-            isDarkMode ? "text-dark-muted hover:text-white hover:bg-dark-hover" : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
-          }`}
-          title="Zoom In (+)"
-        >
-          <ZoomIn className="w-4 h-4" />
-        </button>
-
-        <button
-          onClick={() => handleZoom(1.25)}
-          className={`p-1.5 rounded-lg transition-colors ${
-            isDarkMode ? "text-dark-muted hover:text-white hover:bg-dark-hover" : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
-          }`}
-          title="Zoom Out (-)"
-        >
-          <ZoomOut className="w-4 h-4" />
-        </button>
-
+      {/* BOTTOM-CENTER FLOATING DOCK */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center space-x-1 bg-zinc-950/85 backdrop-blur-md p-1.5 rounded-2xl border border-zinc-800 text-xs shadow-2xl z-10">
+        {/* Reset Camera View */}
         <button
           onClick={handleResetView}
-          className={`p-1.5 rounded-lg transition-colors ${
-            isDarkMode ? "text-dark-muted hover:text-white hover:bg-dark-hover" : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
-          }`}
+          className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
           title="Reset Camera View"
         >
           <RefreshCw className="w-4 h-4" />
         </button>
 
-        <div className={`w-[1px] h-4 mx-0.5 ${isDarkMode ? "bg-dark-border" : "bg-slate-200"}`} />
-
+        {/* Zoom Controls */}
         <button
-          onClick={() => setWireframe(!wireframe)}
-          className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all ${
-            wireframe
-              ? "bg-brand-500 text-white font-medium shadow-sm"
-              : isDarkMode
-              ? "text-dark-muted hover:text-white hover:bg-dark-hover"
-              : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
-          }`}
-          title="Toggle wireframe display"
+          onClick={() => handleZoom(0.8)}
+          className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+          title="Zoom In (+)"
         >
-          <Eye className="w-3.5 h-3.5" />
-          <span>Wireframe</span>
+          <ZoomIn className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => handleZoom(1.25)}
+          className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+          title="Zoom Out (-)"
+        >
+          <ZoomOut className="w-4 h-4" />
         </button>
 
+        <div className="w-[1px] h-5 mx-0.5 bg-zinc-800" />
+
+        {/* Wireframe Toggle */}
+        <button
+          onClick={() => setWireframe(!wireframe)}
+          className={`px-2.5 py-1.5 rounded-xl flex items-center space-x-1.5 transition-all ${
+            wireframe
+              ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-600/30"
+              : "text-zinc-400 hover:text-white hover:bg-zinc-800"
+          }`}
+          title="Toggle wireframe topology view"
+        >
+          <Eye className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Wireframe</span>
+        </button>
+
+        {/* Auto-turntable rotate */}
         <button
           onClick={() => setAutoRotate(!autoRotate)}
-          className={`p-1.5 rounded-lg transition-all ${
+          className={`p-2 rounded-xl transition-all ${
             autoRotate
-              ? "bg-brand-500 text-white"
-              : isDarkMode
-              ? "text-dark-muted hover:text-white hover:bg-dark-hover"
-              : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+              ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/30"
+              : "text-zinc-400 hover:text-white hover:bg-zinc-800"
           }`}
-          title="Toggle turntable auto-rotation"
+          title="Toggle auto-orbit turntable"
         >
           <RotateCw className="w-4 h-4" />
         </button>
-      </div>
 
-      {/* Bottom instructions badge */}
-      <div className="absolute bottom-4 left-4 flex items-center gap-2">
-        {measureMode ? (
-          <div className="bg-brand-600/90 backdrop-blur text-white px-3 py-1.5 rounded-xl text-xs flex items-center gap-2 shadow-lg">
-            <Crosshair className="w-4 h-4 animate-spin text-brand-200" />
-            <span>Click any 2 points on the 3D surface to calibrate physical scale</span>
-          </div>
-        ) : (
-          <div className={`backdrop-blur px-3 py-1 rounded-lg text-[11px] border shadow-sm ${
-            isDarkMode ? "bg-dark-card/80 text-dark-muted border-dark-border/60" : "bg-white/80 text-slate-600 border-slate-200"
-          }`}>
-            Rotate: Left Click + Drag | Pan: Right Click + Drag | Zoom: Scroll Wheel
-          </div>
+        <div className="w-[1px] h-5 mx-0.5 bg-zinc-800" />
+
+        {/* Canvas Background Theme (White / Light-Grey / Dark-Slate) */}
+        <button
+          onClick={cycleCanvasTheme}
+          className="px-2.5 py-1.5 rounded-xl flex items-center space-x-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+          title={`Canvas Theme: ${canvasTheme} (Click to cycle White / Light-Grey / Dark-Slate)`}
+        >
+          <Palette className="w-3.5 h-3.5 text-amber-400" />
+          <span className="capitalize font-mono text-[11px] hidden sm:inline">
+            {canvasTheme.replace("-", " ")}
+          </span>
+        </button>
+
+        {/* Measure & Calibrate Tool Toggle */}
+        {onToggleMeasureMode && (
+          <>
+            <div className="w-[1px] h-5 mx-0.5 bg-zinc-800" />
+            <button
+              onClick={onToggleMeasureMode}
+              className={`px-3 py-1.5 rounded-xl flex items-center space-x-1.5 font-bold transition-all ${
+                measureMode
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/30 animate-pulse"
+                  : "bg-indigo-600/80 hover:bg-indigo-600 text-white"
+              }`}
+              title="Activate Measure & Scale Calibration Tool"
+            >
+              <Ruler className="w-3.5 h-3.5" />
+              <span>Measure & Calibrate</span>
+            </button>
+          </>
         )}
       </div>
+
+      {/* Floating Instructions Banner (when measure mode is active) */}
+      {measureMode && (
+        <div className="absolute top-4 right-4 z-10">
+          <div className="bg-emerald-950/90 backdrop-blur-md border border-emerald-500/40 text-emerald-200 px-3.5 py-2 rounded-2xl text-xs flex items-center gap-2 shadow-xl">
+            <Crosshair className="w-4 h-4 text-emerald-400 animate-spin" />
+            <span className="font-semibold">
+              {!pointA
+                ? "Step 1: Click Point A on 3D geometry"
+                : !pointB
+                ? "Step 2: Click Point B on 3D geometry"
+                : "Points selected! Enter real distance below"}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

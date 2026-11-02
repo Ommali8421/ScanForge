@@ -384,6 +384,19 @@ def test_exported_mesh_glb_pbr_materials_and_double_sided(tmp_path):
         assert pbr.get("metallicFactor") == 0.0, f"metallicFactor is {pbr.get('metallicFactor')}, expected 0.0"
         assert pbr.get("roughnessFactor") == 1.0, f"roughnessFactor is {pbr.get('roughnessFactor')}, expected 1.0"
 
+    # Verify both mesh.gltf and model.gltf alias exist with PBR sanitization
+    mesh_gltf = workdir / "mesh.gltf"
+    model_gltf = workdir / "model.gltf"
+    assert mesh_gltf.exists(), "mesh.gltf does not exist"
+    assert model_gltf.exists(), "model.gltf alias does not exist"
+    for g_path in [mesh_gltf, model_gltf]:
+        g_data = json.loads(g_path.read_text())
+        for mat in g_data.get("materials", []):
+            assert mat.get("doubleSided") is True
+            pbr = mat.get("pbrMetallicRoughness", {})
+            assert pbr.get("metallicFactor") == 0.0
+            assert pbr.get("roughnessFactor") == 1.0
+
 
 def test_post_decimation_spike_filter(tmp_path):
     """Verify that DecimateStage eliminates spurious bridging triangles with edge length > 5x median."""

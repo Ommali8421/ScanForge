@@ -5,11 +5,15 @@ import { Jobs } from "./pages/Jobs";
 import { JobDetail } from "./pages/JobDetail";
 import { Capabilities } from "./api/types";
 import { fetchCapabilities } from "./api/client";
+import { ThemeProvider, useTheme } from "./context/ThemeContext";
+import { GuideProvider } from "./context/GuideContext";
+import { UserGuideModal } from "./components/UserGuideModal";
 
-export const App: React.FC = () => {
+const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<"new" | "jobs" | "detail">("new");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
+  const { theme } = useTheme();
 
   useEffect(() => {
     fetchCapabilities()
@@ -33,7 +37,11 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-dark-bg text-dark-text flex flex-col font-sans">
+    <div
+      className={`min-h-screen flex flex-col font-sans transition-colors duration-200 ${
+        theme === "dark" ? "bg-[#09090b] text-zinc-100" : "bg-slate-50 text-slate-900"
+      }`}
+    >
       <Header
         activeTab={activeTab === "detail" ? "jobs" : activeTab}
         setActiveTab={(tab) => {
@@ -43,8 +51,7 @@ export const App: React.FC = () => {
         capabilities={capabilities}
       />
 
-
-      <main className="flex-1 pb-12">
+      <main className="flex-1 pb-16">
         {activeTab === "new" && (
           <NewScan capabilities={capabilities} onJobCreated={handleJobCreated} />
         )}
@@ -53,6 +60,7 @@ export const App: React.FC = () => {
           <Jobs
             onSelectJob={handleSelectJob}
             onNewScan={() => setActiveTab("new")}
+            capabilities={capabilities}
           />
         )}
 
@@ -61,10 +69,31 @@ export const App: React.FC = () => {
         )}
       </main>
 
-      <footer className="border-t border-dark-border py-6 text-center text-xs text-dark-muted">
-        <p>ScanForge — Self-hostable 3D Reconstruction Platform for Interior Spaces</p>
+      <footer
+        className={`border-t py-6 text-center text-xs transition-colors ${
+          theme === "dark"
+            ? "border-zinc-800/80 bg-zinc-950/60 text-zinc-500"
+            : "border-slate-200 bg-white/60 text-slate-500"
+        }`}
+      >
+        <p className="font-mono text-[11px]">
+          ScanForge Studio — Self-Hostable Spatial 3D Reconstruction Platform
+        </p>
       </footer>
+
+      {/* Global Interactive Guide Modal */}
+      <UserGuideModal />
     </div>
+  );
+};
+
+export const App: React.FC = () => {
+  return (
+    <ThemeProvider>
+      <GuideProvider>
+        <AppContent />
+      </GuideProvider>
+    </ThemeProvider>
   );
 };
 

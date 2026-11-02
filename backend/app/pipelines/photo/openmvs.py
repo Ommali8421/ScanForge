@@ -613,7 +613,9 @@ class OpenMVSTextureStage(Stage):
     def run(self, ctx: JobContext) -> StageResult:
         ctx.log_cb("[OpenMVS] Initializing photographic UV texture mapping (TextureMesh)...")
         texture_bin = resolve_openmvs("TextureMesh")
-        threads = str(get_configured_threads())
+        # Cap threads at 2 to protect WSL2 11 GB RAM from multi-image uncompressed buffer spikes
+        configured_th = get_configured_threads()
+        tex_threads = "2" if configured_th >= 2 else "1"
 
         # Select target input mesh (prefer decimated / repaired mesh from Phase 2)
         input_mesh = ctx.workdir / "mesh_decimated.ply"
@@ -645,9 +647,22 @@ class OpenMVSTextureStage(Stage):
                 pass
 
         output_glb = ctx.workdir / "scene_textured.glb"
-        tex_res_level = 1
         res = None
-        for tex_attempt in range(2):
+        # 3-tier attempt schedule:
+        # Attempt 1: res_level 1 (sharp 960x540), threads 2, min-res 320
+        # Attempt 2: res_level 2 (480x270), threads 2, min-res 320
+        # Attempt 3: res_level 3 (240x135), threads 1, min-res 240
+        attempts_config = [
+            {"res_level": 1, "threads": tex_threads, "min_res": 320},
+            {"res_level": 2, "threads": tex_threads, "min_res": 320},
+            {"res_level": 3, "threads": "1", "min_res": 240},
+        ]
+
+        for attempt_idx, cfg in enumerate(attempts_config):
+            tex_res_level = cfg["res_level"]
+            run_threads = cfg["threads"]
+            min_res = cfg["min_res"]
+
             cmd = [
                 texture_bin,
                 "-w", str(ctx.workdir),
@@ -655,10 +670,11 @@ class OpenMVSTextureStage(Stage):
                 "-o", "scene_textured.glb",
                 "--export-type", "glb",
                 "--resolution-level", str(tex_res_level),
+                "--min-resolution", str(min_res),
                 "--empty-color", "13158600",  # Neutral light-grey (0xC8C8C8) instead of orange
                 "--global-seam-leveling", "0",
                 "--local-seam-leveling", "0",
-                "--max-threads", threads,
+                "--max-threads", run_threads,
                 "-v", "2",
             ]
 
@@ -666,8 +682,8 @@ class OpenMVSTextureStage(Stage):
                 cmd.extend(["--mesh-file", str(input_mesh.name)])
 
             ctx.log_cb(
-                f"[OpenMVS] Running TextureMesh -> {output_glb.name} (attempt {tex_attempt+1}/2, "
-                f"resolution-level {tex_res_level}, threads: {threads}, empty-color: light-grey)..."
+                f"[OpenMVS] Running TextureMesh -> {output_glb.name} (attempt {attempt_idx+1}/3, "
+                f"resolution-level {tex_res_level}, threads: {run_threads}, min-res: {min_res}, empty-color: light-grey)..."
             )
             try:
                 res = ToolRunner.run(
@@ -680,19 +696,17 @@ class OpenMVSTextureStage(Stage):
                 if output_glb.exists():
                     break
                 else:
-                    if tex_attempt == 0:
-                        tex_res_level = 2
+                    if attempt_idx < len(attempts_config) - 1:
                         ctx.log_cb(
                             f"[OpenMVS] WARNING: TextureMesh exited with code {res.exit_code} without generating output. "
-                            f"Retrying at lower resolution-level 2..."
+                            f"Retrying with lower-memory settings..."
                         )
                         continue
             except Exception as e:
-                if tex_attempt == 0:
-                    tex_res_level = 2
+                if attempt_idx < len(attempts_config) - 1:
                     ctx.log_cb(
                         f"[OpenMVS] WARNING: TextureMesh failed ({str(e)[:120]}). "
-                        f"Retrying at lower resolution-level 2..."
+                        f"Retrying with lower-memory settings..."
                     )
                     continue
                 raise
