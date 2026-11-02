@@ -2,14 +2,15 @@
 """
 ScanForge 3DGS Proof Renderer (CUDA gsplat rasterization)
 Renders 4 high-resolution diagnostic proof views of a 3D Gaussian Splat model:
-1. Interior Eye-Level Walkthrough (Camera A from COLMAP trajectory)
-2. Interior Eye-Level Walkthrough (Camera B from COLMAP trajectory)
-3. Elevated 3/4 Cutaway Overview (looking at room center from elevated angle)
+1. Interior Eye-Level Walkthrough (Camera A from trajectory)
+2. Interior Eye-Level Walkthrough (Camera B from trajectory)
+3. Elevated 3/4 Cutaway Overview (looking at centered room from elevated angle)
 4. Floor Plan Top-Down (XZ Layout looking down from above)
 """
 
 import sys
 import math
+import json
 import numpy as np
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
@@ -17,12 +18,17 @@ from plyfile import PlyData
 
 
 def make_w2c(eye, lookat, up=np.array([0.0, 1.0, 0.0])):
-    """Constructs an OpenCV-convention World-to-Camera (W2C) 4x4 matrix."""
+    """
+    Constructs an OpenCV-convention World-to-Camera (W2C) 4x4 matrix.
+    Convention:
+    - X_cam points RIGHT
+    - Y_cam points DOWN (top of image corresponds to -Y_cam)
+    - Z_cam points FORWARD along optical axis (lookat - eye)
+    """
     eye = np.array(eye, dtype=float)
     lookat = np.array(lookat, dtype=float)
     up = np.array(up, dtype=float)
 
-    # Forward: camera Z points from eye toward lookat
     z_cam = lookat - eye
     z_len = np.linalg.norm(z_cam)
     if z_len < 1e-6:
@@ -30,14 +36,13 @@ def make_w2c(eye, lookat, up=np.array([0.0, 1.0, 0.0])):
     else:
         z_cam = z_cam / z_len
 
-    # Camera right X: in OpenCV (X right, Y down, Z forward)
-    # With world up +Y, camera down is -up, so right X = Z x (-up)
-    x_cam = np.cross(z_cam, -up)
+    # Camera right X: Forward x Up = Right
+    x_cam = np.cross(z_cam, up)
     if np.linalg.norm(x_cam) < 1e-6:
         x_cam = np.cross(z_cam, np.array([0.0, 0.0, 1.0]))
     x_cam = x_cam / np.linalg.norm(x_cam)
 
-    # Camera down Y = Z x X
+    # Camera down Y: Forward x Right = Down
     y_cam = np.cross(z_cam, x_cam)
     y_cam = y_cam / np.linalg.norm(y_cam)
 
@@ -51,15 +56,77 @@ def make_w2c(eye, lookat, up=np.array([0.0, 1.0, 0.0])):
     return w2c
 
 
-def parse_colmap_cameras(workdir: Path):
-    """Parses registered camera poses and intrinsics from aligned_sparse or sparse."""
+def parse_cameras(workdir: Path):
+    """Parses camera poses, prioritizing centered cameras_aligned.json and real cameras.txt intrinsics."""
     from scipy.spatial.transform import Rotation as R
 
     sparse_dirs = [
         workdir / "aligned_sparse" / "0",
         workdir / "sparse" / "0",
         workdir / "nerfstudio_data" / "sparse" / "0",
+        workdir / "sparse_txt",
     ]
+
+    # Default to 1080p landscape
+    fx, fy, cx, cy = 1150.0, 1150.0, 960.0, 540.0
+    w_orig, h_orig = 1920, 1080
+
+    # Search for cameras.txt
+    for d in sparse_dirs:
+        cam_file = d / "cameras.txt"
+        if cam_file.exists():
+            for line in cam_file.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 5:
+                    w_orig = int(parts[2])
+                    h_orig = int(parts[3])
+                    model = parts[1].upper()
+                    if model == "SIMPLE_RADIAL" and len(parts) >= 7:
+                        f = float(parts[4])
+                        fx = fy = f
+                        cx = float(parts[5])
+                        cy = float(parts[6])
+                    elif model in {"PINHOLE", "OPENCV"} and len(parts) >= 8:
+                        fx = float(parts[4])
+                        fy = float(parts[5])
+                        cx = float(parts[6])
+                        cy = float(parts[7])
+                    break
+            break
+
+    # Prioritize cameras_aligned.json
+    cameras_json = workdir / "cameras_aligned.json"
+    if not cameras_json.exists() and (workdir / "cleaned_splat.ply").exists():
+        # Check parent or siblings
+        for cand in [workdir.parent / "cameras_aligned.json", workdir / "cameras_aligned.json"]:
+            if cand.exists():
+                cameras_json = cand
+                break
+
+    if cameras_json.exists():
+        try:
+            data = json.loads(cameras_json.read_text())
+            cams = []
+            for c in data.get("cameras", []):
+                pos = np.array(c["position"], dtype=float)
+                fwd = np.array(c.get("forward", [0.0, 0.0, 1.0]), dtype=float)
+                up_vec = np.array(c.get("up", [0.0, 1.0, 0.0]), dtype=float)
+                lookat = pos + fwd
+                w2c = make_w2c(pos, lookat, up=up_vec)
+                cams.append({
+                    "name": c.get("name", "cam"),
+                    "w2c": w2c,
+                    "center": pos,
+                    "forward": fwd,
+                })
+            if cams:
+                return cams, fx, fy, cx, cy, w_orig, h_orig
+        except Exception as e:
+            print(f"Notice: failed parsing cameras_aligned.json ({e}), trying COLMAP sparse...")
+
     target_sparse = None
     for d in sparse_dirs:
         if (d / "images.txt").exists():
@@ -67,34 +134,7 @@ def parse_colmap_cameras(workdir: Path):
             break
 
     if not target_sparse:
-        return [], 800.0, 800.0, 540.0, 900.0, 1080, 1800
-
-    # Read cameras.txt for intrinsics
-    fx, fy, cx, cy = 800.0, 800.0, 540.0, 900.0
-    w_orig, h_orig = 1080, 1800
-    cam_file = target_sparse / "cameras.txt"
-    if cam_file.exists():
-        for line in cam_file.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split()
-            if len(parts) >= 5:
-                # CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]
-                w_orig = int(parts[2])
-                h_orig = int(parts[3])
-                model = parts[1].upper()
-                if model == "SIMPLE_RADIAL" and len(parts) >= 7:
-                    f = float(parts[4])
-                    fx = fy = f
-                    cx = float(parts[5])
-                    cy = float(parts[6])
-                elif model in {"PINHOLE", "OPENCV"} and len(parts) >= 8:
-                    fx = float(parts[4])
-                    fy = float(parts[5])
-                    cx = float(parts[6])
-                    cy = float(parts[7])
-                break
+        return [], fx, fy, cx, cy, w_orig, h_orig
 
     # Read images.txt for camera poses
     images_txt = target_sparse / "images.txt"
@@ -147,7 +187,7 @@ def render_splat_views(ply_path: str, output_image_path: str):
     if workdir.name in {"splat_export", "outputs"}:
         workdir = workdir.parent
 
-    colmap_cams, orig_fx, orig_fy, orig_cx, orig_cy, w_orig, h_orig = parse_colmap_cameras(workdir)
+    colmap_cams, orig_fx, orig_fy, orig_cx, orig_cy, w_orig, h_orig = parse_cameras(workdir)
 
     # Check CUDA and gsplat availability
     has_cuda_gsplat = False
@@ -190,10 +230,10 @@ def render_splat_views(ply_path: str, output_image_path: str):
         def render_gsplat(w2c_mat, fx_in=None, fy_in=None, cx_in=None, cy_in=None):
             sx = panel_w / float(w_orig)
             sy = panel_h / float(h_orig)
-            fx = (fx_in if fx_in is not None else orig_fx) * sx
-            fy = (fy_in if fy_in is not None else orig_fy) * sy
-            cx = (cx_in if cx_in is not None else orig_cx) * sx
-            cy = (cy_in if cy_in is not None else orig_cy) * sy
+            fx = fx_in if fx_in is not None else (orig_fx * sx)
+            fy = fy_in if fy_in is not None else (orig_fy * sy)
+            cx = cx_in if cx_in is not None else (orig_cx * sx)
+            cy = cy_in if cy_in is not None else (orig_cy * sy)
 
             K = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]], dtype=torch.float32, device="cuda").unsqueeze(0)
             viewmats = torch.tensor(w2c_mat, dtype=torch.float32, device="cuda").unsqueeze(0)
@@ -243,18 +283,20 @@ def render_splat_views(ply_path: str, output_image_path: str):
             w2c2 = make_w2c(eye2, center - np.array([0.0, 0.0, 0.5 * span[2]]))
             img2 = render_gsplat(w2c2, fx_in=1000.0, fy_in=1000.0, cx_in=panel_w/2.0, cy_in=panel_h/2.0)
 
-        # 3. Elevated 3/4 Cutaway Overview
+        # 3. Elevated 3/4 Cutaway Overview (Looking at centered origin)
         print("Rendering View 3: Elevated 3/4 Cutaway Overview...")
-        eye3 = center + np.array([-1.2 * span[0], 1.4 * span[1] + 1.2, -1.2 * span[2]])
-        w2c3 = make_w2c(eye3, center)
+        target3 = np.array([0.0, span[1] * 0.35, 0.0])
+        eye3 = target3 + np.array([-1.2 * max(span[0], 3.0), span[1] * 1.3 + 1.5, -1.2 * max(span[2], 3.0)])
+        w2c3 = make_w2c(eye3, target3, up=np.array([0.0, 1.0, 0.0]))
         title3 = "View 3: Elevated 3/4 Cutaway Overview"
         f_ov = 1000.0
         img3 = render_gsplat(w2c3, fx_in=f_ov, fy_in=f_ov, cx_in=panel_w/2.0, cy_in=panel_h/2.0)
 
-        # 4. Floor Plan Top-Down (XZ Layout)
+        # 4. Floor Plan Top-Down (XZ Layout looking down from above)
         print("Rendering View 4: Floor Plan Top-Down (XZ Layout)...")
-        eye4 = center + np.array([0.0, max(span[0], span[2]) * 1.5, 0.0])
-        w2c4 = make_w2c(eye4, center, up=np.array([0.0, 0.0, -1.0]))
+        target4 = np.array([0.0, 0.0, 0.0])
+        eye4 = np.array([0.0, max(span[0], span[2], 5.0) * 1.6, 0.0])
+        w2c4 = make_w2c(eye4, target4, up=np.array([0.0, 0.0, -1.0]))
         title4 = "View 4: Floor Plan Top-Down (XZ Layout)"
         f_top = 900.0
         img4 = render_gsplat(w2c4, fx_in=f_top, fy_in=f_top, cx_in=panel_w/2.0, cy_in=panel_h/2.0)
@@ -304,7 +346,6 @@ def render_splat_views(ply_path: str, output_image_path: str):
         (title4, panel_w + 20, panel_h + 20),
     ]
     for text, px, py in panels:
-        # Background pill
         draw.rectangle([px - 6, py - 4, px + len(text) * 8 + 12, py + 22], fill=(10, 14, 20))
         draw.text((px, py), text, fill=(56, 189, 248), font=font)
 

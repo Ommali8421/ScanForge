@@ -79,6 +79,8 @@ class SplatfactoStage(Stage):
                 "--max-num-iterations", str(total_iters),
                 "--pipeline.model.cull-alpha-thresh", "0.01",
                 "--pipeline.model.cull-scale-thresh", "0.5",
+                "--pipeline.model.use-scale-regularization", "True",
+                "--pipeline.model.max-gauss-ratio", "5.0",
                 "colmap",
                 "--data", str(data_dir),
                 "--colmap-path", "sparse/0",

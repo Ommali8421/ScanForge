@@ -287,3 +287,114 @@ def test_splat_scale_calibration_math():
     scaled_linear = math.exp(scaled_log_scale)
     expected_linear = 0.04 * scale_factor
     assert math.isclose(scaled_linear, expected_linear, rel_tol=1e-5)
+
+
+def test_pancake_vs_needle_spike_classification():
+    """
+    Verifies that planar pancakes (s0/s1 < 0.25, s2/s1 <= 4.5) are preserved,
+    while 1D needle spikes (s2/s1 > 5.0, s2 > 2.5 * median) are correctly culled.
+    """
+    # 1. Planar pancake (wall surflet): flat thickness 0.005, width 0.08, length 0.12
+    s_pancake = np.array([0.005, 0.08, 0.12])
+    s_sorted = np.sort(s_pancake)
+    s_min, s_mid, s_max = s_sorted[0], s_sorted[1], s_sorted[2]
+    is_pancake = (s_min / (s_mid + 1e-8) < 0.25) and (s_max / (s_mid + 1e-8) <= 4.5)
+    assert is_pancake, "Planar surflet should be recognized as pancake"
+
+    # 2. 1D needle spike: thickness 0.005, width 0.008, length 0.25
+    s_needle = np.array([0.005, 0.008, 0.25])
+    s_sorted = np.sort(s_needle)
+    s_min, s_mid, s_max = s_sorted[0], s_sorted[1], s_sorted[2]
+    is_pancake_needle = (s_min / (s_mid + 1e-8) < 0.25) and (s_max / (s_mid + 1e-8) <= 4.5)
+    assert not is_pancake_needle, "1D needle spike must NOT be recognized as pancake"
+    is_needle = (s_max / (s_mid + 1e-8) > 5.0) and (s_max > 2.5 * 0.03)
+    assert is_needle, "1D needle spike should be detected as needle"
+
+
+def test_rx180_quaternion_rotation_math():
+    """
+    Verifies that left-multiplying Gaussian quaternion (w, x, y, z) by q_x180 = (0, 1, 0, 0)
+    produces (-x, w, -z, y), exactly rotating the 3D Gaussian covariance matrix by R_x180 = diag([1, -1, -1])
+    with zero distortion or shear.
+    """
+    R_x180 = np.diag([1.0, -1.0, -1.0])
+
+    for angles in [[10, 20, 30], [45, 90, 0], [0, 180, 45], [-30, 60, -90]]:
+        rot = R.from_euler("xyz", angles, degrees=True)
+        R_orig = rot.as_matrix()
+        R_expected = R_x180 @ R_orig
+
+        q_orig = rot.as_quat()  # [x, y, z, w]
+        qx, qy, qz, qw = q_orig[0], q_orig[1], q_orig[2], q_orig[3]
+
+        # Transformation formula: (w, x, y, z) -> (-x, w, -z, y)
+        new_qw = -qx
+        new_qx = qw
+        new_qy = -qz
+        new_qz = qy
+
+        q_new = np.array([new_qx, new_qy, new_qz, new_qw])
+        R_actual = R.from_quat(q_new).as_matrix()
+
+        np.testing.assert_allclose(R_actual, R_expected, atol=1e-6)
+
+        # Verify covariance matrix transformation: Sigma' = R' S S^T R'^T == R_x180 Sigma R_x180^T
+        S = np.diag([0.02, 0.05, 0.10])
+        Sigma_expected = R_x180 @ (R_orig @ S @ S.T @ R_orig.T) @ R_x180.T
+        Sigma_actual = R_actual @ S @ S.T @ R_actual.T
+        np.testing.assert_allclose(Sigma_actual, Sigma_expected, atol=1e-6)
+
+
+def test_origin_centering_and_floor_grounding():
+    """
+    Verifies that SplatCleanupStage translates model so that horizontal bounds are centered
+    around (0.000, 0.000) and floor is grounded at Y = 0.000.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        raw_ply = tdp / "splat.ply"
+
+        # Create synthetic points offset to center=(10.0, 3.0, -15.0)
+        create_synthetic_3dgs_ply(raw_ply, num_points=200, center=(10.0, 3.0, -15.0), spread=2.0)
+
+        # Write camera poses at eye level
+        sparse_dir = tdp / "aligned_sparse" / "0"
+        sparse_dir.mkdir(parents=True)
+        (sparse_dir / "images.txt").write_text(
+            "# Image list\n"
+            "1 1.0 0.0 0.0 0.0 -10.0 -3.0 15.0 1 frame_0001.jpg\n"
+            "100.0 200.0 1\n"
+        )
+
+        ctx = JobContext(
+            job_id="test_centering_job",
+            workdir=tdp,
+            params={"quality": "standard"},
+            cancel_token=CancelToken(),
+            log_cb=lambda s: None,
+            progress_cb=lambda p: None,
+        )
+
+        stage = SplatCleanupStage()
+        res = stage.run(ctx)
+        assert res.success
+
+        cleaned = PlyData.read(str(tdp / "cleaned_splat.ply"))["vertex"].data
+        x = np.asarray(cleaned["x"])
+        y = np.asarray(cleaned["y"])
+        z = np.asarray(cleaned["z"])
+
+        # Horizontal center must be approximately (0, 0)
+        c_x = 0.5 * (np.percentile(x, 5.0) + np.percentile(x, 95.0))
+        c_z = 0.5 * (np.percentile(z, 5.0) + np.percentile(z, 95.0))
+        assert abs(c_x) < 0.10, f"Expected |c_x| < 0.10, got {c_x}"
+        assert abs(c_z) < 0.10, f"Expected |c_z| < 0.10, got {c_z}"
+
+        # Lowest points (floor) should be grounded near Y = 0.0
+        y_p1 = np.percentile(y, 1.0)
+        assert abs(y_p1) < 0.15, f"Expected floor near Y=0.0, got {y_p1}"
+
+        # cameras_aligned.json must be emitted
+        cam_json_file = tdp / "cameras_aligned.json"
+        assert cam_json_file.exists()
+

@@ -163,9 +163,12 @@ class SplatFormatConverterStage(Stage):
 
         # 3. Create ZIP bundle
         zip_path = ctx.workdir / "splat.zip"
+        cameras_json = ctx.workdir / "cameras_aligned.json"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(input_ply, arcname="cleaned_splat.ply")
             zf.write(splat_file, arcname="cleaned_splat.splat")
+            if cameras_json.exists():
+                zf.write(cameras_json, arcname="cameras_aligned.json")
             if has_spz and spz_file.exists():
                 zf.write(spz_file, arcname="cleaned_splat.spz")
 
@@ -181,6 +184,8 @@ class SplatFormatConverterStage(Stage):
             ctx.workdir / "model.ply",
             zip_path,
         ]
+        if cameras_json.exists():
+            out_files.append(cameras_json)
         if has_spz and spz_file.exists():
             out_files.append(spz_file)
 

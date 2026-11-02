@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import * as THREE from "three";
 import * as GaussianSplats3D from "@mkkellogg/gaussian-splats-3d";
 import {
   Download,
@@ -7,6 +8,9 @@ import {
   Sliders,
   Footprints,
   Palette,
+  Home,
+  Layers,
+  Compass,
 } from "lucide-react";
 
 export type SplatTheme = "dark-slate" | "deep-void" | "studio-grey" | "white";
@@ -18,6 +22,14 @@ interface CropBox {
   maxY: number;
   minZ: number;
   maxZ: number;
+}
+
+interface AlignedCamera {
+  index: number;
+  name: string;
+  position: [number, number, number];
+  up: [number, number, number];
+  forward: [number, number, number];
 }
 
 interface Props {
@@ -43,7 +55,7 @@ interface Props {
 
 export const SplatViewer: React.FC<Props> = ({
   splatUrl,
-  jobId: _jobId,
+  jobId,
   splatCount,
   bounds,
   dimensions: _dimensions,
@@ -55,12 +67,14 @@ export const SplatViewer: React.FC<Props> = ({
 
   const [loading, setLoading] = useState(true);
   const [loadProgress, setLoadProgress] = useState(0);
-  const [loadingStage, setLoadingStage] = useState("Streaming 3D Gaussian Splats...");
+  const [loadingStage, setLoadingStage] = useState("Connecting to 3DGS WebGL Stream...");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [theme, setTheme] = useState<SplatTheme>("dark-slate");
   const [splatScale, setSplatScale] = useState(1.0);
   const [walkMode, setWalkMode] = useState(false);
   const [showCropPanel, setShowCropPanel] = useState(false);
+  const [activePreset, setActivePreset] = useState<"inside" | "dollhouse" | "topdown" | "custom">("inside");
+  const [alignedCameras, setAlignedCameras] = useState<AlignedCamera[]>([]);
 
   // 6-slider crop box state
   const [cropBox, setCropBox] = useState<CropBox>({
@@ -95,6 +109,181 @@ export const SplatViewer: React.FC<Props> = ({
     });
   };
 
+  // Fetch aligned camera poses if available
+  useEffect(() => {
+    if (!jobId) return;
+    let active = true;
+    fetch(`/api/jobs/${jobId}/artifacts/cameras_aligned.json`)
+      .then((res) => {
+        if (!res.ok) return null;
+        return res.json();
+      })
+      .then((data) => {
+        if (active && data?.cameras && Array.isArray(data.cameras)) {
+          setAlignedCameras(data.cameras);
+        }
+      })
+      .catch((e) => {
+        console.debug("cameras_aligned.json not available:", e);
+      });
+    return () => {
+      active = false;
+    };
+  }, [jobId]);
+
+  // Hook GPU shader clipping onto splat mesh material
+  const applyGpuClipping = useCallback((box: CropBox) => {
+    if (!viewerRef.current?.splatMesh) return;
+    const mesh = viewerRef.current.splatMesh;
+    const mat = mesh.material;
+    if (!mat) return;
+
+    if (!mat.uniforms.sfCropMin) {
+      mat.uniforms.sfCropMin = { value: new THREE.Vector3(box.minX, box.minY, box.minZ) };
+      mat.uniforms.sfCropMax = { value: new THREE.Vector3(box.maxX, box.maxY, box.maxZ) };
+      mat.uniforms.sfCropEnabled = { value: 1 };
+
+      if (!mat.vertexShader.includes("sfCropMin")) {
+        mat.vertexShader = `
+          uniform vec3 sfCropMin;
+          uniform vec3 sfCropMax;
+          uniform int sfCropEnabled;
+        ` + mat.vertexShader;
+
+        mat.vertexShader = mat.vertexShader.replace(
+          "vec3 splatCenter = uintBitsToFloat(uvec3(sampledCenterColor.gba));",
+          `vec3 splatCenter = uintBitsToFloat(uvec3(sampledCenterColor.gba));
+          if (sfCropEnabled == 1) {
+            if (splatCenter.x < sfCropMin.x || splatCenter.x > sfCropMax.x ||
+                splatCenter.y < sfCropMin.y || splatCenter.y > sfCropMax.y ||
+                splatCenter.z < sfCropMin.z || splatCenter.z > sfCropMax.z) {
+              gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+              return;
+            }
+          }`
+        );
+        mat.needsUpdate = true;
+      }
+    } else {
+      mat.uniforms.sfCropMin.value.set(box.minX, box.minY, box.minZ);
+      mat.uniforms.sfCropMax.value.set(box.maxX, box.maxY, box.maxZ);
+      mat.uniforms.sfCropEnabled.value = 1;
+    }
+  }, []);
+
+  // Update clipping when cropBox changes
+  useEffect(() => {
+    applyGpuClipping(cropBox);
+  }, [cropBox, applyGpuClipping]);
+
+  // View Preset: Inside Room
+  const handlePresetInside = useCallback(() => {
+    setActivePreset("inside");
+    if (!viewerRef.current?.camera) return;
+
+    // Reset crop box to full room
+    if (bounds) {
+      setCropBox({
+        minX: Math.floor(bounds.min_x - 1.0),
+        maxX: Math.ceil(bounds.max_x + 1.0),
+        minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
+        maxY: Math.ceil(bounds.max_y + 1.0),
+        minZ: Math.floor(bounds.min_z - 1.0),
+        maxZ: Math.ceil(bounds.max_z + 1.0),
+      });
+    }
+
+    if (alignedCameras.length > 0) {
+      const cam0 = alignedCameras[0];
+      const pos = cam0.position;
+      const fwd = cam0.forward;
+      viewerRef.current.camera.position.set(pos[0], pos[1], pos[2]);
+      if (viewerRef.current.controls?.target) {
+        viewerRef.current.controls.target.set(
+          pos[0] + fwd[0] * 3.0,
+          pos[1] + fwd[1] * 3.0,
+          pos[2] + fwd[2] * 3.0
+        );
+        viewerRef.current.controls.update?.();
+      }
+    } else {
+      viewerRef.current.camera.position.set(0, 1.4, 0);
+      if (viewerRef.current.controls?.target) {
+        viewerRef.current.controls.target.set(0, 1.3, 3.0);
+        viewerRef.current.controls.update?.();
+      }
+    }
+  }, [alignedCameras, bounds]);
+
+  // View Preset: Dollhouse Cutaway (Orbits elevated 3/4 with top 18% ceiling cutaway)
+  const handlePresetDollhouse = useCallback(() => {
+    setActivePreset("dollhouse");
+    if (!viewerRef.current?.camera) return;
+
+    let cx = 0, cy = 1.0, cz = 0;
+    let spanX = 5.0, spanY = 2.8, spanZ = 5.0;
+
+    if (bounds) {
+      cx = (bounds.min_x + bounds.max_x) / 2;
+      cy = (bounds.min_y + bounds.max_y) / 2;
+      cz = (bounds.min_z + bounds.max_z) / 2;
+      spanX = Math.max(bounds.max_x - bounds.min_x, 4.0);
+      spanY = Math.max(bounds.max_y - bounds.min_y, 2.0);
+      spanZ = Math.max(bounds.max_z - bounds.min_z, 4.0);
+
+      // Cut away top 18% of ceiling
+      const ceilingCutY = bounds.max_y - 0.18 * spanY;
+      setCropBox({
+        minX: Math.floor(bounds.min_x - 1.0),
+        maxX: Math.ceil(bounds.max_x + 1.0),
+        minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
+        maxY: ceilingCutY,
+        minZ: Math.floor(bounds.min_z - 1.0),
+        maxZ: Math.ceil(bounds.max_z + 1.0),
+      });
+    }
+
+    // Elevated 3/4 viewpoint looking down at room centroid
+    const eyeX = cx - 1.1 * spanX;
+    const eyeY = cy + 1.2 * spanY + 1.0;
+    const eyeZ = cz - 1.1 * spanZ;
+    viewerRef.current.camera.position.set(eyeX, eyeY, eyeZ);
+    if (viewerRef.current.controls?.target) {
+      viewerRef.current.controls.target.set(cx, cy * 0.5, cz);
+      viewerRef.current.controls.update?.();
+    }
+  }, [bounds]);
+
+  // View Preset: Floor Plan Top-Down
+  const handlePresetTopDown = useCallback(() => {
+    setActivePreset("topdown");
+    if (!viewerRef.current?.camera) return;
+
+    let cx = 0, cz = 0;
+    let span = 6.0;
+
+    if (bounds) {
+      cx = (bounds.min_x + bounds.max_x) / 2;
+      cz = (bounds.min_z + bounds.max_z) / 2;
+      span = Math.max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z, 5.0);
+
+      setCropBox({
+        minX: Math.floor(bounds.min_x - 1.0),
+        maxX: Math.ceil(bounds.max_x + 1.0),
+        minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
+        maxY: Math.ceil(bounds.max_y + 1.0),
+        minZ: Math.floor(bounds.min_z - 1.0),
+        maxZ: Math.ceil(bounds.max_z + 1.0),
+      });
+    }
+
+    viewerRef.current.camera.position.set(cx, span * 1.5, cz);
+    if (viewerRef.current.controls?.target) {
+      viewerRef.current.controls.target.set(cx, 0.0, cz);
+      viewerRef.current.controls.update?.();
+    }
+  }, [bounds]);
+
   // Initialize GaussianSplats3D.Viewer
   useEffect(() => {
     if (!containerRef.current || !splatUrl) return;
@@ -108,7 +297,6 @@ export const SplatViewer: React.FC<Props> = ({
     let viewer: any = null;
 
     try {
-      // Determine format from URL with explicit fallback
       let format = GaussianSplats3D.SceneFormat.Splat;
       const lower = splatUrl.toLowerCase();
       if (lower.endsWith(".ply") || lower.includes("/ply") || lower.includes("format=ply")) {
@@ -124,10 +312,10 @@ export const SplatViewer: React.FC<Props> = ({
       viewer = new GaussianSplats3D.Viewer({
         rootElement: containerRef.current,
         cameraUp: [0, 1, 0],
-        initialCameraPosition: [0, 1.6, 3.5],
-        initialCameraLookAt: [0, 1.0, 0],
-        sharedMemoryForWorkers: false, // Prevents Chrome/Edge SharedArrayBuffer crashes
-        gpuAcceleratedSort: false,     // MUST be false when sharedMemoryForWorkers is false in v0.4.7!
+        initialCameraPosition: [0, 1.4, 0],
+        initialCameraLookAt: [0, 1.3, 3.0],
+        sharedMemoryForWorkers: false,
+        gpuAcceleratedSort: false,
         antialiased: true,
         sphericalHarmonicsDegree: 0,
         selfDrivenMode: true,
@@ -159,14 +347,13 @@ export const SplatViewer: React.FC<Props> = ({
         .then(() => {
           if (disposed) return;
 
-          // 1. MUST start viewer animation loop!
           try {
             viewer.start();
           } catch (e) {
-            console.debug("viewer.start error:", e);
+            console.debug("viewer.start exception:", e);
           }
 
-          // 2. Dynamic camera & crop auto-framing
+          // Auto-frame initial room view
           try {
             let cx = 0, cy = 1.0, cz = 0;
             let span = 5.0;
@@ -177,29 +364,17 @@ export const SplatViewer: React.FC<Props> = ({
               cz = (bounds.min_z + bounds.max_z) / 2;
               span = Math.max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z, 4.0);
 
-              const pad = Math.max(span * 0.2, 2.0);
-              setCropBox({
+              const pad = Math.max(span * 0.2, 1.5);
+              const initialBox: CropBox = {
                 minX: Math.floor(bounds.min_x - pad),
                 maxX: Math.ceil(bounds.max_x + pad),
-                minY: Math.floor(Math.min(-0.5, bounds.min_y - 0.5)),
+                minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
                 maxY: Math.ceil(bounds.max_y + pad),
                 minZ: Math.floor(bounds.min_z - pad),
                 maxZ: Math.ceil(bounds.max_z + pad),
-              });
-            } else if (viewer.splatMesh?.calculatedSceneCenter) {
-              const sc = viewer.splatMesh.calculatedSceneCenter;
-              cx = sc.x;
-              cy = sc.y;
-              cz = sc.z;
-              span = (viewer.splatMesh.maxSplatDistanceFromSceneCenter || 5.0) * 1.5;
-              setCropBox({
-                minX: Math.floor(cx - span),
-                maxX: Math.ceil(cx + span),
-                minY: Math.floor(Math.min(-0.5, cy - span * 0.5)),
-                maxY: Math.ceil(cy + span),
-                minZ: Math.floor(cz - span),
-                maxZ: Math.ceil(cz + span),
-              });
+              };
+              setCropBox(initialBox);
+              applyGpuClipping(initialBox);
             }
 
             if (viewer.camera) {
@@ -207,14 +382,11 @@ export const SplatViewer: React.FC<Props> = ({
               viewer.camera.far = 2000.0;
               viewer.camera.updateProjectionMatrix();
 
-              // Place eye-level camera slightly back from centroid looking slightly down
-              const camY = Math.max(cy + 0.5, 1.4);
-              viewer.camera.position.set(cx, camY, cz + span * 0.65);
+              // Spawn at interior eye-level looking forward
+              viewer.camera.position.set(cx, Math.max(cy * 0.6, 1.3), cz - span * 0.1);
               if (viewer.controls?.target) {
-                viewer.controls.target.set(cx, cy, cz);
-                if (typeof viewer.controls.update === "function") {
-                  viewer.controls.update();
-                }
+                viewer.controls.target.set(cx, Math.max(cy * 0.6, 1.3), cz + span * 0.6);
+                viewer.controls.update?.();
               }
             }
           } catch (e) {
@@ -247,18 +419,17 @@ export const SplatViewer: React.FC<Props> = ({
       }
       viewerRef.current = null;
     };
-  }, [splatUrl, bounds]);
+  }, [splatUrl, bounds, applyGpuClipping]);
 
   // WASD walk mode key listeners
   useEffect(() => {
     if (!walkMode || !viewerRef.current) return;
 
-    const moveSpeed = 0.1;
+    const moveSpeed = 0.12;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!viewerRef.current?.camera) return;
       const cam = viewerRef.current.camera;
       const forward = new Float32Array(3);
-      // Direction camera is facing (horizontal projection)
       forward[0] = -cam.matrix.elements[8];
       forward[1] = 0;
       forward[2] = -cam.matrix.elements[10];
@@ -304,32 +475,6 @@ export const SplatViewer: React.FC<Props> = ({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [walkMode]);
 
-  const handleResetView = () => {
-    if (viewerRef.current?.camera) {
-      if (bounds) {
-        const cx = (bounds.min_x + bounds.max_x) / 2;
-        const cy = (bounds.min_y + bounds.max_y) / 2;
-        const cz = (bounds.min_z + bounds.max_z) / 2;
-        const span = Math.max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z, 4.0);
-        viewerRef.current.camera.position.set(cx, Math.max(cy + 0.5, 1.4), cz + span * 0.65);
-        if (viewerRef.current.controls?.target) {
-          viewerRef.current.controls.target.set(cx, cy, cz);
-          if (typeof viewerRef.current.controls.update === "function") {
-            viewerRef.current.controls.update();
-          }
-        }
-      } else {
-        viewerRef.current.camera.position.set(0, 1.6, 3.5);
-        if (viewerRef.current.controls?.target) {
-          viewerRef.current.controls.target.set(0, 1.0, 0);
-          if (typeof viewerRef.current.controls.update === "function") {
-            viewerRef.current.controls.update();
-          }
-        }
-      }
-    }
-  };
-
   const handleSplatScaleChange = (val: number) => {
     setSplatScale(val);
     if (viewerRef.current?.splatMesh) {
@@ -363,7 +508,7 @@ export const SplatViewer: React.FC<Props> = ({
             />
           </div>
           <span className="text-xs font-mono text-zinc-500 mt-2">
-            Y=0 floor aligned • WebGL CUDA-compatible stream
+            World-centered (0, 0, 0) • Floor flush at Y=0.000m • +Y Up
           </span>
         </div>
       )}
@@ -390,7 +535,51 @@ export const SplatViewer: React.FC<Props> = ({
           </span>
         </div>
         <div className="text-[11px] font-mono text-zinc-400/90 px-3 py-1 rounded-lg bg-zinc-950/60 backdrop-blur-sm border border-zinc-800/60 w-fit">
-          Up: +Y (0, 1, 0) • Floor flush at Y=0.000m
+          Up: +Y (0, 1, 0) • Floor flush at Y=0.000m • Center (0, 0)
+        </div>
+      </div>
+
+      {/* Top Center 1-Click View Presets */}
+      <div className="absolute top-5 inset-x-0 z-20 flex justify-center pointer-events-none">
+        <div className="flex items-center space-x-1 p-1 rounded-2xl bg-zinc-950/80 border border-zinc-800/90 backdrop-blur-xl shadow-2xl pointer-events-auto">
+          <button
+            onClick={handlePresetInside}
+            className={`flex items-center space-x-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all ${
+              activePreset === "inside"
+                ? "bg-cyan-500 text-zinc-950 shadow-md shadow-cyan-500/20"
+                : "text-zinc-400 hover:text-white hover:bg-zinc-800/60"
+            }`}
+            title="Inside Room Walkthrough Camera"
+          >
+            <Home className="w-3.5 h-3.5" />
+            <span>Inside Room</span>
+          </button>
+
+          <button
+            onClick={handlePresetDollhouse}
+            className={`flex items-center space-x-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all ${
+              activePreset === "dollhouse"
+                ? "bg-cyan-500 text-zinc-950 shadow-md shadow-cyan-500/20"
+                : "text-zinc-400 hover:text-white hover:bg-zinc-800/60"
+            }`}
+            title="Dollhouse 3/4 Overview with Ceiling Cutaway"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Dollhouse Cutaway</span>
+          </button>
+
+          <button
+            onClick={handlePresetTopDown}
+            className={`flex items-center space-x-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all ${
+              activePreset === "topdown"
+                ? "bg-cyan-500 text-zinc-950 shadow-md shadow-cyan-500/20"
+                : "text-zinc-400 hover:text-white hover:bg-zinc-800/60"
+            }`}
+            title="Floor Plan Top-Down View"
+          >
+            <Compass className="w-3.5 h-3.5" />
+            <span>Floor Plan</span>
+          </button>
         </div>
       </div>
 
@@ -418,7 +607,7 @@ export const SplatViewer: React.FC<Props> = ({
               ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/50"
               : "bg-zinc-900/80 text-zinc-300 border-zinc-800 hover:text-white hover:bg-zinc-800"
           }`}
-          title="Bounding Crop Box"
+          title="Bounding Crop Box & Clipping"
         >
           <Sliders className="w-4 h-4" />
         </button>
@@ -434,7 +623,7 @@ export const SplatViewer: React.FC<Props> = ({
 
         {/* Reset view */}
         <button
-          onClick={handleResetView}
+          onClick={handlePresetInside}
           className="p-2 rounded-xl bg-zinc-900/80 border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 transition-all shadow-lg backdrop-blur-md"
           title="Reset Camera View"
         >
@@ -448,9 +637,19 @@ export const SplatViewer: React.FC<Props> = ({
           <div className="flex items-center justify-between pb-2 border-b border-zinc-800">
             <span className="font-bold text-zinc-200">Real-Time Crop Box</span>
             <button
-              onClick={() =>
-                setCropBox({ minX: -10, maxX: 10, minY: -0.5, maxY: 6, minZ: -10, maxZ: 10 })
-              }
+              onClick={() => {
+                setActivePreset("custom");
+                if (bounds) {
+                  setCropBox({
+                    minX: Math.floor(bounds.min_x - 1.0),
+                    maxX: Math.ceil(bounds.max_x + 1.0),
+                    minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
+                    maxY: Math.ceil(bounds.max_y + 1.0),
+                    minZ: Math.floor(bounds.min_z - 1.0),
+                    maxZ: Math.ceil(bounds.max_z + 1.0),
+                  });
+                }
+              }}
               className="text-[10px] text-zinc-400 hover:text-cyan-400 transition-colors"
             >
               Reset
@@ -483,20 +682,26 @@ export const SplatViewer: React.FC<Props> = ({
             <div className="flex space-x-2">
               <input
                 type="range"
-                min="-15"
+                min="-20"
                 max="0"
                 step="0.5"
                 value={cropBox.minX}
-                onChange={(e) => setCropBox({ ...cropBox, minX: parseFloat(e.target.value) })}
+                onChange={(e) => {
+                  setActivePreset("custom");
+                  setCropBox({ ...cropBox, minX: parseFloat(e.target.value) });
+                }}
                 className="w-1/2 accent-indigo-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
               <input
                 type="range"
                 min="0"
-                max="15"
+                max="20"
                 step="0.5"
                 value={cropBox.maxX}
-                onChange={(e) => setCropBox({ ...cropBox, maxX: parseFloat(e.target.value) })}
+                onChange={(e) => {
+                  setActivePreset("custom");
+                  setCropBox({ ...cropBox, maxX: parseFloat(e.target.value) });
+                }}
                 className="w-1/2 accent-indigo-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
             </div>
@@ -515,16 +720,22 @@ export const SplatViewer: React.FC<Props> = ({
                 max="2"
                 step="0.1"
                 value={cropBox.minY}
-                onChange={(e) => setCropBox({ ...cropBox, minY: parseFloat(e.target.value) })}
+                onChange={(e) => {
+                  setActivePreset("custom");
+                  setCropBox({ ...cropBox, minY: parseFloat(e.target.value) });
+                }}
                 className="w-1/2 accent-emerald-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
               <input
                 type="range"
-                min="1"
-                max="10"
+                min="0.5"
+                max="12"
                 step="0.2"
                 value={cropBox.maxY}
-                onChange={(e) => setCropBox({ ...cropBox, maxY: parseFloat(e.target.value) })}
+                onChange={(e) => {
+                  setActivePreset("custom");
+                  setCropBox({ ...cropBox, maxY: parseFloat(e.target.value) });
+                }}
                 className="w-1/2 accent-emerald-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
             </div>
@@ -539,20 +750,26 @@ export const SplatViewer: React.FC<Props> = ({
             <div className="flex space-x-2">
               <input
                 type="range"
-                min="-15"
+                min="-20"
                 max="0"
                 step="0.5"
                 value={cropBox.minZ}
-                onChange={(e) => setCropBox({ ...cropBox, minZ: parseFloat(e.target.value) })}
+                onChange={(e) => {
+                  setActivePreset("custom");
+                  setCropBox({ ...cropBox, minZ: parseFloat(e.target.value) });
+                }}
                 className="w-1/2 accent-rose-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
               <input
                 type="range"
                 min="0"
-                max="15"
+                max="20"
                 step="0.5"
                 value={cropBox.maxZ}
-                onChange={(e) => setCropBox({ ...cropBox, maxZ: parseFloat(e.target.value) })}
+                onChange={(e) => {
+                  setActivePreset("custom");
+                  setCropBox({ ...cropBox, maxZ: parseFloat(e.target.value) });
+                }}
                 className="w-1/2 accent-rose-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
             </div>
