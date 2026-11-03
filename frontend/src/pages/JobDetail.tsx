@@ -370,18 +370,24 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
               const splatArtifact =
                 job.artifacts?.find((a) => a.filename === "model.splat") ||
                 job.artifacts?.find((a) => a.filename === "cleaned_splat.splat") ||
-                job.artifacts?.find((a) => a.filename.endsWith(".splat")) ||
+                job.artifacts?.find((a) => a.filename.endsWith(".splat"));
+              const plyArtifact =
                 job.artifacts?.find((a) => a.filename === "model.ply") ||
                 job.artifacts?.find((a) => a.filename === "cleaned_splat.ply") ||
-                job.artifacts?.find((a) => a.filename.endsWith(".ply")) ||
-                job.artifacts?.find((a) => a.filename.endsWith(".spz"));
+                job.artifacts?.find((a) => a.filename.endsWith(".ply") && !a.filename.includes("mesh"));
+
               const splatUrl = splatArtifact
                 ? `/api/jobs/${job.id}/artifacts/${splatArtifact.filename}`
                 : `/api/jobs/${job.id}/download/splat/model.splat`;
 
+              const hdUrl = plyArtifact
+                ? `/api/jobs/${job.id}/artifacts/${plyArtifact.filename}`
+                : `/api/jobs/${job.id}/download/ply/model.ply`;
+
               return (
                 <SplatViewer
                   splatUrl={splatUrl}
+                  hdUrl={hdUrl}
                   jobId={job.id}
                   splatCount={report?.gaussian_count}
                   bounds={report?.bounds}

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import * as THREE from "three";
 import * as GaussianSplats3D from "@mkkellogg/gaussian-splats-3d";
 import {
@@ -11,6 +11,8 @@ import {
   Home,
   Layers,
   Compass,
+  Zap,
+  Sparkles,
 } from "lucide-react";
 
 export type SplatTheme = "dark-slate" | "deep-void" | "studio-grey" | "white";
@@ -33,7 +35,8 @@ interface AlignedCamera {
 }
 
 interface Props {
-  splatUrl: string; // URL to .splat, .ply, or .spz
+  splatUrl: string; // Fast URL (.splat) or fallback URL
+  hdUrl?: string;   // HD URL (.ply with Spherical Harmonics)
   jobId?: string;
   splatCount?: number;
   bounds?: {
@@ -55,6 +58,7 @@ interface Props {
 
 export const SplatViewer: React.FC<Props> = ({
   splatUrl,
+  hdUrl,
   jobId,
   splatCount,
   bounds,
@@ -65,18 +69,42 @@ export const SplatViewer: React.FC<Props> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<any>(null);
 
+  // Core Viewer States
   const [loading, setLoading] = useState(true);
   const [loadProgress, setLoadProgress] = useState(0);
   const [loadingStage, setLoadingStage] = useState("Connecting to 3DGS WebGL Stream...");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [theme, setTheme] = useState<SplatTheme>("dark-slate");
   const [splatScale, setSplatScale] = useState(1.0);
-  const [walkMode, setWalkMode] = useState(false);
   const [showCropPanel, setShowCropPanel] = useState(false);
   const [activePreset, setActivePreset] = useState<"inside" | "dollhouse" | "topdown" | "custom">("inside");
   const [alignedCameras, setAlignedCameras] = useState<AlignedCamera[]>([]);
 
-  // 6-slider crop box state
+  // Quality Toggle: "fast" (.splat, shDegree 0) vs "hd" (.ply, shDegree 2)
+  const [splatQuality, setSplatQuality] = useState<"fast" | "hd">("fast");
+
+  // Navigation Mode: Orbit vs First-Person Walk
+  const [navMode, setNavMode] = useState<"orbit" | "walk">("orbit");
+  const [isPointerLocked, setIsPointerLocked] = useState(false);
+  const [speedMultiplier, setSpeedMultiplier] = useState(1.0);
+
+  // Refs for low-latency 60-144 FPS animation loop
+  const pressedKeysRef = useRef<Set<string>>(new Set());
+  const navModeRef = useRef<"orbit" | "walk">("orbit");
+  const speedMultiplierRef = useRef(1.0);
+  const horizontalRoomSpanRef = useRef(10.0);
+  const yawRef = useRef(0);
+  const pitchRef = useRef(0);
+  const isMouseDownRef = useRef(false);
+  const lastMousePosRef = useRef({ x: 0, y: 0 });
+  const splatScaleRef = useRef(1.0);
+  const savedPoseRef = useRef<{
+    pos: THREE.Vector3;
+    quat: THREE.Quaternion;
+    target?: THREE.Vector3;
+  } | null>(null);
+
+  // 6-slider crop box state & ref
   const [cropBox, setCropBox] = useState<CropBox>({
     minX: -15,
     maxX: 15,
@@ -85,6 +113,57 @@ export const SplatViewer: React.FC<Props> = ({
     minZ: -15,
     maxZ: 15,
   });
+  const cropBoxRef = useRef<CropBox>(cropBox);
+
+  // Keep synchronous refs updated
+  useEffect(() => {
+    navModeRef.current = navMode;
+  }, [navMode]);
+
+  useEffect(() => {
+    speedMultiplierRef.current = speedMultiplier;
+  }, [speedMultiplier]);
+
+  useEffect(() => {
+    cropBoxRef.current = cropBox;
+  }, [cropBox]);
+
+  useEffect(() => {
+    splatScaleRef.current = splatScale;
+  }, [splatScale]);
+
+  const horizontalRoomSpan = useMemo(() => {
+    if (bounds) {
+      return Math.max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z, 2.0);
+    }
+    return 10.0;
+  }, [bounds]);
+
+  useEffect(() => {
+    horizontalRoomSpanRef.current = horizontalRoomSpan;
+  }, [horizontalRoomSpan]);
+
+  // Compute active streaming URL and format based on quality mode
+  const activeUrl = useMemo(() => {
+    if (splatQuality === "hd") {
+      if (hdUrl) return hdUrl;
+      if (jobId) return `/api/jobs/${jobId}/artifacts/model.ply`;
+      return splatUrl.replace(/\.splat(\?.*)?$/i, ".ply$1");
+    } else {
+      if (splatUrl) {
+        if (splatUrl.toLowerCase().endsWith(".ply")) {
+          return splatUrl.replace(/\.ply(\?.*)?$/i, ".splat$1");
+        }
+        return splatUrl;
+      }
+      if (jobId) return `/api/jobs/${jobId}/artifacts/model.splat`;
+      return "";
+    }
+  }, [splatQuality, splatUrl, hdUrl, jobId]);
+
+  const isPly = activeUrl.toLowerCase().includes(".ply") || splatQuality === "hd";
+  const targetFormat = isPly ? GaussianSplats3D.SceneFormat.Ply : GaussianSplats3D.SceneFormat.Splat;
+  const shDegree = splatQuality === "hd" ? 2 : 0;
 
   const getThemeBg = (t: SplatTheme) => {
     switch (t) {
@@ -144,7 +223,8 @@ export const SplatViewer: React.FC<Props> = ({
       mat.uniforms.sfCropEnabled = { value: 1 };
 
       if (!mat.vertexShader.includes("sfCropMin")) {
-        mat.vertexShader = `
+        mat.vertexShader =
+          `
           uniform vec3 sfCropMin;
           uniform vec3 sfCropMax;
           uniform int sfCropEnabled;
@@ -180,37 +260,54 @@ export const SplatViewer: React.FC<Props> = ({
   const handlePresetInside = useCallback(() => {
     setActivePreset("inside");
     if (!viewerRef.current?.camera) return;
+    const cam = viewerRef.current.camera;
+    const controls = viewerRef.current.controls;
 
     // Reset crop box to full room
     if (bounds) {
-      setCropBox({
+      const fullBox: CropBox = {
         minX: Math.floor(bounds.min_x - 1.0),
         maxX: Math.ceil(bounds.max_x + 1.0),
         minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
         maxY: Math.ceil(bounds.max_y + 1.0),
         minZ: Math.floor(bounds.min_z - 1.0),
         maxZ: Math.ceil(bounds.max_z + 1.0),
-      });
+      };
+      setCropBox(fullBox);
+      cropBoxRef.current = fullBox;
     }
 
     if (alignedCameras.length > 0) {
       const cam0 = alignedCameras[0];
       const pos = cam0.position;
       const fwd = cam0.forward;
-      viewerRef.current.camera.position.set(pos[0], pos[1], pos[2]);
-      if (viewerRef.current.controls?.target) {
-        viewerRef.current.controls.target.set(
+      cam.position.set(pos[0], pos[1], pos[2]);
+      if (controls?.target) {
+        controls.target.set(
           pos[0] + fwd[0] * 3.0,
           pos[1] + fwd[1] * 3.0,
           pos[2] + fwd[2] * 3.0
         );
-        viewerRef.current.controls.update?.();
       }
     } else {
-      viewerRef.current.camera.position.set(0, 1.4, 0);
-      if (viewerRef.current.controls?.target) {
-        viewerRef.current.controls.target.set(0, 1.3, 3.0);
-        viewerRef.current.controls.update?.();
+      cam.position.set(0, 1.4, 0);
+      if (controls?.target) {
+        controls.target.set(0, 1.3, 3.0);
+      }
+    }
+
+    if (navModeRef.current === "walk") {
+      if (controls) controls.enabled = false;
+      const euler = new THREE.Euler(0, 0, 0, "YXZ");
+      euler.setFromQuaternion(cam.quaternion, "YXZ");
+      yawRef.current = euler.y;
+      pitchRef.current = Math.max((-85 * Math.PI) / 180, Math.min((85 * Math.PI) / 180, euler.x));
+      cam.rotation.order = "YXZ";
+      cam.rotation.set(pitchRef.current, yawRef.current, 0, "YXZ");
+    } else {
+      if (controls) {
+        controls.enabled = true;
+        controls.update?.();
       }
     }
   }, [alignedCameras, bounds]);
@@ -219,6 +316,8 @@ export const SplatViewer: React.FC<Props> = ({
   const handlePresetDollhouse = useCallback(() => {
     setActivePreset("dollhouse");
     if (!viewerRef.current?.camera) return;
+    const cam = viewerRef.current.camera;
+    const controls = viewerRef.current.controls;
 
     let cx = 0, cy = 1.0, cz = 0;
     let spanX = 5.0, spanY = 2.8, spanZ = 5.0;
@@ -233,31 +332,39 @@ export const SplatViewer: React.FC<Props> = ({
 
       // Cut away top 18% of ceiling
       const ceilingCutY = bounds.max_y - 0.18 * spanY;
-      setCropBox({
+      const cutBox: CropBox = {
         minX: Math.floor(bounds.min_x - 1.0),
         maxX: Math.ceil(bounds.max_x + 1.0),
         minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
         maxY: ceilingCutY,
         minZ: Math.floor(bounds.min_z - 1.0),
         maxZ: Math.ceil(bounds.max_z + 1.0),
-      });
+      };
+      setCropBox(cutBox);
+      cropBoxRef.current = cutBox;
     }
 
     // Elevated 3/4 viewpoint looking down at room centroid
     const eyeX = cx - 1.1 * spanX;
     const eyeY = cy + 1.2 * spanY + 1.0;
     const eyeZ = cz - 1.1 * spanZ;
-    viewerRef.current.camera.position.set(eyeX, eyeY, eyeZ);
-    if (viewerRef.current.controls?.target) {
-      viewerRef.current.controls.target.set(cx, cy * 0.5, cz);
-      viewerRef.current.controls.update?.();
+    cam.position.set(eyeX, eyeY, eyeZ);
+
+    if (controls?.target) {
+      controls.target.set(cx, cy * 0.5, cz);
+      controls.enabled = true;
+      controls.update?.();
     }
+    setNavMode("orbit");
+    navModeRef.current = "orbit";
   }, [bounds]);
 
   // View Preset: Floor Plan Top-Down
   const handlePresetTopDown = useCallback(() => {
     setActivePreset("topdown");
     if (!viewerRef.current?.camera) return;
+    const cam = viewerRef.current.camera;
+    const controls = viewerRef.current.controls;
 
     let cx = 0, cz = 0;
     let span = 6.0;
@@ -267,57 +374,318 @@ export const SplatViewer: React.FC<Props> = ({
       cz = (bounds.min_z + bounds.max_z) / 2;
       span = Math.max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z, 5.0);
 
-      setCropBox({
+      const planBox: CropBox = {
         minX: Math.floor(bounds.min_x - 1.0),
         maxX: Math.ceil(bounds.max_x + 1.0),
         minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
         maxY: Math.ceil(bounds.max_y + 1.0),
         minZ: Math.floor(bounds.min_z - 1.0),
         maxZ: Math.ceil(bounds.max_z + 1.0),
-      });
+      };
+      setCropBox(planBox);
+      cropBoxRef.current = planBox;
     }
 
-    viewerRef.current.camera.position.set(cx, span * 1.5, cz);
-    if (viewerRef.current.controls?.target) {
-      viewerRef.current.controls.target.set(cx, 0.0, cz);
-      viewerRef.current.controls.update?.();
+    cam.position.set(cx, span * 1.5, cz);
+    if (controls?.target) {
+      controls.target.set(cx, 0.0, cz);
+      controls.enabled = true;
+      controls.update?.();
     }
+    setNavMode("orbit");
+    navModeRef.current = "orbit";
   }, [bounds]);
 
-  // Initialize GaussianSplats3D.Viewer
+  // Seamless Handoff between Orbit and First-Person Walk Mode
+  const toggleNavMode = useCallback(() => {
+    if (!viewerRef.current?.camera) return;
+    const cam = viewerRef.current.camera;
+    const controls = viewerRef.current.controls;
+
+    if (navMode === "orbit") {
+      // Orbit -> Walk:
+      // 1. Disable OrbitControls so they don't overwrite camera transforms
+      if (controls) {
+        controls.enabled = false;
+      }
+      // 2. Extract yaw and pitch directly from camera quaternion with 0 jump
+      const euler = new THREE.Euler(0, 0, 0, "YXZ");
+      euler.setFromQuaternion(cam.quaternion, "YXZ");
+      yawRef.current = euler.y;
+      pitchRef.current = Math.max((-85 * Math.PI) / 180, Math.min((85 * Math.PI) / 180, euler.x));
+      cam.rotation.order = "YXZ";
+      cam.rotation.set(pitchRef.current, yawRef.current, 0, "YXZ");
+
+      setNavMode("walk");
+      navModeRef.current = "walk";
+    } else {
+      // Walk -> Orbit:
+      // 1. Release pointer lock if active
+      if (document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
+      // 2. Set target in front of camera at room-adaptive distance
+      const viewDir = new THREE.Vector3();
+      cam.getWorldDirection(viewDir);
+      if (controls?.target) {
+        const targetDist = Math.max(1.0, 0.25 * horizontalRoomSpanRef.current);
+        controls.target.copy(cam.position).addScaledVector(viewDir, targetDist);
+        controls.enabled = true;
+        controls.update?.();
+      }
+
+      setNavMode("orbit");
+      navModeRef.current = "orbit";
+    }
+  }, [navMode]);
+
+  // Keyboard Event Listeners (Set<string> tracking with blur protection)
   useEffect(() => {
-    if (!containerRef.current || !splatUrl) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      const key = e.key.toLowerCase();
+      pressedKeysRef.current.add(key);
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      pressedKeysRef.current.delete(key);
+    };
+
+    const onBlur = () => {
+      pressedKeysRef.current.clear();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
+  // Continuous Camera-Relative 3D Movement Loop (WASD + Q/E / Space/C)
+  useEffect(() => {
+    let animId: number;
+    let lastTime = performance.now();
+
+    const loop = (now: number) => {
+      animId = requestAnimationFrame(loop);
+      const dt = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
+
+      if (!viewerRef.current?.camera) return;
+      const cam = viewerRef.current.camera;
+      const keys = pressedKeysRef.current;
+      if (keys.size === 0) return;
+
+      // Extract current camera view direction
+      const viewDir = new THREE.Vector3();
+      cam.getWorldDirection(viewDir);
+
+      // Horizontal forward on XZ plane
+      let forwardXZ = new THREE.Vector3(viewDir.x, 0, viewDir.z);
+      if (forwardXZ.lengthSq() < 1e-6) {
+        forwardXZ.set(cam.up.x, 0, cam.up.z);
+      }
+      if (forwardXZ.lengthSq() < 1e-6) {
+        forwardXZ.set(0, 0, -1);
+      } else {
+        forwardXZ.normalize();
+      }
+
+      // Horizontal right strafe vector = forwardXZ x (0, 1, 0)
+      const rightXZ = new THREE.Vector3().crossVectors(forwardXZ, new THREE.Vector3(0, 1, 0)).normalize();
+
+      const moveDelta = new THREE.Vector3();
+      if (keys.has("w") || keys.has("arrowup")) moveDelta.add(forwardXZ);
+      if (keys.has("s") || keys.has("arrowdown")) moveDelta.sub(forwardXZ);
+      if (keys.has("d") || keys.has("arrowright")) moveDelta.add(rightXZ);
+      if (keys.has("a") || keys.has("arrowleft")) moveDelta.sub(rightXZ);
+      if (keys.has("e") || keys.has(" ") || keys.has("space")) moveDelta.y += 1.0;
+      if (keys.has("q") || keys.has("c")) moveDelta.y -= 1.0;
+
+      if (moveDelta.lengthSq() > 1e-6) {
+        moveDelta.normalize();
+
+        // Speed modifiers: Shift = 2.5x, Alt = 0.3x
+        let speedModifier = speedMultiplierRef.current;
+        if (keys.has("shift")) speedModifier *= 2.5;
+        if (keys.has("alt")) speedModifier *= 0.3;
+
+        const baseSpeed = Math.max(0.5, 0.22 * horizontalRoomSpanRef.current);
+        const distance = baseSpeed * speedModifier * dt;
+        moveDelta.multiplyScalar(distance);
+
+        cam.position.add(moveDelta);
+
+        // In Orbit mode, move controls.target by the EXACT same delta so OrbitControls never snaps camera back!
+        if (navModeRef.current === "orbit" && viewerRef.current?.controls?.target) {
+          viewerRef.current.controls.target.add(moveDelta);
+          viewerRef.current.controls.update?.();
+        }
+      }
+    };
+
+    animId = requestAnimationFrame(loop);
+    return () => {
+      cancelAnimationFrame(animId);
+    };
+  }, []);
+
+  // Canvas Click Handler: Engage Pointer Lock when in Walk Mode
+  const handleCanvasClick = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button, input, select, textarea")) return;
+    if (navModeRef.current === "walk") {
+      const dom = containerRef.current;
+      if (dom && document.pointerLockElement !== dom) {
+        try {
+          dom.requestPointerLock?.();
+        } catch (err) {
+          console.debug("Pointer lock request error:", err);
+        }
+      }
+    }
+  }, []);
+
+  // Pointer Lock Change Listener
+  useEffect(() => {
+    const onPointerLockChange = () => {
+      const isLocked = document.pointerLockElement === containerRef.current;
+      setIsPointerLocked(isLocked);
+    };
+    document.addEventListener("pointerlockchange", onPointerLockChange);
+    return () => {
+      document.removeEventListener("pointerlockchange", onPointerLockChange);
+    };
+  }, []);
+
+  // Mouse Look (Pointer Lock or Left-Click Drag Fallback)
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      if (navModeRef.current !== "walk") return;
+      if ((e.target as HTMLElement)?.closest?.("button, input, select, textarea")) return;
+      if (e.button === 0) {
+        isMouseDownRef.current = true;
+        lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+      }
+    };
+
+    const onMouseUp = () => {
+      isMouseDownRef.current = false;
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (navModeRef.current !== "walk" || !viewerRef.current?.camera) return;
+      const isLocked = document.pointerLockElement === containerRef.current;
+      if (!isLocked && !isMouseDownRef.current) return;
+
+      let dx = 0;
+      let dy = 0;
+      if (isLocked) {
+        dx = e.movementX;
+        dy = e.movementY;
+      } else {
+        dx = e.clientX - lastMousePosRef.current.x;
+        dy = e.clientY - lastMousePosRef.current.y;
+        lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+      }
+
+      // Filter out large spikes on pointer lock engagement
+      if (Math.abs(dx) > 250 || Math.abs(dy) > 250) return;
+
+      const lookSpeed = 0.0022;
+      yawRef.current -= dx * lookSpeed;
+      const maxPitch = (85 * Math.PI) / 180;
+      pitchRef.current = Math.max(-maxPitch, Math.min(maxPitch, pitchRef.current - dy * lookSpeed));
+
+      const cam = viewerRef.current.camera;
+      cam.rotation.order = "YXZ";
+      cam.rotation.set(pitchRef.current, yawRef.current, 0, "YXZ");
+    };
+
+    const dom = containerRef.current;
+    if (dom) {
+      dom.addEventListener("mousedown", onMouseDown);
+    }
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+
+    return () => {
+      if (dom) {
+        dom.removeEventListener("mousedown", onMouseDown);
+      }
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  // Initialize and Re-Initialize GaussianSplats3D.Viewer
+  useEffect(() => {
+    if (!containerRef.current || !activeUrl) return;
 
     setLoading(true);
     setLoadProgress(0);
-    setLoadingStage("Connecting to 3DGS WebGL Stream...");
+    setLoadingStage(
+      splatQuality === "hd"
+        ? "Streaming HD PLY with Spherical Harmonics Degree 2..."
+        : "Connecting to Fast 3DGS WebGL Stream..."
+    );
     setLoadError(null);
 
     let disposed = false;
     let viewer: any = null;
 
-    try {
-      let format = GaussianSplats3D.SceneFormat.Splat;
-      const lower = splatUrl.toLowerCase();
-      if (lower.endsWith(".ply") || lower.includes("/ply") || lower.includes("format=ply")) {
-        format = GaussianSplats3D.SceneFormat.Ply;
-      } else if (lower.endsWith(".spz") || lower.includes("/spz") || lower.includes("format=spz")) {
-        format = GaussianSplats3D.SceneFormat.Spz;
-      } else if (lower.endsWith(".ksplat") || lower.includes("/ksplat")) {
-        format = GaussianSplats3D.SceneFormat.KSplat;
-      } else {
-        format = GaussianSplats3D.SceneFormat.Splat;
+    // Preserve previous camera pose across quality switches
+    const prevCam = viewerRef.current?.camera;
+    const prevControls = viewerRef.current?.controls;
+    if (prevCam) {
+      savedPoseRef.current = {
+        pos: prevCam.position.clone(),
+        quat: prevCam.quaternion.clone(),
+        target: prevControls?.target ? prevControls.target.clone() : undefined,
+      };
+    }
+
+    // Dispose old viewer
+    if (viewerRef.current) {
+      try {
+        viewerRef.current.dispose();
+      } catch (e) {
+        console.debug("Previous viewer dispose exception:", e);
       }
+      viewerRef.current = null;
+    }
+
+    try {
+      const initialPos: [number, number, number] = savedPoseRef.current
+        ? [savedPoseRef.current.pos.x, savedPoseRef.current.pos.y, savedPoseRef.current.pos.z]
+        : [0, 1.4, 0];
+      const initialLookAt: [number, number, number] = savedPoseRef.current?.target
+        ? [savedPoseRef.current.target.x, savedPoseRef.current.target.y, savedPoseRef.current.target.z]
+        : [0, 1.3, 3.0];
 
       viewer = new GaussianSplats3D.Viewer({
         rootElement: containerRef.current,
         cameraUp: [0, 1, 0],
-        initialCameraPosition: [0, 1.4, 0],
-        initialCameraLookAt: [0, 1.3, 3.0],
+        initialCameraPosition: initialPos,
+        initialCameraLookAt: initialLookAt,
         sharedMemoryForWorkers: false,
         gpuAcceleratedSort: false,
         antialiased: true,
-        sphericalHarmonicsDegree: 0,
+        sphericalHarmonicsDegree: shDegree,
         selfDrivenMode: true,
         useBuiltInControls: true,
       });
@@ -325,8 +693,8 @@ export const SplatViewer: React.FC<Props> = ({
       viewerRef.current = viewer;
 
       viewer
-        .addSplatScene(splatUrl, {
-          format,
+        .addSplatScene(activeUrl, {
+          format: targetFormat,
           splatAlphaRemovalThreshold: 5,
           showLoadingUI: false,
           position: [0, 0, 0],
@@ -339,7 +707,11 @@ export const SplatViewer: React.FC<Props> = ({
               if (p >= 100) {
                 setLoadingStage("Rasterizing 3D Gaussian Splats...");
               } else {
-                setLoadingStage(`Downloading Splat Payload... ${p}%`);
+                setLoadingStage(
+                  splatQuality === "hd"
+                    ? `Downloading HD Splats (.ply SH degree 2)... ${p}%`
+                    : `Downloading Fast Splat Payload (.splat)... ${p}%`
+                );
               }
             }
           },
@@ -353,44 +725,80 @@ export const SplatViewer: React.FC<Props> = ({
             console.debug("viewer.start exception:", e);
           }
 
-          // Auto-frame initial room view
-          try {
-            let cx = 0, cy = 1.0, cz = 0;
-            let span = 5.0;
+          // Re-apply GPU clipping uniforms
+          applyGpuClipping(cropBoxRef.current);
 
-            if (bounds) {
-              cx = (bounds.min_x + bounds.max_x) / 2;
-              cy = (bounds.min_y + bounds.max_y) / 2;
-              cz = (bounds.min_z + bounds.max_z) / 2;
-              span = Math.max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z, 4.0);
-
-              const pad = Math.max(span * 0.2, 1.5);
-              const initialBox: CropBox = {
-                minX: Math.floor(bounds.min_x - pad),
-                maxX: Math.ceil(bounds.max_x + pad),
-                minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
-                maxY: Math.ceil(bounds.max_y + pad),
-                minZ: Math.floor(bounds.min_z - pad),
-                maxZ: Math.ceil(bounds.max_z + pad),
-              };
-              setCropBox(initialBox);
-              applyGpuClipping(initialBox);
+          // Restore splat scale
+          if (viewer.splatMesh) {
+            try {
+              viewer.splatMesh.splatScale = splatScaleRef.current;
+            } catch (e) {
+              console.debug("splatScale restore exception:", e);
             }
+          }
 
-            if (viewer.camera) {
-              viewer.camera.near = 0.05;
-              viewer.camera.far = 2000.0;
-              viewer.camera.updateProjectionMatrix();
-
-              // Spawn at interior eye-level looking forward
-              viewer.camera.position.set(cx, Math.max(cy * 0.6, 1.3), cz - span * 0.1);
-              if (viewer.controls?.target) {
-                viewer.controls.target.set(cx, Math.max(cy * 0.6, 1.3), cz + span * 0.6);
+          // Restore saved camera pose or perform initial auto-framing
+          if (savedPoseRef.current && viewer.camera) {
+            viewer.camera.position.copy(savedPoseRef.current.pos);
+            viewer.camera.quaternion.copy(savedPoseRef.current.quat);
+            if (viewer.controls?.target && savedPoseRef.current.target) {
+              viewer.controls.target.copy(savedPoseRef.current.target);
+            }
+            if (navModeRef.current === "walk") {
+              if (viewer.controls) viewer.controls.enabled = false;
+              const euler = new THREE.Euler(0, 0, 0, "YXZ");
+              euler.setFromQuaternion(viewer.camera.quaternion, "YXZ");
+              yawRef.current = euler.y;
+              pitchRef.current = Math.max((-85 * Math.PI) / 180, Math.min((85 * Math.PI) / 180, euler.x));
+              viewer.camera.rotation.order = "YXZ";
+              viewer.camera.rotation.set(pitchRef.current, yawRef.current, 0, "YXZ");
+            } else {
+              if (viewer.controls) {
+                viewer.controls.enabled = true;
                 viewer.controls.update?.();
               }
             }
-          } catch (e) {
-            console.debug("Camera auto-framing exception:", e);
+          } else {
+            // First time auto-framing
+            try {
+              let cx = 0, cy = 1.0, cz = 0;
+              let span = 5.0;
+
+              if (bounds) {
+                cx = (bounds.min_x + bounds.max_x) / 2;
+                cy = (bounds.min_y + bounds.max_y) / 2;
+                cz = (bounds.min_z + bounds.max_z) / 2;
+                span = Math.max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z, 4.0);
+
+                const pad = Math.max(span * 0.2, 1.5);
+                const initialBox: CropBox = {
+                  minX: Math.floor(bounds.min_x - pad),
+                  maxX: Math.ceil(bounds.max_x + pad),
+                  minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
+                  maxY: Math.ceil(bounds.max_y + pad),
+                  minZ: Math.floor(bounds.min_z - pad),
+                  maxZ: Math.ceil(bounds.max_z + pad),
+                };
+                setCropBox(initialBox);
+                cropBoxRef.current = initialBox;
+                applyGpuClipping(initialBox);
+              }
+
+              if (viewer.camera) {
+                viewer.camera.near = 0.05;
+                viewer.camera.far = 2000.0;
+                viewer.camera.updateProjectionMatrix();
+
+                // Spawn at interior eye-level looking forward
+                viewer.camera.position.set(cx, Math.max(cy * 0.6, 1.3), cz - span * 0.1);
+                if (viewer.controls?.target) {
+                  viewer.controls.target.set(cx, Math.max(cy * 0.6, 1.3), cz + span * 0.6);
+                  viewer.controls.update?.();
+                }
+              }
+            } catch (e) {
+              console.debug("Camera auto-framing exception:", e);
+            }
           }
 
           setLoading(false);
@@ -419,154 +827,11 @@ export const SplatViewer: React.FC<Props> = ({
       }
       viewerRef.current = null;
     };
-  }, [splatUrl, bounds, applyGpuClipping]);
-
-  // Synchronize OrbitControls when toggling Walk Mode (Milestone P5 Hardening)
-  useEffect(() => {
-    if (!viewerRef.current) return;
-    const controls = viewerRef.current.controls;
-    const cam = viewerRef.current.camera;
-    if (!controls || !cam) return;
-
-    if (walkMode) {
-      controls.enabled = false;
-    } else {
-      try {
-        const dir = new THREE.Vector3();
-        cam.getWorldDirection(dir);
-        controls.target.copy(cam.position).addScaledVector(dir, 3.0);
-        controls.enabled = true;
-        controls.update?.();
-      } catch (e) {
-        console.debug("controls sync error:", e);
-      }
-    }
-  }, [walkMode]);
-
-  // Mouse Drag Look in Walk Mode
-  useEffect(() => {
-    if (!walkMode || !containerRef.current || !viewerRef.current) return;
-    const dom = containerRef.current;
-    let isDragging = false;
-    let prevX = 0;
-    let prevY = 0;
-
-    const onMouseDown = (e: MouseEvent) => {
-      if (e.button === 0) {
-        isDragging = true;
-        prevX = e.clientX;
-        prevY = e.clientY;
-      }
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isDragging || !viewerRef.current?.camera) return;
-      const cam = viewerRef.current.camera;
-      const dx = e.clientX - prevX;
-      const dy = e.clientY - prevY;
-      prevX = e.clientX;
-      prevY = e.clientY;
-
-      const lookSpeed = 0.003;
-      const euler = new THREE.Euler(0, 0, 0, "YXZ");
-      euler.setFromQuaternion(cam.quaternion);
-      euler.y -= dx * lookSpeed;
-      euler.x = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, euler.x - dy * lookSpeed));
-      cam.quaternion.setFromEuler(euler);
-    };
-
-    const onMouseUp = () => {
-      isDragging = false;
-    };
-
-    dom.addEventListener("mousedown", onMouseDown);
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-
-    return () => {
-      dom.removeEventListener("mousedown", onMouseDown);
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-  }, [walkMode]);
-
-  // WASD key listeners (Walk and Orbit modes)
-  useEffect(() => {
-    if (!viewerRef.current) return;
-
-    const moveSpeed = 0.15;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (!viewerRef.current?.camera) return;
-      const cam = viewerRef.current.camera;
-      const controls = viewerRef.current.controls;
-
-      const forward = new Float32Array(3);
-      forward[0] = -cam.matrix.elements[8];
-      forward[1] = 0;
-      forward[2] = -cam.matrix.elements[10];
-      const len = Math.sqrt(forward[0] * forward[0] + forward[2] * forward[2]) || 1.0;
-      forward[0] /= len;
-      forward[2] /= len;
-
-      const right = new Float32Array(3);
-      right[0] = cam.matrix.elements[0];
-      right[1] = 0;
-      right[2] = cam.matrix.elements[2];
-      const rlen = Math.sqrt(right[0] * right[0] + right[2] * right[2]) || 1.0;
-      right[0] /= rlen;
-      right[2] /= rlen;
-
-      let dx = 0;
-      let dy = 0;
-      let dz = 0;
-
-      switch (e.key.toLowerCase()) {
-        case "w":
-          dx += forward[0] * moveSpeed;
-          dz += forward[2] * moveSpeed;
-          break;
-        case "s":
-          dx -= forward[0] * moveSpeed;
-          dz -= forward[2] * moveSpeed;
-          break;
-        case "a":
-          dx -= right[0] * moveSpeed;
-          dz -= right[2] * moveSpeed;
-          break;
-        case "d":
-          dx += right[0] * moveSpeed;
-          dz += right[2] * moveSpeed;
-          break;
-        case "q":
-          dy += moveSpeed;
-          break;
-        case "e":
-          dy -= moveSpeed;
-          break;
-        default:
-          return;
-      }
-
-      cam.position.x += dx;
-      cam.position.y += dy;
-      cam.position.z += dz;
-
-      // In Orbit mode, move controls.target synchronously so camera doesn't pivot back to old center
-      if (!walkMode && controls?.target) {
-        controls.target.x += dx;
-        controls.target.y += dy;
-        controls.target.z += dz;
-        controls.update?.();
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [walkMode]);
+  }, [activeUrl, splatQuality, targetFormat, shDegree, bounds, applyGpuClipping]);
 
   const handleSplatScaleChange = (val: number) => {
     setSplatScale(val);
+    splatScaleRef.current = val;
     if (viewerRef.current?.splatMesh) {
       try {
         viewerRef.current.splatMesh.splatScale = val;
@@ -582,7 +847,17 @@ export const SplatViewer: React.FC<Props> = ({
       style={{ backgroundColor: getThemeBg(theme) }}
     >
       {/* 3DGS Canvas Container */}
-      <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing" />
+      <div
+        ref={containerRef}
+        onClick={handleCanvasClick}
+        className={`absolute inset-0 w-full h-full ${
+          navMode === "walk"
+            ? isPointerLocked
+              ? "cursor-crosshair"
+              : "cursor-pointer"
+            : "cursor-grab active:cursor-grabbing"
+        }`}
+      />
 
       {/* Loading Overlay */}
       {loading && (
@@ -675,19 +950,67 @@ export const SplatViewer: React.FC<Props> = ({
 
       {/* Top Right Actions Toolbar */}
       <div className="absolute top-5 right-5 z-20 flex items-center space-x-2">
-        {/* Walk mode toggle */}
+        {/* Fast (.splat) vs HD Reflections (.ply SH) Mode Toggle */}
+        <div className="flex items-center p-0.5 rounded-xl bg-zinc-900/80 border border-zinc-800 backdrop-blur-md shadow-lg">
+          <button
+            onClick={() => setSplatQuality("fast")}
+            className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+              splatQuality === "fast"
+                ? "bg-amber-500/25 text-amber-300 border border-amber-500/50 shadow-sm"
+                : "text-zinc-400 hover:text-white"
+            }`}
+            title="Fast 32-byte .splat stream (Instant loading, Degree 0 SH)"
+          >
+            <Zap className="w-3.5 h-3.5 text-amber-400" />
+            <span>Fast (.splat)</span>
+          </button>
+          <button
+            onClick={() => setSplatQuality("hd")}
+            className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+              splatQuality === "hd"
+                ? "bg-indigo-500/30 text-indigo-200 border border-indigo-500/50 shadow-sm shadow-indigo-500/20"
+                : "text-zinc-400 hover:text-white"
+            }`}
+            title="HD Reflections .ply with Spherical Harmonics Degree 2"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>HD Reflections (.ply SH)</span>
+          </button>
+        </div>
+
+        {/* Orbit vs Walk Mode Toggle */}
         <button
-          onClick={() => setWalkMode(!walkMode)}
+          onClick={toggleNavMode}
           className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-lg backdrop-blur-md border ${
-            walkMode
-              ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/50 shadow-cyan-500/20"
+            navMode === "walk"
+              ? "bg-cyan-500/25 text-cyan-200 border-cyan-500/60 shadow-cyan-500/20 ring-1 ring-cyan-500/40"
               : "bg-zinc-900/80 text-zinc-300 border-zinc-800 hover:text-white hover:bg-zinc-800"
           }`}
-          title="Toggle First-Person WASD Walk Mode"
+          title={navMode === "walk" ? "Click to return to Orbit Mode" : "Switch to First-Person WASD Walk Mode"}
         >
-          <Footprints className="w-3.5 h-3.5" />
-          <span>{walkMode ? "Walk Mode (WASD)" : "Orbit"}</span>
+          <Footprints className="w-3.5 h-3.5 text-cyan-400" />
+          <span>{navMode === "walk" ? "Walk Mode (WASD)" : "Orbit"}</span>
         </button>
+
+        {/* Speed Slider in HUD */}
+        <div
+          className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 rounded-xl bg-zinc-900/80 border border-zinc-800 text-xs backdrop-blur-md shadow-lg"
+          title="Nav Speed Multiplier (Shift=2.5x, Alt=0.3x)"
+        >
+          <span className="text-[11px] font-mono text-zinc-400">Speed</span>
+          <input
+            type="range"
+            min="0.2"
+            max="3.0"
+            step="0.1"
+            value={speedMultiplier}
+            onChange={(e) => setSpeedMultiplier(parseFloat(e.target.value))}
+            className="w-14 accent-cyan-400 h-1 bg-zinc-800 rounded-lg cursor-pointer"
+          />
+          <span className="font-mono text-[10px] text-cyan-400 w-6 text-right">
+            {speedMultiplier.toFixed(1)}x
+          </span>
+        </div>
 
         {/* Crop panel toggle */}
         <button
@@ -721,6 +1044,40 @@ export const SplatViewer: React.FC<Props> = ({
         </button>
       </div>
 
+      {/* Walk Mode HUD Help Banner */}
+      {navMode === "walk" && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 flex items-center space-x-3 px-3.5 py-1.5 rounded-full bg-zinc-950/90 border border-cyan-500/40 text-zinc-200 text-xs backdrop-blur-md shadow-xl animate-fade-in pointer-events-none">
+          <div className="flex items-center space-x-1 font-mono text-[11px]">
+            <span className="px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-cyan-300 font-bold">
+              W A S D
+            </span>
+            <span className="text-zinc-400">Move</span>
+          </div>
+          <span className="text-zinc-600">•</span>
+          <div className="flex items-center space-x-1 font-mono text-[11px]">
+            <span className="px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-cyan-300 font-bold">
+              Q / E
+            </span>
+            <span className="text-zinc-400">Fly</span>
+          </div>
+          <span className="text-zinc-600">•</span>
+          <div className="flex items-center space-x-1 font-mono text-[11px]">
+            <span className="px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-amber-300 font-bold">
+              Shift
+            </span>
+            <span className="text-zinc-400">2.5x</span>
+            <span className="px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-purple-300 font-bold ml-1">
+              Alt
+            </span>
+            <span className="text-zinc-400">0.3x</span>
+          </div>
+          <span className="text-zinc-600">•</span>
+          <span className="text-xs text-zinc-300 font-medium">
+            {isPointerLocked ? "🔒 Pointer Locked (Esc to unlock)" : "🖱️ Click canvas to lock mouse look"}
+          </span>
+        </div>
+      )}
+
       {/* Floating Crop Sliders Panel */}
       {showCropPanel && (
         <div className="absolute top-16 right-5 z-20 w-72 p-4 rounded-2xl bg-zinc-950/90 border border-zinc-800 backdrop-blur-xl shadow-2xl space-y-3 font-mono text-xs">
@@ -730,20 +1087,39 @@ export const SplatViewer: React.FC<Props> = ({
               onClick={() => {
                 setActivePreset("custom");
                 if (bounds) {
-                  setCropBox({
+                  const resetBox: CropBox = {
                     minX: Math.floor(bounds.min_x - 1.0),
                     maxX: Math.ceil(bounds.max_x + 1.0),
                     minY: Math.floor(Math.min(-0.2, bounds.min_y - 0.2)),
                     maxY: Math.ceil(bounds.max_y + 1.0),
                     minZ: Math.floor(bounds.min_z - 1.0),
                     maxZ: Math.ceil(bounds.max_z + 1.0),
-                  });
+                  };
+                  setCropBox(resetBox);
+                  cropBoxRef.current = resetBox;
                 }
               }}
               className="text-[10px] text-zinc-400 hover:text-cyan-400 transition-colors"
             >
               Reset
             </button>
+          </div>
+
+          {/* Nav / Walk Speed */}
+          <div>
+            <div className="flex justify-between text-zinc-400 mb-1 text-[11px]">
+              <span>Nav / Walk Speed</span>
+              <span className="text-cyan-300">{speedMultiplier.toFixed(1)}x</span>
+            </div>
+            <input
+              type="range"
+              min="0.2"
+              max="3.0"
+              step="0.1"
+              value={speedMultiplier}
+              onChange={(e) => setSpeedMultiplier(parseFloat(e.target.value))}
+              className="w-full accent-cyan-400 h-1 bg-zinc-800 rounded-lg cursor-pointer"
+            />
           </div>
 
           {/* Splat Scale */}
@@ -778,7 +1154,9 @@ export const SplatViewer: React.FC<Props> = ({
                 value={cropBox.minX}
                 onChange={(e) => {
                   setActivePreset("custom");
-                  setCropBox({ ...cropBox, minX: parseFloat(e.target.value) });
+                  const updated = { ...cropBox, minX: parseFloat(e.target.value) };
+                  setCropBox(updated);
+                  cropBoxRef.current = updated;
                 }}
                 className="w-1/2 accent-indigo-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
@@ -790,7 +1168,9 @@ export const SplatViewer: React.FC<Props> = ({
                 value={cropBox.maxX}
                 onChange={(e) => {
                   setActivePreset("custom");
-                  setCropBox({ ...cropBox, maxX: parseFloat(e.target.value) });
+                  const updated = { ...cropBox, maxX: parseFloat(e.target.value) };
+                  setCropBox(updated);
+                  cropBoxRef.current = updated;
                 }}
                 className="w-1/2 accent-indigo-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
@@ -812,7 +1192,9 @@ export const SplatViewer: React.FC<Props> = ({
                 value={cropBox.minY}
                 onChange={(e) => {
                   setActivePreset("custom");
-                  setCropBox({ ...cropBox, minY: parseFloat(e.target.value) });
+                  const updated = { ...cropBox, minY: parseFloat(e.target.value) };
+                  setCropBox(updated);
+                  cropBoxRef.current = updated;
                 }}
                 className="w-1/2 accent-emerald-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
@@ -824,7 +1206,9 @@ export const SplatViewer: React.FC<Props> = ({
                 value={cropBox.maxY}
                 onChange={(e) => {
                   setActivePreset("custom");
-                  setCropBox({ ...cropBox, maxY: parseFloat(e.target.value) });
+                  const updated = { ...cropBox, maxY: parseFloat(e.target.value) };
+                  setCropBox(updated);
+                  cropBoxRef.current = updated;
                 }}
                 className="w-1/2 accent-emerald-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
@@ -846,7 +1230,9 @@ export const SplatViewer: React.FC<Props> = ({
                 value={cropBox.minZ}
                 onChange={(e) => {
                   setActivePreset("custom");
-                  setCropBox({ ...cropBox, minZ: parseFloat(e.target.value) });
+                  const updated = { ...cropBox, minZ: parseFloat(e.target.value) };
+                  setCropBox(updated);
+                  cropBoxRef.current = updated;
                 }}
                 className="w-1/2 accent-rose-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
@@ -858,7 +1244,9 @@ export const SplatViewer: React.FC<Props> = ({
                 value={cropBox.maxZ}
                 onChange={(e) => {
                   setActivePreset("custom");
-                  setCropBox({ ...cropBox, maxZ: parseFloat(e.target.value) });
+                  const updated = { ...cropBox, maxZ: parseFloat(e.target.value) };
+                  setCropBox(updated);
+                  cropBoxRef.current = updated;
                 }}
                 className="w-1/2 accent-rose-500 h-1 bg-zinc-800 rounded-lg cursor-pointer"
               />
