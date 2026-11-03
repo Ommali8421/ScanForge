@@ -64,7 +64,7 @@ def find_colmap_sparse_dir(path: Path) -> Path:
         if c.is_dir() and ((c / "cameras.bin").exists() or (c / "images.bin").exists()):
             try:
                 from app.pipelines.common.sfm_colmap import resolve_colmap
-                from app.pipelines.base import ToolRunner
+                from app.pipelines.tool_runner import ToolRunner
                 colmap_bin = resolve_colmap()
                 workdir = path if (path / "pipeline.log").exists() or (path / "frames").exists() else path.parent
                 out_txt = workdir / "sparse_txt"
@@ -300,20 +300,13 @@ class DepthAlignStage(Stage):
             z_max_scene = 25.0
             z_med_scene = 3.5
 
-        # Track scale and shift across frames for temporal smoothing
-        frame_scales: List[float] = []
-        frame_shifts: List[float] = []
-        last_s = 1.0
-        last_t = 0.0
-
-        num_aligned = 0
-        total_images = len(images)
-        alignment_report = []
-
+        # Pass 1: Compute raw inverse-depth disparity fits (s_i, t_i) for all frames
+        raw_fits = []
         for idx, img in enumerate(images):
             stem = Path(img["name"]).stem
             disp_file = depth_raw_dir / f"{stem}.npy"
             if not disp_file.exists():
+                raw_fits.append((1.0, 0.0, 0, None))
                 continue
 
             raw_disp = np.load(str(disp_file)).astype(np.float32)
@@ -345,44 +338,87 @@ class DepthAlignStage(Stage):
 
             if len(sampled_disp) >= 6:
                 s_est, t_est, inliers = fit_ransac_inverse_depth(sampled_disp, sparse_inv_depths)
+            elif len(sampled_disp) >= 1:
+                s_est = float(np.median(sparse_inv_depths) / max(np.median(sampled_disp), 1e-4))
+                t_est = 0.0
+                inliers = len(sampled_disp)
             else:
-                # Fallback to median scaling or prior frame
-                if len(sampled_disp) >= 1:
-                    s_est = float(np.median(sparse_inv_depths) / max(np.median(sampled_disp), 1e-4))
-                    t_est = 0.0
-                    inliers = len(sampled_disp)
-                else:
-                    s_est = last_s
-                    t_est = last_t
-                    inliers = 0
+                s_est, t_est, inliers = 1.0, 0.0, 0
 
-            # Temporal smoothing (EMA with alpha = 0.40)
-            if idx > 0 and len(frame_scales) > 0:
-                s_smooth = 0.40 * last_s + 0.60 * s_est
-                t_smooth = 0.40 * last_t + 0.60 * t_est
-            else:
-                s_smooth = s_est
-                t_smooth = t_est
+            raw_fits.append((s_est, t_est, inliers, raw_disp))
 
-            last_s = s_smooth
-            last_t = t_smooth
-            frame_scales.append(s_smooth)
-            frame_shifts.append(t_smooth)
+        # Interpolate frames with low inliers (< 3) from nearest confident neighbors
+        valid_indices = [i for i, f in enumerate(raw_fits) if f[2] >= 3]
+        if valid_indices:
+            for i, f in enumerate(raw_fits):
+                if f[2] < 3:
+                    # Find nearest valid index
+                    nearest_idx = min(valid_indices, key=lambda vi: abs(vi - i))
+                    raw_fits[i] = (raw_fits[nearest_idx][0], raw_fits[nearest_idx][1], f[2], f[3])
+
+        # Pass 2: Bidirectional zero-phase temporal smoothing (Amendment 3)
+        n_frames = len(raw_fits)
+        s_arr = np.array([f[0] for f in raw_fits], dtype=float)
+        t_arr = np.array([f[1] for f in raw_fits], dtype=float)
+
+        alpha_smooth = 0.35
+        # Forward EMA
+        s_fwd = np.zeros(n_frames, dtype=float)
+        t_fwd = np.zeros(n_frames, dtype=float)
+        s_fwd[0] = s_arr[0]
+        t_fwd[0] = t_arr[0]
+        for i in range(1, n_frames):
+            s_fwd[i] = alpha_smooth * s_arr[i] + (1.0 - alpha_smooth) * s_fwd[i - 1]
+            t_fwd[i] = alpha_smooth * t_arr[i] + (1.0 - alpha_smooth) * t_fwd[i - 1]
+
+        # Backward EMA
+        s_bwd = np.zeros(n_frames, dtype=float)
+        t_bwd = np.zeros(n_frames, dtype=float)
+        s_bwd[-1] = s_arr[-1]
+        t_bwd[-1] = t_arr[-1]
+        for i in range(n_frames - 2, -1, -1):
+            s_bwd[i] = alpha_smooth * s_arr[i] + (1.0 - alpha_smooth) * s_bwd[i + 1]
+            t_bwd[i] = alpha_smooth * t_arr[i] + (1.0 - alpha_smooth) * t_bwd[i + 1]
+
+        # Combined bidirectional zero-phase smoothed parameters
+        s_smooth_arr = 0.5 * (s_fwd + s_bwd)
+        t_smooth_arr = 0.5 * (t_fwd + t_bwd)
+
+        num_aligned = 0
+        total_images = len(images)
+        alignment_report = []
+
+        # Pass 3: Reconstruct depth maps and mask occlusion edges (Amendment 3)
+        for idx, img in enumerate(images):
+            stem = Path(img["name"]).stem
+            s_val = float(s_smooth_arr[idx])
+            t_val = float(t_smooth_arr[idx])
+            raw_disp = raw_fits[idx][3]
+            inliers = raw_fits[idx][2]
+
+            if raw_disp is None:
+                continue
 
             # Reconstruct metric depth: z_hat = 1.0 / max(eps, s * disp + t)
-            inv_depth_map = s_smooth * raw_disp + t_smooth
-            # Minimum inverse depth corresponds to maximum distance clamp
+            inv_depth_map = s_val * raw_disp + t_val
             min_inv_depth = 1.0 / max(z_max_scene, 0.1)
             inv_depth_map = np.maximum(inv_depth_map, min_inv_depth)
             depth_map = 1.0 / inv_depth_map
-
-            # Clamp upper bound to prevent sky/window blowups
             depth_map = np.clip(depth_map, 0.05, z_max_scene)
+
+            # Amendment 3: Zero out occlusion-boundary "flying pixels" (|grad(z)| / z > 0.08 -> 0)
+            gx = cv2.Sobel(depth_map, cv2.CV_32F, 1, 0, ksize=3)
+            gy = cv2.Sobel(depth_map, cv2.CV_32F, 0, 1, ksize=3)
+            grad = np.sqrt(gx**2 + gy**2)
+            edge_mask = (grad / np.maximum(depth_map, 1e-4)) > 0.08
+            depth_map[edge_mask] = 0.0
 
             # Bilateral edge-preserving smoothing
             try:
-                # Bilateral filter in float32
+                valid_z = depth_map > 0.05
                 depth_smoothed = cv2.bilateralFilter(depth_map, d=5, sigmaColor=0.10 * z_med_scene, sigmaSpace=5.0)
+                depth_smoothed[~valid_z] = 0.0
+                depth_smoothed[edge_mask] = 0.0
             except Exception:
                 depth_smoothed = depth_map
 
@@ -398,21 +434,21 @@ class DepthAlignStage(Stage):
             num_aligned += 1
             alignment_report.append({
                 "image": img["name"],
-                "sparse_points": len(sampled_disp),
+                "sparse_points": len(raw_disp),
                 "inliers": inliers,
-                "scale": round(s_smooth, 5),
-                "shift": round(t_smooth, 5),
+                "scale": round(s_val, 5),
+                "shift": round(t_val, 5),
             })
 
             if (idx + 1) % 25 == 0 or (idx + 1) == total_images:
-                ctx.log_cb(f"[DepthAlign] Aligned {idx+1}/{total_images} frames (scale={s_smooth:.4f}, shift={t_smooth:.4f})...")
+                ctx.log_cb(f"[DepthAlign] Aligned {idx+1}/{total_images} frames (scale={s_val:.4f}, shift={t_val:.4f})...")
 
         # Save alignment telemetry report
         report_file = ctx.workdir / "depth_alignment_report.json"
         report_file.write_text(json.dumps({
             "total_frames_aligned": num_aligned,
-            "mean_scale": float(np.mean(frame_scales)) if frame_scales else 1.0,
-            "mean_shift": float(np.mean(frame_shifts)) if frame_shifts else 0.0,
+            "mean_scale": float(np.mean(s_smooth_arr)) if len(s_smooth_arr) else 1.0,
+            "mean_shift": float(np.mean(t_smooth_arr)) if len(t_smooth_arr) else 0.0,
             "max_depth_clamp": z_max_scene,
             "frames": alignment_report[:20],
         }, indent=2))

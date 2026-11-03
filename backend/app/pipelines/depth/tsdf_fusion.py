@@ -95,7 +95,8 @@ class TSDFFusionStage(Stage):
             resolution = 384
 
         voxel_size = vol_len / float(resolution)
-        sdf_trunc = max(5.0 * voxel_size, 0.05)
+        # Amendment 3: Increase sdf_trunc to 8.0 * voxel_size
+        sdf_trunc = max(8.0 * voxel_size, 0.05)
 
         ctx.log_cb(
             f"[TSDFFusion] Room center=[{p_center[0]:.2f}, {p_center[1]:.2f}, {p_center[2]:.2f}], D_room={d_room:.2f}. "
@@ -176,11 +177,18 @@ class TSDFFusionStage(Stage):
         if num_verts == 0 or num_faces == 0:
             raise RuntimeError("[TSDFFusion] Extracted TSDF mesh has 0 vertices or 0 faces.")
 
-        # Clean isolated noise clusters: keep connected components with >100 triangles
-        ctx.log_cb("[TSDFFusion] Filtering disconnected noise components...")
+        # Amendment 3: C++ Taubin smoothing on raw TSDF mesh to damp surface ripple
+        ctx.log_cb("[TSDFFusion] Applying 10 iterations of C++ Taubin surface smoothing...")
+        mesh = mesh.filter_smooth_taubin(number_of_iterations=10)
+        mesh.compute_vertex_normals()
+
+        # Amendment 3: Prune disconnected internal floating sheets (< 2,500 faces or < 3% main cluster)
+        ctx.log_cb("[TSDFFusion] Pruning disconnected noise sheets and internal curtains...")
         triangle_clusters, cluster_n_triangles, _ = mesh.cluster_connected_triangles()
         cluster_n_triangles = np.asarray(cluster_n_triangles)
-        triangles_to_keep = cluster_n_triangles[np.asarray(triangle_clusters)] >= 150
+        max_cluster_faces = int(np.max(cluster_n_triangles)) if len(cluster_n_triangles) > 0 else 0
+        min_cluster_faces = max(2500, int(0.03 * max_cluster_faces))
+        triangles_to_keep = cluster_n_triangles[np.asarray(triangle_clusters)] >= min_cluster_faces
         mesh.remove_triangles_by_mask(~triangles_to_keep)
         mesh.remove_unreferenced_vertices()
         mesh.compute_vertex_normals()

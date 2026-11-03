@@ -48,9 +48,18 @@ def compute_slice_height(
         return float(y_floor + y_slice_rel)
 
 
-def slice_mesh_xz(mesh_path: Path, y_slice: float) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
+def slice_mesh_xz(
+    mesh_path: Path,
+    y_slice: float,
+    y_floor: Optional[float] = None,
+    y_ceiling: Optional[float] = None,
+) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
     """
-    Computes intersection segments between mesh and horizontal plane Y = Y_slice.
+    Computes architectural CAD cross-section segments from interior mesh.
+    Samples vertical wall bands across 7 horizontal planes (Y in [25% H, 75% H]),
+    rasterizes to 2D occupancy grid, applies morphological gap closing (< 12cm),
+    and vectorizes with Douglas-Peucker polygon approximation + orthogonal snapping.
+    Falls back gracefully to single-slice intersection if cv2 is unavailable or empty.
     Returns:
       segments_2d: (N, 2, 2) array of (x, z) coordinates
       bounds: (min_x, max_x, min_z, max_z)
@@ -63,51 +72,120 @@ def slice_mesh_xz(mesh_path: Path, y_slice: float) -> Tuple[np.ndarray, Tuple[fl
     else:
         mesh = loaded
 
-    # Find triangles intersecting the horizontal plane Y = y_slice
-    lines_3d = trimesh.intersections.mesh_plane(
-        mesh,
-        plane_normal=[0.0, 1.0, 0.0],
-        plane_origin=[0.0, y_slice, 0.0]
-    )
+    bounds = mesh.bounds
+    p0, p1 = bounds[0], bounds[1]
+    min_y, max_y = float(p0[1]), float(p1[1])
+    yf = y_floor if y_floor is not None else min_y
+    yc = y_ceiling if y_ceiling is not None else max_y
+    h_room = max(yc - yf, 0.5)
 
-    if lines_3d is None or len(lines_3d) == 0:
-        # Fallback: slice slightly lower or higher if empty
-        for offset in [-0.2, 0.2, -0.4, 0.4]:
+    # 7 slice heights across 25% - 75% of room height
+    y_slices = np.linspace(yf + 0.25 * h_room, yf + 0.75 * h_room, 7)
+    all_segments = []
+
+    for ys in y_slices:
+        lines_3d = trimesh.intersections.mesh_plane(
+            mesh,
+            plane_normal=[0.0, 1.0, 0.0],
+            plane_origin=[0.0, ys, 0.0]
+        )
+        if lines_3d is not None and len(lines_3d) > 0:
+            all_segments.append(lines_3d[:, :, [0, 2]])
+
+    if not all_segments:
+        # Fallback: slice at nominal y_slice
+        for offset in [0.0, -0.2, 0.2, -0.4, 0.4]:
             lines_3d = trimesh.intersections.mesh_plane(
                 mesh,
                 plane_normal=[0.0, 1.0, 0.0],
                 plane_origin=[0.0, y_slice + offset, 0.0]
             )
             if lines_3d is not None and len(lines_3d) > 0:
+                all_segments.append(lines_3d[:, :, [0, 2]])
                 break
 
-    if lines_3d is None or len(lines_3d) == 0:
-        # Generate bounding box contour fallback
-        bbox = mesh.bounds
-        p0, p1 = bbox[0], bbox[1]
-        lines_3d = np.array([
-            [[p0[0], y_slice, p0[2]], [p1[0], y_slice, p0[2]]],
-            [[p1[0], y_slice, p0[2]], [p1[0], y_slice, p1[2]]],
-            [[p1[0], y_slice, p1[2]], [p0[0], y_slice, p1[2]]],
-            [[p0[0], y_slice, p1[2]], [p0[0], y_slice, p0[2]]],
+    if not all_segments:
+        # Fallback bounding box contour
+        dummy = np.array([
+            [[p0[0], p0[2]], [p1[0], p0[2]]],
+            [[p1[0], p0[2]], [p1[0], p1[2]]],
+            [[p1[0], p1[2]], [p0[0], p1[2]]],
+            [[p0[0], p1[2]], [p0[0], p0[2]]],
         ])
+        return dummy, (float(p0[0]), float(p1[0]), float(p0[2]), float(p1[2]))
 
-    # Extract 2D (x, z) coordinates
-    segments_2d = lines_3d[:, :, [0, 2]]  # (N, 2, 2)
+    all_segs = np.vstack(all_segments)
+    pts = all_segs.reshape(-1, 2)
+    min_x, max_x = float(np.min(pts[:, 0])), float(np.max(pts[:, 0]))
+    min_z, max_z = float(np.min(pts[:, 1])), float(np.max(pts[:, 1]))
 
-    # Filter out near-zero length segments
-    diffs = segments_2d[:, 1, :] - segments_2d[:, 0, :]
+    # Attempt OpenCV morphological CAD vectorization
+    try:
+        import cv2
+
+        grid_size = 1024
+        margin = 40
+        draw_size = grid_size - 2 * margin
+        width_units = max(max_x - min_x, 1e-3)
+        depth_units = max(max_z - min_z, 1e-3)
+        scale = min(draw_size / width_units, draw_size / depth_units)
+        center_x = (min_x + max_x) / 2.0
+        center_z = (min_z + max_z) / 2.0
+
+        grid = np.zeros((grid_size, grid_size), dtype=np.uint8)
+        for seg in all_segs:
+            px0 = int(round((grid_size / 2.0) + (seg[0, 0] - center_x) * scale))
+            pz0 = int(round((grid_size / 2.0) + (seg[0, 1] - center_z) * scale))
+            px1 = int(round((grid_size / 2.0) + (seg[1, 0] - center_x) * scale))
+            pz1 = int(round((grid_size / 2.0) + (seg[1, 1] - center_z) * scale))
+            cv2.line(grid, (px0, pz0), (px1, pz1), 255, thickness=2)
+
+        # Morphological closing (7x7 kernel closes small mesh gaps < 12cm while keeping doorways open)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        closed = cv2.morphologyEx(grid, cv2.MORPH_CLOSE, kernel)
+
+        # Vectorize contours
+        contours, _ = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        cad_segments = []
+
+        for c in contours:
+            if cv2.arcLength(c, True) < 30:
+                continue
+            approx = cv2.approxPolyDP(c, epsilon=2.5, closed=True)
+            if len(approx) < 2:
+                continue
+            pts_approx = approx.reshape(-1, 2)
+            world_pts = []
+            for pt in pts_approx:
+                wx = (pt[0] - (grid_size / 2.0)) / scale + center_x
+                wz = (pt[1] - (grid_size / 2.0)) / scale + center_z
+                world_pts.append([wx, wz])
+            world_pts = np.array(world_pts)
+
+            for i in range(len(world_pts)):
+                p0_w = world_pts[i].copy()
+                p1_w = world_pts[(i + 1) % len(world_pts)].copy()
+                dx = abs(p1_w[0] - p0_w[0])
+                dz = abs(p1_w[1] - p0_w[1])
+                length = np.hypot(dx, dz)
+                if length > 1e-3:
+                    # Snap near-orthogonal wall segments within 4 degrees (sin(4 deg) ~= 0.07)
+                    if dx / length < 0.07:
+                        p1_w[0] = p0_w[0]
+                    elif dz / length < 0.07:
+                        p1_w[1] = p0_w[1]
+                cad_segments.append([p0_w, p1_w])
+
+        if len(cad_segments) > 0:
+            return np.array(cad_segments), (min_x, max_x, min_z, max_z)
+    except Exception as e:
+        logger.debug(f"[FloorPlan] OpenCV morphology fallback: {e}")
+
+    # Fallback to filtered raw 2D segments
+    diffs = all_segs[:, 1, :] - all_segs[:, 0, :]
     lens = np.linalg.norm(diffs, axis=1)
     valid = lens > 1e-3
-    segments_2d = segments_2d[valid]
-
-    all_pts = segments_2d.reshape(-1, 2)
-    min_x = float(np.min(all_pts[:, 0]))
-    max_x = float(np.max(all_pts[:, 0]))
-    min_z = float(np.min(all_pts[:, 1]))
-    max_z = float(np.max(all_pts[:, 1]))
-
-    return segments_2d, (min_x, max_x, min_z, max_z)
+    return all_segs[valid], (min_x, max_x, min_z, max_z)
 
 
 def render_floor_plan_svg(
@@ -282,7 +360,9 @@ def update_floor_plan_scale(workdir: Path, new_scale: float, is_calibrated: bool
                 "floor_area": data.get("floor_area_sqm", 20.0) * (new_scale ** 2),
             }
 
-        target_mesh = workdir / "mesh_calibrated.ply"
+        target_mesh = workdir / "aligned_mesh.ply"
+        if not target_mesh.exists():
+            target_mesh = workdir / "mesh_calibrated.ply"
         if not target_mesh.exists():
             target_mesh = workdir / "mesh_aligned.ply"
         if not target_mesh.exists():
@@ -290,7 +370,7 @@ def update_floor_plan_scale(workdir: Path, new_scale: float, is_calibrated: bool
 
         if target_mesh.exists():
             y_slice = 1.10 * (new_scale if is_calibrated else 1.0)
-            segments, bounds = slice_mesh_xz(target_mesh, y_slice)
+            segments, bounds = slice_mesh_xz(target_mesh, y_slice, y_floor=0.0, y_ceiling=2.6 * (new_scale if is_calibrated else 1.0))
             render_floor_plan_svg(segments, bounds, workdir / "floor_plan.svg", dimensions, is_calibrated, y_slice)
             render_floor_plan_png(segments, bounds, workdir / "floor_plan.png", dimensions, is_calibrated, y_slice)
             logger.info(f"[FloorPlan] Updated floor plan vector/raster outputs with scale {new_scale:.4f}.")
@@ -310,7 +390,11 @@ class FloorPlanStage(Stage):
         ctx.log_cb("[FloorPlan] Generating architectural 2D floor plan...")
 
         # Locate leveled/aligned mesh
-        target_mesh = ctx.workdir / "mesh_aligned.ply"
+        target_mesh = ctx.workdir / "aligned_mesh.ply"
+        if not target_mesh.exists():
+            target_mesh = ctx.workdir / "mesh_aligned.ply"
+        if not target_mesh.exists():
+            target_mesh = ctx.workdir / "mesh_calibrated.ply"
         if not target_mesh.exists():
             target_mesh = ctx.workdir / "mesh_decimated.ply"
         if not target_mesh.exists():
@@ -355,7 +439,7 @@ class FloorPlanStage(Stage):
         )
 
         ctx.log_cb(f"[FloorPlan] Slicing mesh at Y = {y_slice:.3f} (is_calibrated={is_calibrated})...")
-        segments_2d, bounds = slice_mesh_xz(target_mesh, y_slice)
+        segments_2d, bounds = slice_mesh_xz(target_mesh, y_slice, y_floor=y_floor, y_ceiling=y_ceiling)
         ctx.log_cb(f"[FloorPlan] Extracted {len(segments_2d):,} 2D cross-section boundary segments.")
 
         # Read dimensions from quality report if available

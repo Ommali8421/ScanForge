@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     SCANFORGE_STAGE_TIMEOUT: int = 7200  # 2 hours per stage
     SCANFORGE_JOB_TIMEOUT: int = 21600   # 6 hours minimum per job
     SCANFORGE_JOB_TTL_DAYS: int = 30
+    SCANFORGE_MIN_FREE_DISK_GB: float = 5.0
 
     # Feature Flags
     ENABLE_LIDAR: bool = False

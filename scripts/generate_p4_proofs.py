@@ -140,12 +140,14 @@ def composite_comparison_sheet(key_a: str, key_b: str, title: str, subtitle: str
         dim_str = f"{dims.get('length', 0):.2f}m x {dims.get('width', 0):.2f}m x {dims.get('height', 0):.2f}m"
 
         bar_fill = (43, 108, 176) if is_route_b else (113, 128, 150)
+        badge_text = "ROUTE B (DEPTH FUSION)" if is_route_b else "ROUTE A (PHOTOGRAMMETRY)"
+        badge_w = int(draw.textlength(badge_text, font=font_badge)) + 30
         draw.rectangle([(0, y_offset), (W, y_offset + 50)], fill=(30, 38, 50))
-        draw.rounded_rectangle([(30, y_offset + 8), (280, y_offset + 42)], radius=6, fill=bar_fill)
-        draw.text((45, y_offset + 14), "ROUTE B (DEPTH FUSION)" if is_route_b else "ROUTE A (PHOTOGRAMMETRY)", fill=(255, 255, 255), font=font_badge)
+        draw.rounded_rectangle([(30, y_offset + 8), (30 + badge_w, y_offset + 42)], radius=6, fill=bar_fill)
+        draw.text((45, y_offset + 14), badge_text, fill=(255, 255, 255), font=font_badge)
 
         stats_text = f"Job: {info['id'][:8]} | Vertices: {verts:,} | Faces: {faces:,} | Floor Area: {area:.1f} m² | Dimensions: {dim_str}"
-        draw.text((310, y_offset + 14), stats_text, fill=(226, 232, 240), font=font_sec)
+        draw.text((30 + badge_w + 30, y_offset + 14), stats_text, fill=(226, 232, 240), font=font_sec)
 
         # Images
         ov_path = WORK_DIR / f"{key}_overview.png"
@@ -279,3 +281,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

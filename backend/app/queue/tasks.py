@@ -41,7 +41,7 @@ def run_pipeline_task(job_id: str):
         return
 
     workdir = storage_service.get_job_workdir(job_id)
-    cancel_token = CancelToken()
+    cancel_token = CancelToken(job_id=job_id)
     active_cancel_tokens[job_id] = cancel_token
 
     # Full unredacted execution log file

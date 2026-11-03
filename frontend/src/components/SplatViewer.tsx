@@ -421,14 +421,86 @@ export const SplatViewer: React.FC<Props> = ({
     };
   }, [splatUrl, bounds, applyGpuClipping]);
 
-  // WASD walk mode key listeners
+  // Synchronize OrbitControls when toggling Walk Mode (Milestone P5 Hardening)
   useEffect(() => {
-    if (!walkMode || !viewerRef.current) return;
+    if (!viewerRef.current) return;
+    const controls = viewerRef.current.controls;
+    const cam = viewerRef.current.camera;
+    if (!controls || !cam) return;
 
-    const moveSpeed = 0.12;
+    if (walkMode) {
+      controls.enabled = false;
+    } else {
+      try {
+        const dir = new THREE.Vector3();
+        cam.getWorldDirection(dir);
+        controls.target.copy(cam.position).addScaledVector(dir, 3.0);
+        controls.enabled = true;
+        controls.update?.();
+      } catch (e) {
+        console.debug("controls sync error:", e);
+      }
+    }
+  }, [walkMode]);
+
+  // Mouse Drag Look in Walk Mode
+  useEffect(() => {
+    if (!walkMode || !containerRef.current || !viewerRef.current) return;
+    const dom = containerRef.current;
+    let isDragging = false;
+    let prevX = 0;
+    let prevY = 0;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 0) {
+        isDragging = true;
+        prevX = e.clientX;
+        prevY = e.clientY;
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging || !viewerRef.current?.camera) return;
+      const cam = viewerRef.current.camera;
+      const dx = e.clientX - prevX;
+      const dy = e.clientY - prevY;
+      prevX = e.clientX;
+      prevY = e.clientY;
+
+      const lookSpeed = 0.003;
+      const euler = new THREE.Euler(0, 0, 0, "YXZ");
+      euler.setFromQuaternion(cam.quaternion);
+      euler.y -= dx * lookSpeed;
+      euler.x = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, euler.x - dy * lookSpeed));
+      cam.quaternion.setFromEuler(euler);
+    };
+
+    const onMouseUp = () => {
+      isDragging = false;
+    };
+
+    dom.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+
+    return () => {
+      dom.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [walkMode]);
+
+  // WASD key listeners (Walk and Orbit modes)
+  useEffect(() => {
+    if (!viewerRef.current) return;
+
+    const moveSpeed = 0.15;
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (!viewerRef.current?.camera) return;
       const cam = viewerRef.current.camera;
+      const controls = viewerRef.current.controls;
+
       const forward = new Float32Array(3);
       forward[0] = -cam.matrix.elements[8];
       forward[1] = 0;
@@ -445,29 +517,47 @@ export const SplatViewer: React.FC<Props> = ({
       right[0] /= rlen;
       right[2] /= rlen;
 
+      let dx = 0;
+      let dy = 0;
+      let dz = 0;
+
       switch (e.key.toLowerCase()) {
         case "w":
-          cam.position.x += forward[0] * moveSpeed;
-          cam.position.z += forward[2] * moveSpeed;
+          dx += forward[0] * moveSpeed;
+          dz += forward[2] * moveSpeed;
           break;
         case "s":
-          cam.position.x -= forward[0] * moveSpeed;
-          cam.position.z -= forward[2] * moveSpeed;
+          dx -= forward[0] * moveSpeed;
+          dz -= forward[2] * moveSpeed;
           break;
         case "a":
-          cam.position.x -= right[0] * moveSpeed;
-          cam.position.z -= right[2] * moveSpeed;
+          dx -= right[0] * moveSpeed;
+          dz -= right[2] * moveSpeed;
           break;
         case "d":
-          cam.position.x += right[0] * moveSpeed;
-          cam.position.z += right[2] * moveSpeed;
+          dx += right[0] * moveSpeed;
+          dz += right[2] * moveSpeed;
           break;
         case "q":
-          cam.position.y += moveSpeed;
+          dy += moveSpeed;
           break;
         case "e":
-          cam.position.y -= moveSpeed;
+          dy -= moveSpeed;
           break;
+        default:
+          return;
+      }
+
+      cam.position.x += dx;
+      cam.position.y += dy;
+      cam.position.z += dz;
+
+      // In Orbit mode, move controls.target synchronously so camera doesn't pivot back to old center
+      if (!walkMode && controls?.target) {
+        controls.target.x += dx;
+        controls.target.y += dy;
+        controls.target.z += dz;
+        controls.update?.();
       }
     };
 

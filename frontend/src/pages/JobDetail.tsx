@@ -3,6 +3,7 @@ import { Job, JobReport, Artifact } from "../api/types";
 import {
   fetchJob,
   cancelJob,
+  resumeJob,
   calibrateScale,
   fetchJobReport,
   fetchJobCuts,
@@ -26,10 +27,10 @@ import {
   Archive,
   AlertTriangle,
   AlertCircle,
-  Info,
   Scissors,
   CheckCircle,
   XCircle,
+  RotateCcw,
 } from "lucide-react";
 
 interface Props {
@@ -44,6 +45,7 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
   const [routeDecision, setRouteDecision] = useState<any | null>(null);
   const [cutsData, setCutsData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [resuming, setResuming] = useState(false);
 
   // Measure mode state & points
   const [measureActive, setMeasureActive] = useState(false);
@@ -131,6 +133,20 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
     }
   };
 
+  const handleResume = async () => {
+    if (!jobId) return;
+    setResuming(true);
+    try {
+      const updated = await resumeJob(jobId);
+      setJob(updated);
+      await loadJobData();
+    } catch (e: any) {
+      alert("Failed resuming job: " + e.message);
+    } finally {
+      setResuming(false);
+    }
+  };
+
   const handlePointClick = (pt: [number, number, number]) => {
     if (!pointA) {
       setPointA(pt);
@@ -177,37 +193,6 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
   const currentStage = eventState.currentStage || job.current_stage || "queued";
   const allLogs = eventState.logs.length > 0 ? eventState.logs : job.log_tail || [];
   const isRunning = ["queued", "running", "preprocessing", "exporting"].includes(currentStatus);
-
-  const parseFailureDetails = (errorMessage?: string | null) => {
-    if (!errorMessage) return null;
-    const stageMatch = errorMessage.match(/at stage '([^']+)'/i);
-    const ratioMatch = errorMessage.match(
-      /(\d+\/\d+\s+frames\s+registered\s+\([0-9.]+%\)|[0-9.]+%\s+\(\d+\/\d+\s+frames\))/i
-    );
-    const thresholdMatch = errorMessage.match(/threshold of ([0-9.]+%)/i);
-    const hintMatch = errorMessage.match(/Hint:\s*(.*)/i);
-
-    return {
-      stage: stageMatch ? stageMatch[1] : job?.current_stage || "sfm",
-      ratio: ratioMatch
-        ? ratioMatch[1]
-        : sfmReport
-        ? `${sfmReport.registered_frames}/${sfmReport.total_frames} (${(
-            sfmReport.registration_ratio * 100
-          ).toFixed(1)}%)`
-        : "Low registration",
-      threshold: thresholdMatch
-        ? thresholdMatch[1]
-        : sfmReport?.min_registration_ratio
-        ? `${(sfmReport.min_registration_ratio * 100).toFixed(0)}%`
-        : "60%",
-      hint:
-        hintMatch
-          ? hintMatch[1]
-          : "Rapid camera movements or blank walls detected. Lower threshold or move slower.",
-      raw: errorMessage,
-    };
-  };
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8 space-y-8">
@@ -270,6 +255,17 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
             </button>
           )}
 
+          {(currentStatus === "failed" || currentStatus === "cancelled") && (
+            <button
+              onClick={handleResume}
+              disabled={resuming}
+              className="px-4 py-2 rounded-2xl border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-50"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 ${resuming ? "animate-spin" : ""}`} />
+              <span>{resuming ? "Resuming..." : "Resume Job"}</span>
+            </button>
+          )}
+
           {currentStatus === "completed" && (
             <a
               href={getDownloadAllUrl(job.id)}
@@ -283,56 +279,75 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
         </div>
       </div>
 
-      {/* Failure Reason Banner */}
+      {/* Failure Reason Banner with Actionable Remediation (Milestone P5 Hardening) */}
       {currentStatus === "failed" && (
         <div className="bg-rose-950/40 border border-rose-500/50 rounded-3xl p-6 shadow-2xl space-y-4">
-          <div className="flex items-center space-x-3 text-rose-400">
-            <AlertTriangle className="w-6 h-6 flex-shrink-0" />
-            <div>
-              <h3 className="text-base font-bold text-white tracking-tight">
-                Reconstruction Stopped: Verification Threshold Unmet
-              </h3>
-              <p className="text-xs text-rose-300/80 mt-0.5">
-                The capture did not produce enough confident 3D camera tracks to generate a high-fidelity model.
-              </p>
+          <div className="flex items-start justify-between">
+            <div className="flex items-center space-x-3 text-rose-400">
+              <AlertTriangle className="w-6 h-6 flex-shrink-0" />
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-base font-bold text-white tracking-tight">
+                    {job.error_details?.title || "Reconstruction Failed"}
+                  </h3>
+                  {job.error_code && (
+                    <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 font-mono text-[11px] font-bold border border-rose-500/30">
+                      {job.error_code}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-rose-300/80 mt-1">
+                  {job.error_details?.summary || job.error || "An error occurred during pipeline execution."}
+                </p>
+              </div>
             </div>
+
+            <button
+              onClick={handleResume}
+              disabled={resuming}
+              className="px-4 py-2 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg transition-all disabled:opacity-50 flex-shrink-0"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 ${resuming ? "animate-spin" : ""}`} />
+              <span>{resuming ? "Resuming..." : "Resume Job"}</span>
+            </button>
           </div>
 
-          {(() => {
-            const details = parseFailureDetails(job.error);
-            return (
-              <div className="space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                  <div className="bg-zinc-950/80 border border-rose-500/30 rounded-2xl p-3.5">
-                    <span className="text-rose-300/70 block font-medium">Failed Stage</span>
-                    <span className="text-white font-mono font-bold text-sm mt-0.5 uppercase block">
-                      {details?.stage || "SFM"}
-                    </span>
-                  </div>
-                  <div className="bg-zinc-950/80 border border-rose-500/30 rounded-2xl p-3.5">
-                    <span className="text-rose-300/70 block font-medium">Registered Frames</span>
-                    <span className="text-rose-400 font-mono font-bold text-sm mt-0.5 block">
-                      {details?.ratio || "N/A"}
-                    </span>
-                  </div>
-                  <div className="bg-zinc-950/80 border border-rose-500/30 rounded-2xl p-3.5">
-                    <span className="text-rose-300/70 block font-medium">Required Threshold</span>
-                    <span className="text-amber-400 font-mono font-bold text-sm mt-0.5 block">
-                      {details?.threshold || "60%"}
-                    </span>
-                  </div>
-                </div>
+          {job.error_details?.remediation && job.error_details.remediation.length > 0 && (
+            <div className="bg-zinc-950/80 border border-rose-500/30 rounded-2xl p-4 space-y-2">
+              <span className="text-xs font-bold text-rose-300 uppercase tracking-wider block">
+                Actionable Remediation Steps:
+              </span>
+              <ul className="space-y-1.5 text-xs text-zinc-300">
+                {job.error_details.remediation.map((step, idx) => (
+                  <li key={idx} className="flex items-start space-x-2">
+                    <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0 mt-0.5" />
+                    <span>{step}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
 
-                <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-xs text-rose-200 flex items-start space-x-2.5">
-                  <Info className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-semibold text-rose-300">Diagnostic Suggestion: </span>
-                    {details?.hint || "Video may have rapid pans, blur, or blank walls. Move slower or accept partial models in Advanced Settings."}
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
+      {/* Cancelled Banner */}
+      {currentStatus === "cancelled" && (
+        <div className="bg-zinc-900/60 border border-zinc-700/50 rounded-3xl p-6 shadow-2xl flex items-center justify-between">
+          <div className="flex items-center space-x-3 text-zinc-400">
+            <Ban className="w-6 h-6 flex-shrink-0 text-amber-400" />
+            <div>
+              <h3 className="text-base font-bold text-white tracking-tight">Job Cancelled</h3>
+              <p className="text-xs text-zinc-400 mt-0.5">Execution was cancelled by user request. Completed upstream stages remain cached.</p>
+            </div>
+          </div>
+          <button
+            onClick={handleResume}
+            disabled={resuming}
+            className="px-4 py-2 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg transition-all disabled:opacity-50 flex-shrink-0"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${resuming ? "animate-spin" : ""}`} />
+            <span>{resuming ? "Resuming..." : "Resume Job"}</span>
+          </button>
         </div>
       )}
 

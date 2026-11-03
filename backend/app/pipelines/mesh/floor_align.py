@@ -433,6 +433,40 @@ class FloorAlignAndScaleStage(Stage):
         else:
             mesh = loaded
 
+        # Amendment 4: Circular wrap-around 90-degree Manhattan wall alignment
+        if len(mesh.faces) > 100:
+            fnots = mesh.face_normals @ R_total.T
+            # Vertical walls: normal is mostly horizontal (|ny| < 0.35)
+            wall_mask = np.abs(fnots[:, 1]) < 0.35
+            if np.sum(wall_mask) > 100:
+                wn_x = fnots[wall_mask, 0]
+                wn_z = fnots[wall_mask, 2]
+                wall_areas = mesh.area_faces[wall_mask]
+                thetas = np.arctan2(wn_x, wn_z)
+                thetas_folded = thetas % (np.pi / 2.0)
+                counts, bin_edges = np.histogram(thetas_folded, bins=90, range=(0.0, np.pi / 2.0), weights=wall_areas)
+
+                # Circular wrap-around padding (mode='wrap') to prevent splitting at 0° / 90° boundary
+                pad_w = 4
+                padded = np.pad(counts, pad_width=pad_w, mode='wrap')
+                kernel = np.array([1, 2, 3, 2, 1], dtype=float)
+                kernel /= kernel.sum()
+                smoothed = np.convolve(padded, kernel, mode='same')[pad_w:-pad_w]
+
+                peak_bin = int(np.argmax(smoothed))
+                theta_peak = float(0.5 * (bin_edges[peak_bin] + bin_edges[peak_bin + 1]))
+                delta_yaw = float(-theta_peak if theta_peak <= np.pi / 4.0 else (np.pi / 2.0 - theta_peak))
+
+                cos_y = math.cos(delta_yaw)
+                sin_y = math.sin(delta_yaw)
+                R_manhattan = np.array([
+                    [cos_y,  0.0, sin_y],
+                    [0.0,    1.0, 0.0],
+                    [-sin_y, 0.0, cos_y]
+                ], dtype=float)
+                R_total = R_manhattan @ R_total
+                ctx.log_cb(f"[{self.name}] Manhattan yaw alignment: theta_peak={math.degrees(theta_peak):.1f}°, delta_yaw={math.degrees(delta_yaw):+.1f}°. Walls aligned square to axes.")
+
         scale = float(ctx.cumulative_scale or 1.0)
         ctx.log_cb(f"[{self.name}] (60%) Leveling floor to Y=0.000, centering horizontal bounds, and applying scale factor {scale:.4f}x...")
 

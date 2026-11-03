@@ -118,7 +118,18 @@ class ToolRunner:
             if os.name == "nt":
                 subprocess.call(["taskkill", "/F", "/T", "/PID", str(proc.pid)])
             else:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                # Allow up to 1.5s for process group to terminate gracefully, then escalate to SIGKILL
+                for _ in range(15):
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                if proc.poll() is None:
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except OSError:
+                        pass
         except Exception:
             try:
                 proc.kill()

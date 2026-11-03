@@ -44,6 +44,8 @@ class JobResponse(BaseModel):
     progress: int = 0
     cumulative_scale: float = 1.0
     error: Optional[str] = None
+    error_code: Optional[str] = None
+    error_details: Optional[Dict[str, Any]] = None
     log_tail: List[str] = Field(default_factory=list)
     options: Dict[str, Any] = Field(default_factory=dict)
     output_formats: List[str] = Field(default_factory=list)

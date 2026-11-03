@@ -18,18 +18,40 @@ from app.utils.logging import logger
 
 
 class CancelToken:
-    def __init__(self):
+    def __init__(self, job_id: Optional[str] = None):
         self._cancelled = False
         self._active_pid: Optional[int] = None
+        self._job_id = job_id
 
     def cancel(self):
         self._cancelled = True
+        if self._job_id:
+            try:
+                from redis import Redis
+                r = Redis.from_url(settings.SCANFORGE_REDIS_URL, socket_connect_timeout=1)
+                r.set(f"scanforge:cancel:{self._job_id}", "1", ex=3600)
+            except Exception:
+                pass
+
         if self._active_pid:
             try:
                 if os.name == "nt":
                     subprocess.call(["taskkill", "/F", "/T", "/PID", str(self._active_pid)])
                 else:
-                    os.killpg(os.getpgid(self._active_pid), signal.SIGTERM)
+                    pgid = os.getpgid(self._active_pid)
+                    os.killpg(pgid, signal.SIGTERM)
+                    # Allow up to 1.5s for graceful SIGTERM, then escalate to SIGKILL
+                    for _ in range(15):
+                        try:
+                            # 0 signal check tests if process group still exists
+                            os.killpg(pgid, 0)
+                            time.sleep(0.1)
+                        except OSError:
+                            break
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except OSError:
+                        pass
             except Exception:
                 try:
                     os.kill(self._active_pid, signal.SIGKILL)
@@ -37,7 +59,18 @@ class CancelToken:
                     pass
 
     def is_cancelled(self) -> bool:
-        return self._cancelled
+        if self._cancelled:
+            return True
+        if self._job_id:
+            try:
+                from redis import Redis
+                r = Redis.from_url(settings.SCANFORGE_REDIS_URL, socket_connect_timeout=1)
+                if r.exists(f"scanforge:cancel:{self._job_id}"):
+                    self._cancelled = True
+                    return True
+            except Exception:
+                pass
+        return False
 
     def set_active_pid(self, pid: Optional[int]):
         self._active_pid = pid

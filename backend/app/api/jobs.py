@@ -80,6 +80,16 @@ def format_job_response(job: Job) -> JobResponse:
         except Exception:
             pass
 
+    err_code = None
+    err_details = None
+    if job.error:
+        try:
+            from app.services.error_classifier import classify_error
+            err_details = classify_error(job.error, job.log_tail)
+            err_code = err_details["code"]
+        except Exception:
+            pass
+
     return JobResponse(
         id=job.id,
         status=job.status,
@@ -89,6 +99,8 @@ def format_job_response(job: Job) -> JobResponse:
         progress=job.progress,
         cumulative_scale=job.cumulative_scale,
         error=job.error,
+        error_code=err_code,
+        error_details=err_details,
         log_tail=job.log_tail or [],
         options=options,
         output_formats=job.output_formats or [],
@@ -108,6 +120,19 @@ async def create_scan_job(
     output_formats: str = Form('["glb", "obj"]'),
     options: str = Form("{}"),
 ):
+    # Pre-flight disk space guard (Milestone P5 Hardening)
+    try:
+        free_bytes = shutil.disk_usage(str(settings.data_path)).free
+        min_free_bytes = int(settings.SCANFORGE_MIN_FREE_DISK_GB * 1e9)
+        if free_bytes < min_free_bytes:
+            raise HTTPException(
+                status_code=507,
+                detail=f"Insufficient storage space: {free_bytes / 1e9:.2f} GB free, minimum {settings.SCANFORGE_MIN_FREE_DISK_GB:.1f} GB required. Please clean up old jobs or free disk space."
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"[StorageGuard] Could not check free disk space: {e}")
     # Parse JSON options and output formats
     try:
         parsed_formats = json.loads(output_formats) if isinstance(output_formats, str) else output_formats
@@ -176,9 +201,80 @@ def cancel_job(id: str):
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {id} not found")
 
+    # Set Redis cross-container cancellation flag (Milestone P5 Hardening)
+    try:
+        from redis import Redis
+        r = Redis.from_url(settings.SCANFORGE_REDIS_URL, socket_connect_timeout=1)
+        r.set(f"scanforge:cancel:{id}", "1", ex=3600)
+    except Exception as e:
+        logger.warning(f"[Cancel] Could not set Redis cancel key scanforge:cancel:{id}: {e}")
+
     cancel_active_task(id)
     set_job_cancelled(id)
     return {"status": "cancelled", "job_id": id}
+
+
+@router.post("/{id}/resume", response_model=JobResponse)
+def resume_job(id: str):
+    """
+    Idempotent Crash Resume (Milestone P5 Hardening)
+    Resets a failed or cancelled job to pending, clears the cancel flag,
+    and re-enqueues the job. Pipeline stage caching (.cache_*.json) automatically
+    skips upstream completed stages and resumes from the point of interruption.
+    """
+    job = get_job(id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {id} not found")
+
+    if job.status not in ("failed", "cancelled"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job {id} is currently in status '{job.status}'. Only failed or cancelled jobs can be resumed."
+        )
+
+    # Clear Redis cancellation flag
+    try:
+        from redis import Redis
+        r = Redis.from_url(settings.SCANFORGE_REDIS_URL, socket_connect_timeout=1)
+        r.delete(f"scanforge:cancel:{id}")
+    except Exception as e:
+        logger.warning(f"[Resume] Could not clear Redis cancel key: {e}")
+
+    # Reset job state in database
+    with Session(engine) as session:
+        db_job = session.get(Job, id)
+        if db_job:
+            db_job.status = "queued"
+            db_job.error = None
+            session.add(db_job)
+            session.commit()
+            session.refresh(db_job)
+            job = db_job
+
+    # Re-enqueue to active queue
+    enqueue_job(id)
+    logger.info(f"[Resume] Resumed job {id}. Re-enqueued to worker.")
+    return format_job_response(job)
+
+
+@router.post("/{id}/cleanup-scratch")
+def cleanup_job_scratch(id: str):
+    """
+    Scratch Space Purge (Milestone P5 Hardening)
+    Removes heavy raw depth maps and intermediate point clouds for a completed job,
+    preserving all final deliverable models, floor plans, and reports.
+    """
+    job = get_job(id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {id} not found")
+
+    from app.services.cleanup import cleanup_job_scratch_files
+    reclaimed = cleanup_job_scratch_files(id)
+    return {
+        "job_id": id,
+        "reclaimed_bytes": reclaimed,
+        "reclaimed_mb": round(reclaimed / (1024 * 1024), 2),
+    }
 
 
 @router.delete("/{id}")

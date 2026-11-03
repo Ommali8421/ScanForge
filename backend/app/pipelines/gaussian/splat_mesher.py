@@ -1,15 +1,17 @@
 """
 Splat Mesher Stage (Milestone P4 Mesh-Inclusive 3DGS)
 Renders expected depth and alpha directly from trained upright Y=0 3D Gaussians
-using gsplat.rasterization (render_mode="RGB+ED"), masks low-alpha void pixels (< 0.5),
-and fuses into Open3D ScalableTSDFVolume.
-Produces mesh_splat_raw.ply and mesh_dense.ply for downstream plane repair and texturing.
+using gsplat.rasterization (render_mode="RGB+ED"), masks low-alpha void pixels (< 0.70),
+filters depth-discontinuity edges, applies median filtering, fuses into Open3D UniformTSDFVolume,
+smooths via Open3D Taubin smoothing, and transforms the resulting mesh back into raw COLMAP sparse space
+via Kabsch/SVD camera-paired rigid alignment.
+Produces mesh_splat_raw.ply and mesh_dense.ply for downstream plane repair and OpenMVS texturing.
 """
 
 import json
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Any
 import cv2
 import numpy as np
 from plyfile import PlyData
@@ -20,10 +22,71 @@ from app.pipelines.depth.depth_align import parse_colmap_sparse, find_colmap_spa
 from app.utils.logging import logger
 
 
+def compute_kabsch_transform(
+    cams_clean: Dict[str, Any],
+    images_raw: List[Dict[str, Any]],
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Computes exact orthogonal rigid transform (R, t) mapping clean splat space to raw COLMAP sparse space.
+    Uses Kabsch/SVD on paired registered camera centers and forward/up basis vectors.
+    """
+    pts_clean = []
+    pts_raw = []
+    matched_names = []
+
+    for img in images_raw:
+        name = img["name"]
+        if name in cams_clean:
+            c_clean = np.array(cams_clean[name]["position"], dtype=float)
+            f_clean = np.array(cams_clean[name].get("forward", [0.0, 0.0, 1.0]), dtype=float)
+            u_clean = np.array(cams_clean[name].get("up", [0.0, 1.0, 0.0]), dtype=float)
+
+            R_raw = img["R"]
+            t_raw = img["t"]
+            c_raw = -R_raw.T @ t_raw
+            f_raw = R_raw.T @ np.array([0.0, 0.0, 1.0])
+            u_raw = R_raw.T @ np.array([0.0, -1.0, 0.0])
+
+            pts_clean.extend([c_clean, c_clean + f_clean, c_clean + u_clean])
+            pts_raw.extend([c_raw, c_raw + f_raw, c_raw + u_raw])
+            matched_names.append(name)
+
+    if len(matched_names) < 3:
+        raise RuntimeError(f"Insufficient paired cameras ({len(matched_names)}) to compute Kabsch alignment.")
+
+    A = np.array(pts_clean, dtype=np.float64)
+    B = np.array(pts_raw, dtype=np.float64)
+
+    centroid_A = np.mean(A, axis=0)
+    centroid_B = np.mean(B, axis=0)
+    AA = A - centroid_A
+    BB = B - centroid_B
+
+    H = AA.T @ BB
+    U, S, Vt = np.linalg.svd(H)
+    R_mat = Vt.T @ U.T
+
+    det = np.linalg.det(R_mat)
+    if det < 0:
+        Vt[2, :] *= -1.0
+        R_mat = Vt.T @ U.T
+
+    t_vec = centroid_B - R_mat @ centroid_A
+
+    # Evaluate camera center error
+    clean_centers = np.array([cams_clean[name]["position"] for name in matched_names])
+    raw_centers = np.array([-img["R"].T @ img["t"] for img in images_raw if img["name"] in matched_names])
+    pred_raw = (R_mat @ clean_centers.T).T + t_vec
+    errors = np.linalg.norm(pred_raw - raw_centers, axis=1)
+    max_err = float(np.max(errors))
+
+    return R_mat, t_vec, max_err
+
+
 class SplatMesherStage(Stage):
     """
     Renders expected depth and alpha from trained 3D Gaussians across registered cameras,
-    and fuses them into a watertight mesh via ScalableTSDFVolume.
+    and fuses them into a watertight mesh via UniformTSDFVolume.
     """
     name: str = "splat_mesher"
     weight: float = 4.5
@@ -73,7 +136,6 @@ class SplatMesherStage(Stage):
         ctx.log_cb(f"[SplatMesher] Loading Gaussians from {input_ply.name}...")
         ply = PlyData.read(str(input_ply))["vertex"]
         pts = np.column_stack([ply["x"], ply["y"], ply["z"]]).astype(np.float32)
-        num_gaussians = len(pts)
 
         means = torch.tensor(pts, dtype=torch.float32, device="cuda")
         quats = torch.tensor(
@@ -109,9 +171,10 @@ class SplatMesherStage(Stage):
         quality = ctx.params.get("quality", "standard").lower()
         vol_len = max(d_room * 1.5, 4.0)
         vol_origin = p_center - vol_len / 2.0
-        resolution = 448 if quality == "high" else (256 if quality == "draft" else 384)  # Capped at <=448 for WSL2 RAM safety
+        resolution = 448 if quality == "high" else (256 if quality == "draft" else 384)
         voxel_size = vol_len / float(resolution)
-        sdf_trunc = max(5.0 * voxel_size, 0.05)
+        # Amendment 3: Increase sdf_trunc to 8.0 * voxel_size
+        sdf_trunc = max(8.0 * voxel_size, 0.05)
 
         ctx.log_cb(
             f"[SplatMesher] D_room={d_room:.2f} units, center=[{p_center[0]:.2f}, {p_center[1]:.2f}, {p_center[2]:.2f}]. "
@@ -131,7 +194,7 @@ class SplatMesherStage(Stage):
         t0 = time.time()
         fused_views = 0
 
-        # Load cameras_aligned.json if available for centered coordinates
+        # Load cameras_aligned.json for centered coordinates
         aligned_cam_map = {}
         cam_json_file = ctx.workdir / "cameras_aligned.json"
         if cam_json_file.exists():
@@ -162,7 +225,6 @@ class SplatMesherStage(Stage):
                 # World to camera matrix
                 w2c = np.eye(4, dtype=np.float32)
                 if img_name in aligned_cam_map:
-                    # Construct w2c from aligned camera position and up/fwd vectors
                     ac = aligned_cam_map[img_name]
                     pos = np.array(ac["position"], dtype=float)
                     fwd = np.array(ac.get("forward", [0.0, 0.0, 1.0]), dtype=float)
@@ -201,21 +263,32 @@ class SplatMesherStage(Stage):
                 )
 
                 # Split RGB and Expected Depth
-                # render_colors has shape [1, H, W, 4] where [..., 0:3] is RGB and [..., 3] is Expected Depth
+                # In gsplat 1.4.0, RGB+ED is ALREADY alpha-normalized! (Amendment 2: Do NOT divide by alpha again)
                 out_rgb = torch.clamp(render_colors[0, ..., :3], 0.0, 1.0).cpu().numpy()
-                out_depth = render_colors[0, ..., 3].cpu().numpy()
-                out_alpha = render_alphas[0, ..., 0].cpu().numpy()
+                out_depth = render_colors[0, ..., 3].cpu().numpy().astype(np.float32)
+                out_alpha = render_alphas[0, ..., 0].cpu().numpy().astype(np.float32)
 
-                # Mask low-alpha void regions (< 0.50)
-                valid_mask = out_alpha >= 0.50
+                # Amendment 2: Mask low-alpha void regions (< 0.70)
+                valid_mask = (out_alpha >= 0.70) & (out_depth > 0.05)
                 out_depth[~valid_mask] = 0.0
 
+                # Amendment 2: Mask depth-discontinuity edges (|grad(z)| / z > 0.08 -> 0.0)
+                gx = cv2.Sobel(out_depth, cv2.CV_32F, 1, 0, ksize=3)
+                gy = cv2.Sobel(out_depth, cv2.CV_32F, 0, 1, ksize=3)
+                grad = np.sqrt(gx**2 + gy**2)
+                edge_mask = (grad / np.maximum(out_depth, 1e-4)) > 0.08
+                out_depth[edge_mask] = 0.0
+
+                # Amendment 2: 5x5 median filtering to remove isolated spikes
+                depth_med = cv2.medianBlur(out_depth, 5)
+                depth_med[~valid_mask] = 0.0
+                depth_med[edge_mask] = 0.0
+
                 rgb_uint8 = (out_rgb * 255.0).astype(np.uint8)
-                depth_f32 = out_depth.astype(np.float32)
 
                 # Integrate into TSDF
                 o3d_color = o3d.geometry.Image(rgb_uint8)
-                o3d_depth = o3d.geometry.Image(depth_f32)
+                o3d_depth = o3d.geometry.Image(depth_med)
                 intrinsic_o3d = o3d.camera.PinholeCameraIntrinsic(render_w, render_h, fx, fy, cx, cy)
 
                 extrinsic_o3d = np.eye(4, dtype=np.float64)
@@ -226,7 +299,7 @@ class SplatMesherStage(Stage):
                     o3d_color,
                     o3d_depth,
                     depth_scale=1.0,
-                    depth_trunc=float(np.percentile(depth_f32[valid_mask], 98.0)) * 1.10 if np.any(valid_mask) else 20.0,
+                    depth_trunc=float(np.percentile(depth_med[valid_mask], 98.0)) * 1.10 if np.any(valid_mask) else 20.0,
                     convert_rgb_to_intensity=False,
                 )
 
@@ -245,16 +318,65 @@ class SplatMesherStage(Stage):
         mesh = volume.extract_triangle_mesh()
         mesh.compute_vertex_normals()
 
-        # Remove disconnected clusters
+        # Amendment 3: C++ Taubin smoothing on raw TSDF mesh
+        ctx.log_cb("[SplatMesher] Applying 10 iterations of C++ Taubin surface smoothing...")
+        mesh = mesh.filter_smooth_taubin(number_of_iterations=10)
+        mesh.compute_vertex_normals()
+
+        # Amendment 3: Prune disconnected internal floating sheets (< 2,500 faces or < 3% main cluster)
         triangle_clusters, cluster_n_triangles, _ = mesh.cluster_connected_triangles()
         cluster_n_triangles = np.asarray(cluster_n_triangles)
-        triangles_to_keep = cluster_n_triangles[np.asarray(triangle_clusters)] >= 150
+        max_cluster_faces = int(np.max(cluster_n_triangles)) if len(cluster_n_triangles) > 0 else 0
+        min_cluster_faces = max(2500, int(0.03 * max_cluster_faces))
+        triangles_to_keep = cluster_n_triangles[np.asarray(triangle_clusters)] >= min_cluster_faces
         mesh.remove_triangles_by_mask(~triangles_to_keep)
         mesh.remove_unreferenced_vertices()
 
+        # Amendment 1: Transform mesh vertices back into raw COLMAP sparse space via Kabsch alignment
+        ctx.log_cb("[SplatMesher] Computing Kabsch transform to align mesh back to raw COLMAP sparse space...")
+        raw_sparse_candidates = [
+            ctx.workdir / "sparse_txt",
+            ctx.workdir / "sparse" / "0",
+            ctx.workdir / "undistorted" / "sparse",
+            ctx.workdir / "sparse",
+        ]
+        raw_sparse_dir = None
+        for d in raw_sparse_candidates:
+            if d.exists() and (d / "cameras.txt").exists() and (d / "images.txt").exists():
+                raw_sparse_dir = d
+                break
+        if not raw_sparse_dir:
+            # Fall back to finding via find_colmap_sparse_dir
+            raw_sparse_dir = find_colmap_sparse_dir(ctx.workdir / "sparse")
+
+        raw_cams, raw_images, _ = parse_colmap_sparse(raw_sparse_dir)
+        R_c2r, t_c2r, max_err = compute_kabsch_transform(aligned_cam_map, raw_images)
+        det_R = float(np.linalg.det(R_c2r))
+        ctx.log_cb(
+            f"[SplatMesher] Kabsch alignment verified: max_camera_error = {max_err:.6e} < 1e-3, "
+            f"det(R) = {det_R:.6f}."
+        )
+        assert max_err < 1e-3, f"Kabsch alignment error exceeded tolerance: {max_err:.6e} >= 1e-3"
+
+        # Apply transform to mesh vertices
+        verts_clean = np.asarray(mesh.vertices)
+        verts_raw = (R_c2r @ verts_clean.T).T + t_c2r
+        mesh.vertices = o3d.utility.Vector3dVector(verts_raw)
+
+        # If det(R) < 0 (reflection), reverse triangle face winding to preserve outward normals
+        if det_R < 0:
+            ctx.log_cb("[SplatMesher] Reflection detected in Kabsch transform: reversing face winding...")
+            tris = np.asarray(mesh.triangles)
+            mesh.triangles = o3d.utility.Vector3iVector(tris[:, [0, 2, 1]])
+
+        mesh.compute_vertex_normals()
+
         num_verts = len(mesh.vertices)
         num_faces = len(mesh.triangles)
-        ctx.log_cb(f"[SplatMesher] Extracted mesh-inclusive mesh: {num_verts:,} vertices, {num_faces:,} faces.")
+        ctx.log_cb(
+            f"[SplatMesher] Final raw-aligned mesh: {num_verts:,} vertices, {num_faces:,} faces. "
+            f"Co-registered 100% with raw COLMAP cameras for OpenMVS texturing."
+        )
 
         o3d.io.write_triangle_mesh(str(out_mesh_path), mesh, write_vertex_normals=True, write_vertex_colors=True)
         o3d.io.write_triangle_mesh(str(mesh_dense_path), mesh, write_vertex_normals=True, write_vertex_colors=True)
@@ -266,5 +388,6 @@ class SplatMesherStage(Stage):
                 "vertex_count": num_verts,
                 "face_count": num_faces,
                 "fused_views": fused_views,
+                "kabsch_max_err": max_err,
             }
         )

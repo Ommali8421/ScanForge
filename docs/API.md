@@ -72,6 +72,7 @@ Returns available scan types, quality presets, runtime format availability, limi
 
 #### `POST /api/jobs`
 Submit a scan job with video or image archive upload.
+- **Pre-flight Storage Guard**: Checks available disk space. If free space is less than `SCANFORGE_MIN_FREE_DISK_GB` (default: 5.0 GB), rejects the upload with `507 Insufficient Storage`.
 - **Content-Type**: `multipart/form-data`
 - **Form Fields**:
   - `file`: Binary file (`.mp4`, `.mov`, `.zip`)
@@ -97,6 +98,12 @@ Submit a scan job with video or image archive upload.
     "job_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "status": "queued",
     "message": "Job enqueued successfully"
+  }
+  ```
+- **Error Response `507 Insufficient Storage`**:
+  ```json
+  {
+    "detail": "Insufficient storage space: 2.10 GB free, minimum 5.0 GB required. Please clean up old jobs or free disk space."
   }
   ```
 
@@ -138,12 +145,21 @@ Server-Sent Events (SSE) stream for real-time progress and logging.
   - `error`: `{"job_id": "...", "status": "failed", "error": "CUDA out of memory"}`
 
 #### `POST /api/jobs/{id}/cancel`
-Cancel a queued or currently executing job. Kills active subprocesses via `ToolRunner`.
-- **Response `200 OK`**: `{"status": "cancelled"}`
+Cancel a queued or currently executing job across container boundaries via Redis bridge (`scanforge:cancel:{id}`). Kills active subprocesses and their process groups (`os.killpg`) within `< 3.0s`, freeing GPU VRAM immediately. Job status transitions to `cancelled` (never `failed`).
+- **Response `200 OK`**: `{"status": "cancelled", "job_id": "..."}`
+
+#### `POST /api/jobs/{id}/resume`
+Idempotent crash resume for failed or cancelled jobs. Resets job status to `queued`, clears error and Redis cancel flags, and re-enqueues the job. Pipeline stages utilize SHA-256 parameter and input hashing (`.cache_<stage>.json`) to automatically skip completed stages (0.0s runtime) and resume directly from the interruption point.
+- **Response `200 OK`**: Job object (resumed).
+- **Error `400 Bad Request`**: If job is currently active or completed.
+
+#### `POST /api/jobs/{id}/cleanup-scratch`
+Purges heavy intermediate scratch files (raw `.npy` depth maps, `.dmap` depth fields, intermediate dense point clouds) for completed jobs, reclaiming `> 80%` disk space while strictly preserving all deliverable assets (`mesh.glb`, `mesh.ply`, `model.splat`, `preview_textured.glb`, `floor_plan.*`, `quality_report.json`, and `sparse_txt/`).
+- **Response `200 OK`**: `{"job_id": "...", "reclaimed_bytes": 105481200, "reclaimed_mb": 100.59}`
 
 #### `DELETE /api/jobs/{id}`
-Delete job record and associated files from storage.
-- **Response `200 OK`**: `{"status": "deleted"}`
+Atomically deletes job record from the database, removes all workdir assets, uploads, and registered artifacts.
+- **Response `200 OK`**: `{"status": "deleted", "job_id": "..."}`
 
 ---
 

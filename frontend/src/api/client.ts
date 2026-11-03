@@ -82,6 +82,12 @@ export async function cancelJob(id: string): Promise<{ status: string }> {
   return res.json();
 }
 
+export async function resumeJob(id: string): Promise<Job> {
+  const res = await fetch(`${API_BASE}/jobs/${id}/resume`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed resuming job");
+  return res.json();
+}
+
 export async function deleteJob(id: string): Promise<{ status: string }> {
   const res = await fetch(`${API_BASE}/jobs/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error("Failed deleting job");

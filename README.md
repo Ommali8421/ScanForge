@@ -24,15 +24,12 @@ ScanForge enforces strict verification honesty and living project tracking. Befo
 |---|---|---|---|
 | **P0** | Repo skeleton, Docker Compose (mock profile), `doctor.py`, `AGENTS.md`, OpenAPI contract, pinned versions | **Done** | Verified via `doctor.py` and Compose healthchecks (`cf97f7c`) |
 | **P1** | Job system + multipart upload + live SSE streaming + full React frontend on MOCK engine | **Accepted** | Verified end-to-end with procedural interior room generation (`e113930`) |
-| **P2a** | GPU Worker Build (CUDA 12.1.1, COLMAP 3.9.1 sm_89, OpenMVS v2.2.0 sm_89, Blender 4.1.0, PyTorch 2.5.1+cu121) | **Done** | Container passes `doctor.py` and GPU passthrough sanity checks |
-| **P2b** | Video ingest + letterbox auto-crop + interior-tuned COLMAP SfM (GPU) + 4-panel diagnostic trajectory plot + cut validation | **Done** | Verified on RTX 4060 GPU with real interior video captures (`house_test_30s.mp4`, `bedroom_vid.mp4`) |
-| **P2c Phase 1/1b** | Route A mesh: OpenMVS DensifyPointCloud, ReconstructMesh, KDTree color transfer, TextureMesh UV atlas, camera up-vector alignment ($\bar{\mathbf{u}} \to +Y$), 4-view offscreen Blender renders | **Done** | Verified on RTX 4060 GPU on reference house and tour captures |
-| **P2c Phase 2** | Mesh cleanup (floater pruning), room analysis in SfM frame, relative floor support detection, normal-aware plane snapping, conservative camera bbox enveloping, quadric decimation, UV texturing, Poisson vs Delaunay A/B | **Hardened & VERIFIED** | **100% verified on real hardware** (`house_test_30s.mp4` Job `f0e89d25` and `enhanced_interior_tour_1080p.mp4` Job `2b7b3bcc`). All 6 review items resolved, 50/50 tests passing with test DB isolation. |
-| **P2c Phase 3** | Floor leveling ($Y=0$), zero-retexturing scale calibration seam, multi-format exporters (GLB, OBJ, PLY, STL, XYZ, FBX, USDZ), quality report | **Next Milestone** | Awaiting user review of Phase 2 evidence |
-| **P3** | 3DGS training (`splatfacto` / `gsplat`) + floater cleanup + splat formats + splat viewer | **Not Started** | Blocked on P2c |
-| **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Not Started** | Blocked on P3 |
-| **P5** | Hardening: cancel, resume, disk cleanup, error messaging, comprehensive docs, full test suite | **Not Started** | Blocked on P4 |
-| **P6** | LiDAR / RGB-D pipeline (feature-flagged `ENABLE_LIDAR=false`) + synthetic test data | **Not Started** | Blocked on P5 |
+| **P2a–P2c** | Interior-tuned GPU SfM + Route A mesh (OpenMVS) + floater cleanup + plane repair + floor leveling ($Y=0$) + scale calibration + multi-format exporters | **Done & Verified** | Verified on RTX 4060 GPU across House, Tour, Meetingroom, Ballroom, Courtroom |
+| **M1–M2** | High-fidelity indoor mesh optimization & studio UI/UX redesign | **Done & Verified** | Spatial 3D studio, Dark/Light theme, interactive user guide, 153/153 tests pass |
+| **P3** | 3D Gaussian Splatting (`splatfacto` / `gsplat`) + upright $Y=0.000$ alignment + .splat converter + Studio SplatViewer | **Done & Verified** | Upright post-export orientation, 1-click view presets, photorealistic proof renders across 4 indoor datasets |
+| **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Done & Verified** | Depth Anything V2 Small (Apache-2.0), TSDF fusion, Kabsch transform (100% texture coverage, 0.0% void), Manhattan yaw alignment, architectural CAD floor plans (`floor_plan.svg`, `floor_plan.png`) |
+| **P5** | Production Hardening: process-group cancel, crash resume, disk guards, scratch purge, structured error diagnostics, WASD controls | **Done & Verified** | Cross-container cancel via Redis bridge, `POST /api/jobs/{id}/resume`, HTTP 507 low-disk rejection, 170/170 tests passing |
+| **P6** | LiDAR / RGB-D pipeline (feature-flagged `ENABLE_LIDAR=false`) + synthetic test data | **Next Milestone** | Ready to start |
 
 ---
 

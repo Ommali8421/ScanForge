@@ -35,6 +35,14 @@ export interface Artifact {
   download_url: string;
 }
 
+export interface ErrorDetails {
+  code: string;
+  title: string;
+  summary: string;
+  remediation: string[];
+  raw_error: string;
+}
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -44,6 +52,8 @@ export interface Job {
   progress: number;
   cumulative_scale: number;
   error: string | null;
+  error_code?: string | null;
+  error_details?: ErrorDetails | null;
   log_tail: string[];
   options: JobOptions;
   output_formats: string[];

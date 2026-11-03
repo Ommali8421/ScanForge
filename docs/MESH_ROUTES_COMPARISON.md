@@ -106,18 +106,16 @@ When `scan_type="gaussian_splat"` and `include_mesh=True`, ScanForge trains a hi
 | **Input Dataset** | `enhanced_interior_tour_1080p.mp4` (67 calibrated keyframes) |
 | **3DGS Training** | 15,000 steps `splatfacto` via Nerfstudio |
 | **Gaussian Count** | 316,806 cleaned Gaussians (`cleaned_splat.ply`, 75 MB; `model.splat`, 9.7 MB) |
-| **Splat Mesher TSDF** | Rendered splat depth into Open3D `UniformTSDFVolume` (`res=384`) |
-| **Raw TSDF Mesh** | `mesh_splat_raw.ply` (18 MB, 309k vertices) |
-| **Post-Processing Chain** | MeshCleanup → PlaneRepair → Decimate → OpenMVSTexture → FloorAlign → FloorPlan → MeshExport |
-| **Final Mesh Geometry** | 226,369 vertices, 249,977 faces |
-| **Room Dimensions** | **18.04m (length) × 14.53m (width) × 4.98m (height)** |
-| **Floor Area** | **131.38 m²** |
-| **Floor Alignment** | Floor leveled to $Y = 0.000$, horizontal center at $(0, 0)$ |
+| **Splat Mesher TSDF** | Rendered expected depth into Open3D `UniformTSDFVolume` (`res=384`, `sdf_trunc=8*voxel`) |
+| **Co-Registration Alignment** | Exact Kabsch/SVD rigid transform to raw COLMAP `sparse/0` poses (max error $8.09 \times 10^{-5}$) |
+| **Texture Coverage** | **100.0%** (185,655 / 185,655 faces textured; 0.0% untextured grey void) |
+| **Post-Processing Chain** | SplatMesher → MeshCleanup → PlaneRepair → Decimate → OpenMVSTexture → FloorAlign → FloorPlan → MeshExport |
+| **Final Mesh Geometry** | 102,710 vertices, 185,655 faces |
+| **Manhattan Yaw Snapping** | $\theta_{\text{peak}} = 84.5^\circ$, $\Delta\text{yaw} = +5.5^\circ$; all walls squared to $0^\circ, 90^\circ, 180^\circ, 270^\circ$ |
+| **Floor Leveling** | Floor leveled to $Y = 0.000$, horizontal center at $(0, 0)$ |
 | **PBR Material Defaults** | `doubleSided=True`, `metallicFactor=0.0`, `roughnessFactor=1.0` |
-| **Floor Plan Artifacts** | `floor_plan.svg` (45 KB), `floor_plan.png` (28 KB) |
-| **All Export Formats** | `.glb` (14 MB), `.fbx` (17 MB), `.usdz` (26 MB), `.stl` (12 MB), `.ply` (9.2 MB), `.xyz` (13 MB), `.obj.zip` (14 MB) |
-| **Peak VRAM** | **< 1.8 GB** |
-| **End-to-End Runtime** | 18.09 min (1085.4s) |
+| **Floor Plan Artifacts** | `floor_plan.svg` (90 KB), `floor_plan.png` (52 KB), 1,560 CAD segments |
+| **All Export Formats** | `.glb` (14 MB), `.fbx` (17 MB), `.usdz` (26 MB), `.stl` (12 MB), `.ply` (9.5 MB), `.xyz` (13 MB), `.obj.zip` (14 MB) |
 | **Proof Sheet** | [p4_tour_splat_mesh_inclusive.png](../outputs/p4_tour_splat_mesh_inclusive.png) |
 
 ---
