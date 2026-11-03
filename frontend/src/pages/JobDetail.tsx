@@ -16,6 +16,7 @@ import { MeshViewer } from "../components/MeshViewer";
 import { SplatViewer } from "../components/SplatViewer";
 import { MeasureTool } from "../components/MeasureTool";
 import { QualityReport } from "../components/QualityReport";
+import { FloorPlanView } from "../components/FloorPlanView";
 import { LogPanel } from "../components/LogPanel";
 import { StageTimeline } from "../components/StageTimeline";
 import {
@@ -40,6 +41,7 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
   const [job, setJob] = useState<Job | null>(null);
   const [report, setReport] = useState<JobReport | null>(null);
   const [sfmReport, setSfmReport] = useState<any | null>(null);
+  const [routeDecision, setRouteDecision] = useState<any | null>(null);
   const [cutsData, setCutsData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -73,6 +75,18 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
             }
           } catch (e) {
             console.error("Failed to load sfm_report.json:", e);
+          }
+        }
+
+        if (data.artifacts?.some((a) => a.filename === "mesh_route_decision.json")) {
+          try {
+            const rRes = await fetch(`/api/jobs/${jobId}/artifacts/mesh_route_decision.json`);
+            if (rRes.ok) {
+              const rDec = await rRes.json();
+              setRouteDecision(rDec);
+            }
+          } catch (e) {
+            console.error("Failed to load mesh_route_decision.json:", e);
           }
         }
 
@@ -217,6 +231,18 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center gap-1 font-mono">
                   <AlertCircle className="w-3.5 h-3.5" />
                   Partial ({(sfmReport.registration_ratio * 100).toFixed(1)}%)
+                </span>
+              )}
+              {routeDecision && (
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border flex items-center gap-1 font-mono cursor-help ${
+                    routeDecision.decision === "depth_fusion"
+                      ? "bg-purple-500/10 border-purple-500/30 text-purple-400"
+                      : "bg-cyan-500/10 border-cyan-500/30 text-cyan-400"
+                  }`}
+                  title={routeDecision.explanation}
+                >
+                  {routeDecision.decision === "depth_fusion" ? "Route B (Depth Fusion)" : "Route A (Photogrammetry)"}
                 </span>
               )}
             </div>
@@ -425,6 +451,15 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
             report={report}
             onActivateMeasure={() => setMeasureActive(true)}
           />
+
+          {/* 2D Architectural Floor Plan */}
+          {(job.artifacts?.some((a) => a.filename === "floor_plan.svg" || a.filename === "floor_plan.png")) && (
+            <FloorPlanView
+              jobId={job.id}
+              report={report}
+              cumulativeScale={job.cumulative_scale || 1.0}
+            />
+          )}
 
           {/* Deliverables Export Vault */}
           {job.artifacts && job.artifacts.length > 0 && (

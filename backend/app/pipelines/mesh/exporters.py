@@ -91,6 +91,11 @@ class MeshExportStage(Stage):
         if not in_glb.exists():
             in_glb = ctx.workdir / "scene_textured.glb"
         if not in_glb.exists():
+            in_glb = ctx.workdir / "aligned_mesh.ply"
+        if not in_glb.exists():
+            if ctx.params.get("scan_type") in ("gaussian_splat", "3dgs") and not ctx.params.get("options", {}).get("include_mesh"):
+                ctx.log_cb(f"[{self.name}] Mesh-inclusive mode not enabled for 3DGS. Skipping mesh export.")
+                return StageResult(success=True, skipped_cache=True)
             return StageResult(success=False, metadata={"error": "No aligned GLB mesh found for export."})
 
         opts = ctx.params.get("options", {})

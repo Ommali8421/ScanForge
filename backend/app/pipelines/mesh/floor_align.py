@@ -336,12 +336,24 @@ class FloorAlignAndScaleStage(Stage):
         analysis_file = ctx.workdir / "room_analysis.json"
 
         if not in_glb.exists():
-            # Fallback to mesh_decimated.ply if untextured
-            in_glb = ctx.workdir / "mesh_decimated.ply"
-            if not in_glb.exists():
-                in_glb = ctx.workdir / "raw_mesh.ply"
+            # Fallback to mesh_decimated.ply / mesh_repaired.ply / mesh_cleaned.ply if untextured
+            for cand in [
+                ctx.workdir / "mesh_decimated.ply",
+                ctx.workdir / "mesh_repaired.ply",
+                ctx.workdir / "mesh_cleaned.ply",
+                ctx.workdir / "mesh_tsdf_raw.ply",
+                ctx.workdir / "mesh_splat_raw.ply",
+                ctx.workdir / "raw_mesh.ply",
+            ]:
+                if cand.exists():
+                    in_glb = cand
+                    break
 
         if not in_glb.exists():
+            # If 3DGS without include_mesh, skip gracefully
+            if ctx.params.get("scan_type") in ("gaussian_splat", "3dgs") and not ctx.params.get("options", {}).get("include_mesh"):
+                ctx.log_cb(f"[{self.name}] Mesh-inclusive mode not enabled for 3DGS. Skipping floor alignment.")
+                return StageResult(success=True, skipped_cache=True)
             return StageResult(success=False, metadata={"error": "No mesh available for floor alignment"})
 
         # Load room analysis

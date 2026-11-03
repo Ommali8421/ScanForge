@@ -8,6 +8,7 @@ from app.pipelines.gaussian.train_splatfacto import SplatfactoStage
 from app.pipelines.gaussian.export_splat import SplatExportStage
 from app.pipelines.gaussian.splat_cleanup import SplatCleanupStage
 from app.pipelines.gaussian.format_converter import SplatFormatConverterStage
+from app.pipelines.gaussian.splat_mesher import SplatMesherStage
 
 __all__ = [
     "PreTrainFloorAlignStage",
@@ -15,4 +16,5 @@ __all__ = [
     "SplatExportStage",
     "SplatCleanupStage",
     "SplatFormatConverterStage",
+    "SplatMesherStage",
 ]

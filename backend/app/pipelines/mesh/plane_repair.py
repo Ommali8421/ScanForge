@@ -162,7 +162,8 @@ def patch_planar_holes(mesh: trimesh.Trimesh, active_planes: list, scene_diagona
 
     if new_faces_list:
         mesh.extend_faces(np.array(new_faces_list, dtype=int))
-        mesh.remove_degenerate_faces()
+        mesh.update_faces(mesh.nondegenerate_faces())
+        mesh.remove_unreferenced_vertices()
 
     return planar_hole_count
 

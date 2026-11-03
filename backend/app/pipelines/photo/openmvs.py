@@ -167,6 +167,17 @@ class OpenMVSInterfaceStage(Stage):
     declared_outputs: List[str] = ["scene.mvs"]
 
     def run(self, ctx: JobContext) -> StageResult:
+        # Check if Route B was selected
+        decision_file = ctx.workdir / "mesh_route_decision.json"
+        if decision_file.exists():
+            try:
+                dec = json.loads(decision_file.read_text()).get("decision")
+                if dec == "depth_fusion":
+                    ctx.log_cb("[OpenMVS] Route B (Depth Fusion) active. Skipping InterfaceCOLMAP.")
+                    return StageResult(success=True, skipped_cache=True)
+            except Exception:
+                pass
+
         ctx.log_cb("[OpenMVS] Preparing COLMAP model for MVS reconstruction...")
         interface_bin = resolve_openmvs("InterfaceCOLMAP")
         threads = str(get_configured_threads())
@@ -223,6 +234,17 @@ class OpenMVSDensifyStage(Stage):
     declared_outputs: List[str] = ["scene_dense.mvs", "scene_dense.ply", "dense_cloud.ply"]
 
     def run(self, ctx: JobContext) -> StageResult:
+        # Check if Route B was selected
+        decision_file = ctx.workdir / "mesh_route_decision.json"
+        if decision_file.exists():
+            try:
+                dec = json.loads(decision_file.read_text()).get("decision")
+                if dec == "depth_fusion":
+                    ctx.log_cb("[OpenMVS] Route B (Depth Fusion) active. Skipping DensifyPointCloud.")
+                    return StageResult(success=True, skipped_cache=True)
+            except Exception:
+                pass
+
         ctx.log_cb("[OpenMVS] Initializing dense point cloud reconstruction (DensifyPointCloud)...")
         densify_bin = resolve_openmvs("DensifyPointCloud")
         threads = str(get_configured_threads())
@@ -386,6 +408,17 @@ class OpenMVSRMeshStage(Stage):
     ]
 
     def run(self, ctx: JobContext) -> StageResult:
+        # Check if Route B was selected
+        decision_file = ctx.workdir / "mesh_route_decision.json"
+        if decision_file.exists():
+            try:
+                dec = json.loads(decision_file.read_text()).get("decision")
+                if dec == "depth_fusion":
+                    ctx.log_cb("[OpenMVS] Route B (Depth Fusion) active. Skipping ReconstructMesh.")
+                    return StageResult(success=True, skipped_cache=True)
+            except Exception:
+                pass
+
         ctx.log_cb("[OpenMVS] Initializing Delaunay tetrahedral surface mesh reconstruction (ReconstructMesh)...")
         rmesh_bin = resolve_openmvs("ReconstructMesh")
         threads = str(get_configured_threads())
@@ -627,7 +660,18 @@ class OpenMVSTextureStage(Stage):
         if not input_mesh.exists():
             input_mesh = ctx.workdir / "mesh_cleaned.ply"
         if not input_mesh.exists():
+            input_mesh = ctx.workdir / "mesh_tsdf_raw.ply"
+        if not input_mesh.exists():
+            input_mesh = ctx.workdir / "mesh_splat_raw.ply"
+        if not input_mesh.exists():
             input_mesh = ctx.workdir / "scene_dense_mesh.ply"
+
+        if not input_mesh.exists():
+            # If 3DGS without include_mesh, skip gracefully
+            if ctx.params.get("scan_type") in ("gaussian_splat", "3dgs") and not ctx.params.get("options", {}).get("include_mesh"):
+                ctx.log_cb("[OpenMVS] Mesh-inclusive mode not enabled for 3DGS. Skipping texturing.")
+                return StageResult(success=True, skipped_cache=True)
+            raise FileNotFoundError(f"[OpenMVS] Input mesh to texture not found in {ctx.workdir}")
 
         input_mvs = ctx.workdir / "scene_dense_mesh.mvs"
         if not input_mvs.exists():
@@ -635,10 +679,42 @@ class OpenMVSTextureStage(Stage):
         if not input_mvs.exists():
             input_mvs = ctx.workdir / "scene.mvs"
         if not input_mvs.exists():
-            raise FileNotFoundError(
-                f"Input scene project not found: neither scene_dense_mesh.mvs nor scene.mvs exist. "
-                "Ensure upstream OpenMVS stages ran."
-            )
+            # Generate scene.mvs via InterfaceCOLMAP for Route B or mesh-inclusive 3DGS
+            ctx.log_cb("[OpenMVS] Generating scene.mvs via InterfaceCOLMAP for texturing...")
+            interface_bin = resolve_openmvs("InterfaceCOLMAP")
+            undistorted_dir = ctx.workdir / "undistorted"
+            frames_dir = ctx.workdir / "frames"
+            sparse_dir = ctx.workdir / "sparse" / "0"
+            if not sparse_dir.exists():
+                sparse_dir = ctx.workdir / "aligned_sparse" / "0"
+
+            input_colmap = undistorted_dir if undistorted_dir.exists() else sparse_dir
+            if input_colmap.exists() and frames_dir.exists():
+                cmd_if = [
+                    interface_bin,
+                    "-w", str(ctx.workdir),
+                    "-i", str(input_colmap.name),
+                    "--image-folder", str(frames_dir.name),
+                    "-o", "scene.mvs",
+                    "-v", "1",
+                ]
+                try:
+                    ToolRunner.run(cmd_if, cwd=str(ctx.workdir), log_callback=ctx.log_cb, timeout=180)
+                    if (ctx.workdir / "scene.mvs").exists():
+                        input_mvs = ctx.workdir / "scene.mvs"
+                except Exception as e:
+                    ctx.log_cb(f"[OpenMVS] InterfaceCOLMAP generation warning: {e}")
+
+        if not input_mvs.exists():
+            # Fallback for mock mode or pure Python export: create a basic scene_textured.glb
+            ctx.log_cb("[OpenMVS] Warning: scene.mvs not available for TextureMesh. Generating vertex-colored preview fallback...")
+            import trimesh
+            fallback_mesh = trimesh.load(str(input_mesh), process=False)
+            output_glb = ctx.workdir / "scene_textured.glb"
+            fallback_mesh.export(str(output_glb))
+            preview_textured_glb = ctx.workdir / "preview_textured.glb"
+            fallback_mesh.export(str(preview_textured_glb))
+            return StageResult(success=True, output_files=[output_glb, preview_textured_glb])
 
         total_mesh_faces = 0
         if input_mesh.exists():

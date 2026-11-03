@@ -32,11 +32,22 @@ class MeshCleanupStage(Stage):
 
         input_ply = ctx.workdir / "scene_dense_mesh.ply"
         if not input_ply.exists():
-            input_ply = ctx.workdir / "raw_mesh.ply"
+            input_ply = ctx.workdir / "mesh_tsdf_raw.ply"
         if not input_ply.exists():
+            input_ply = ctx.workdir / "mesh_splat_raw.ply"
+        if not input_ply.exists():
+            input_ply = ctx.workdir / "mesh_dense.ply"
+        if not input_ply.exists():
+            input_ply = ctx.workdir / "raw_mesh.ply"
+
+        if not input_ply.exists():
+            # If 3DGS without include_mesh, skip gracefully
+            if ctx.params.get("scan_type") in ("gaussian_splat", "3dgs") and not ctx.params.get("options", {}).get("include_mesh"):
+                ctx.log_cb("[MeshCleanup] Mesh-inclusive mode not enabled for 3DGS. Skipping mesh cleanup.")
+                return StageResult(success=True, skipped_cache=True)
             raise FileNotFoundError(
                 f"[MeshCleanup] Input mesh not found at {input_ply}. "
-                "Ensure OpenMVSRMeshStage ran successfully."
+                "Ensure upstream reconstruction (OpenMVS or TSDF Fusion) ran successfully."
             )
 
         output_ply = ctx.workdir / "mesh_cleaned.ply"

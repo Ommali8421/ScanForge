@@ -564,6 +564,17 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
             if art_dir.exists():
                 (art_dir / "quality_report.json").write_text(rep_json)
 
+            # Update floor plan vectors & rasters automatically with new scale
+            try:
+                from app.pipelines.mesh.floor_plan import update_floor_plan_scale
+                update_floor_plan_scale(workdir, cumulative_scale, is_calibrated=True)
+                if art_dir.exists():
+                    for fp_name in ["floor_plan.svg", "floor_plan.png"]:
+                        if (workdir / fp_name).exists():
+                            shutil.copy2(workdir / fp_name, art_dir / fp_name)
+            except Exception as e:
+                logger.warning(f"Could not update floor plan scale in calibration: {e}")
+
             # Synchronize mesh.glb with the scaled GLB
             out_mesh_glb = workdir / "mesh.glb"
             shutil.copy2(out_glb, out_mesh_glb)

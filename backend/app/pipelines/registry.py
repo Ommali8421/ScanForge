@@ -28,20 +28,31 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             OpenMVSRMeshStage,
             OpenMVSTextureStage,
         )
+        from app.pipelines.depth import (
+            MonocularDepthStage,
+            DepthAlignStage,
+            TSDFFusionStage,
+        )
         from app.pipelines.mesh import (
+            RouteClassifierStage,
             MeshCleanupStage,
             RoomAnalysisStage,
             PlaneRepairStage,
             DecimateStage,
             PoissonABStage,
             FloorAlignAndScaleStage,
+            FloorPlanStage,
             MeshExportStage,
             QualityReportStage,
         )
         stages.extend([
+            RouteClassifierStage(),
             OpenMVSInterfaceStage(),
             OpenMVSDensifyStage(),
             OpenMVSRMeshStage(),
+            MonocularDepthStage(),
+            DepthAlignStage(),
+            TSDFFusionStage(),
             MeshCleanupStage(),
             RoomAnalysisStage(),
             PlaneRepairStage(),
@@ -49,6 +60,7 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             OpenMVSTextureStage(),
             PoissonABStage(),
             FloorAlignAndScaleStage(),
+            FloorPlanStage(),
             MeshExportStage(),
             QualityReportStage(),
         ])
@@ -60,7 +72,19 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             SplatExportStage,
             SplatCleanupStage,
             SplatFormatConverterStage,
+            SplatMesherStage,
         )
+        from app.pipelines.mesh import (
+            MeshCleanupStage,
+            PlaneRepairStage,
+            DecimateStage,
+            FloorAlignAndScaleStage,
+            FloorPlanStage,
+            MeshExportStage,
+            QualityReportStage,
+        )
+        from app.pipelines.photo.openmvs import OpenMVSTextureStage
+
         stages.extend([
             RoomAnalysisStage(),
             PreTrainFloorAlignStage(),
@@ -68,6 +92,15 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             SplatExportStage(),
             SplatCleanupStage(),
             SplatFormatConverterStage(),
+            SplatMesherStage(),
+            MeshCleanupStage(),
+            PlaneRepairStage(),
+            DecimateStage(),
+            OpenMVSTextureStage(),
+            FloorAlignAndScaleStage(),
+            FloorPlanStage(),
+            MeshExportStage(),
+            QualityReportStage(),
         ])
 
     return Pipeline(scan_type=scan_type, stages=stages)

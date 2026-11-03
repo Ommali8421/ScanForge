@@ -207,6 +207,31 @@ def main():
     except ImportError:
         print_status("Trimesh", False, "Not installed in active Python environment", "Install trimesh for format exports.")
 
+    print("\n--- P4 Depth Pipeline ---")
+    da_module = Path("/workspace/backend/app/pipelines/depth/depth_anything_v2/dpt.py")
+    if da_module.exists():
+        print_status("Depth Anything V2 (vendored module)", True, str(da_module.parent))
+    else:
+        print_status(
+            "Depth Anything V2 (vendored module)",
+            False,
+            f"Not found at {da_module.parent}",
+            "Ensure depth_anything_v2/ is vendored in backend/app/pipelines/depth/."
+        )
+
+    print("\n--- Model Checkpoints ---")
+    da_ckpt = Path("/data/models/depth_anything_v2/depth_anything_v2_vits.pth")
+    if da_ckpt.exists():
+        size_mb = da_ckpt.stat().st_size / (1024 ** 2)
+        print_status("Depth Anything V2 Small Checkpoint", True, f"{size_mb:.1f} MB ({da_ckpt}) [Apache-2.0]")
+    else:
+        print_status(
+            "Depth Anything V2 Small Checkpoint",
+            False,
+            f"Not found at {da_ckpt}",
+            "Download depth_anything_v2_vits.pth into /data/models/depth_anything_v2/."
+        )
+
     print("=" * 60)
     print("Doctor check complete.")
 

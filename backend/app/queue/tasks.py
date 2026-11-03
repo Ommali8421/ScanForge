@@ -120,7 +120,7 @@ def run_pipeline_task(job_id: str):
                             kind = "model"
                             if suffix in ("ply", "xyz", "las"):
                                 kind = "pointcloud"
-                            elif suffix in ("png", "jpg", "jpeg", "webp"):
+                            elif suffix in ("png", "jpg", "jpeg", "webp", "svg"):
                                 kind = "image"
                             elif suffix in ("json", "txt", "log"):
                                 kind = "report"

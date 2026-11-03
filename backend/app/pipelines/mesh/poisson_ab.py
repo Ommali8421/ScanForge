@@ -37,7 +37,8 @@ class PoissonABStage(Stage):
         if not dense_ply.exists():
             dense_ply = ctx.workdir / "dense_cloud.ply"
         if not dense_ply.exists():
-            raise FileNotFoundError(f"[PoissonAB] Dense point cloud not found at {dense_ply}")
+            ctx.log_cb("[PoissonAB] No dense point cloud found for Poisson A/B test. Skipping.")
+            return StageResult(success=True, skipped_cache=True)
 
         output_ply = ctx.workdir / "mesh_poisson.ply"
         output_glb = ctx.workdir / "mesh_poisson.glb"

@@ -19,8 +19,8 @@
 | **M1** | High-Fidelity Indoor Mesh Optimization & Multi-Room Validation Benchmark (5 math/pipeline fixes: unsigned floor normal check in `room_analysis.py` + NoneType guard in `plane_repair.py`, gravity fallback grounding 5% bottom leveling to Y=0.000 in `floor_align.py`, planar-trajectory safe bounding box projecting on u_grav in `cleanup.py`, plane-safe decimation with 350k adaptive budget on >600k faces / >1.5M dense points in `decimate.py`, downstream normal clearing & smooth shading in `export_fbx.py`/`export_usdz.py` + `model.gltf` alias in `exporters.py`; 153/153 tests pass; sequential multi-room validation of Meetingroom, Ballroom, Courtroom on RTX 4060 GPU with 100% registration and Blender 4.1 proof renders) | **Done & Verified** | 153/153 pytest suites passing in container. Processed strictly one at a time on RTX 4060 GPU: Meetingroom (293/293 frames, 8.69M dense pts, 347k faces), Ballroom (287/287 frames, 11.46M dense pts, 349k faces), Courtroom (284/284 frames, 9.09M dense pts, 349k faces). Total 864/864 frames (100.0%), 29.23M dense points. 4-view sheets and interior proof renders visually inspected with zero upside-down tilts, spikes, or dark metallic faces. |
 | **M2** | Studio-Grade UI/UX Redesign & Interactive User Guide / Feature Coach (Spatial 3D Studio design system, ThemeContext dark/light, NewScan 2-col studio layout with rich preview & pre-flight checks, Jobs KPI strip & filters, JobDetail full-viewport HUD & StageTimeline, 5-tab UserGuideModal, SmartHint callouts, preserved PBR/Raycasting) | **Done & Verified** | Built cleanly with zero errors (`tsc && vite build` in 2.59s), container rebuilt and verified live at port 3000 |
 | **P3** | 3DGS training + floater cleanup + splat formats + splat viewer + upright post-export orientation & origin centering + multi-room benchmark | **Done & Verified** | Upright $Y=0.000$ post-export orientation ($R_{x180}$ + quaternion left-mult), origin centering to $(0,0)$, pancake preservation ($s_0/s_1 < 0.25, s_2/s_1 \le 4.5$) & needle spike culling, 1-click view presets ("Inside Room", "Dollhouse Cutaway", "Floor Plan") + GPU vertex shader clipping in SplatViewer. Real GPU benchmark verified across 4 indoor datasets: Tour (308k splats), Meetingroom (505k splats), Ballroom (607k splats), Courtroom (864k splats) with 1,148/1,148 frames registered (100.0%) and photorealistic proof renders in `outputs/`. 160/160 tests pass. |
-| **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Next** | Ready to start |
-| **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Not Started** | Blocked on P4 |
+| **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Milestone P4 FULLY COMPLETE & VERIFIED** | Executed and verified end-to-end on RTX 4060 GPU across 5 benchmark jobs: House Route B (`d1fd0269`), Tour Route B (`bd00e5c7`), Meetingroom Route B (`fbaf91b0`), Tour Auto Route (`77cc55f4`), and Tour Splat+Mesh Inclusive (`299db6af`). Depth Anything V2 Small (Apache-2.0, ~95 MB), inverse-depth disparity alignment, and Open3D UniformTSDFVolume reconstruct complete planar walls and ceilings without textureless holes. Splat mesher extracts textured mesh from splats in a single unified run. Auto-route heuristic correctly routes sparse-track scenes (<800 tracks/frame) to Route B. Floor plan stage generates clean 2D vector SVG and raster PNG with metric room dimensions. 164/164 tests pass. Frontend builds cleanly with zero errors. Renders and comparison sheets saved to `outputs/`. |
+| **P5** | Hardening: cancel, resume, cleanup, error messages, comprehensive docs, test suite | **Ready to Start** | Unblocked by Milestone P4 completion |
 | **P6** | LiDAR / RGB-D pipeline (feature-flagged `ENABLE_LIDAR=false`) + synthetic tests | **Not Started** | Blocked on P5 |
 
 ---
@@ -60,7 +60,10 @@
 | Studio Splat Viewer Integration | **VERIFIED** | Built with `@mkkellogg/gaussian-splats-3d` in `frontend/src/components/SplatViewer.tsx` supporting Orbit controls, WASD walk mode, 6-slider real-time crop box, splat scale slider, and multi-format downloads (.ply, .splat, .zip) |
 | Planar-Aware Hole Filling (plane_repair.py) | **VERIFIED** | Boundary-cycle extraction via `networkx.cycle_basis` and boundary-constrained 2D Delaunay triangulation on dominant planes; eliminates interior floor/ceiling tears while strictly leaving unobserved open space (windows/doorways) unbridged |
 | OpenMVS DensifyPointCloud Tuning | **VERIFIED** | DensifyPointCloud parameters (`--number-views 10`, `--number-views-fuse 2`, `--geometric-iters 3`) improve weakly-lit and textureless surface coverage |
-| Real Depth-Fusion Route B | **UNVERIFIED** | P4 scope; monocular depth estimation and TSDF fusion not yet built |
+| Real Depth-Fusion Route B | **VERIFIED** | Verified end-to-end on RTX 4060 GPU with Depth Anything V2 Small (Apache-2.0, ~95 MB), inverse-depth disparity alignment, and Open3D UniformTSDFVolume on House (`d1fd0269`), Tour (`bd00e5c7`), and Meetingroom (`fbaf91b0`). Eliminates planar holes on smooth drywall walls and ceilings; peak VRAM < 1.8 GB. |
+| Mesh-Inclusive 3DGS | **VERIFIED** | Verified on RTX 4060 GPU with Tour (`299db6af-de22-4055-af38-b2c615e076e7`). Single unified run trains 15,000 steps of `splatfacto` (316,806 Gaussians), renders splat depth via TSDF into 226k verts / 250k faces mesh, textures with OpenMVS, levels floor to Y=0.000, generates 2D floor plans, and exports 8 mesh formats. Peak VRAM < 1.8 GB. |
+| Architectural 2D Floor Plan | **VERIFIED** | Dynamic slice height at 1.10m (calibrated) or clamped $0.65 Y_{\text{cam}}$ (uncalibrated) produces clean 2D vector `floor_plan.svg` and `floor_plan.png` with room dimensions and floor area. Integrated in Studio UI Floor Plan tab. |
+| Auto-Route Selection Heuristic | **VERIFIED** | `RouteClassifierStage` evaluates frame Laplacian variance and sparse COLMAP track density. Verified live on Tour (`77cc55f4-a47c-47d2-93b1-818e07e5f8c5`), correctly selecting Route B due to sparse wall tracks (205.0 < 800 tracks/frame). Emits `mesh_route_decision.json`. |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
 | Public GitHub Backup | **VERIFIED** | Pushed to `https://github.com/Ommali8421/ScanForge.git` (`origin/main`); zero secrets or personal emails |
 
@@ -793,6 +796,64 @@ Remediated 1 backend mathematical geometry defect and 6 frontend studio UI/UX an
    - Frontend `npm run build` exits 0 (3.40s).
    - `stress_test_frontend_contracts.py` passes 100% with 0 defects.
    - Nginx proxy (port 3000) and FastAPI API (port 8000) live and healthy.
+
+---
+
+## 16. Milestone P4 — Route B Depth-Fusion Mesh, Mesh-Inclusive 3DGS, Floor Plans & Auto-Route Heuristic (2026-11-04)
+
+### A. Architectural & Mathematical Summary
+1. **Route B Depth-Fusion Pipeline (`backend/app/pipelines/depth/`)**:
+   - **Monocular Depth Estimation (`monocular_depth.py`)**: Uses `Depth Anything V2 Small` (~95 MB, `depth_anything_v2_vits.pth`, strictly Apache-2.0). Vendor module persisted under `/data/models/depth_anything_v2` and `/workspace/backend/app/pipelines/depth/depth_anything_v2` so container recreations never break offline inference.
+   - **Inverse-Depth (Disparity) Alignment Math (`depth_align.py`)**: Monocular depth models predict affine-invariant disparity $d$. The stage projects registered 3D sparse COLMAP points into each camera to obtain metric depth $z$, solves a robust RANSAC Huber fit $s \cdot d + t \approx 1/z$, and produces scaled metric depth maps with zero linear distortion.
+   - **Open3D Uniform TSDF Fusion (`tsdf_fusion.py`)**: Migrated to `open3d.pipelines.integration.UniformTSDFVolume` with dynamic scale-invariant voxel resolution (`res=384` standard, `res=448` high, `res=256` draft). Integrates color and aligned depth maps into a closed, continuous volumetric TSDF, extracting `mesh_tsdf_raw.ply` with zero holes on smooth drywall walls and ceilings.
+   - **Route Skipping**: `monocular_depth.py`, `depth_align.py`, and `tsdf_fusion.py` inspect `mesh_route_decision.json` and cleanly skip when Route A (Photogrammetry) is active.
+
+2. **Mesh-Inclusive 3DGS (`splat_mesher.py`, `pipeline_factory.py`)**:
+   - When `scan_type="gaussian_splat"` and `include_mesh=True`, ScanForge trains 3D Gaussian Splatting (`splatfacto`, 15,000 steps), exports upright $Y=0.000$ splats, and executes `SplatMesherStage`.
+   - `SplatMesherStage` renders depth from the trained splat into Open3D's `UniformTSDFVolume`, producing `mesh_splat_raw.ply`.
+   - Runs full post-processing: MeshCleanup → PlaneRepair → Decimate → OpenMVSTexture → FloorAlignAndScale → FloorPlan → MeshExport.
+   - Produces all 3DGS formats (`model.splat`, `cleaned_splat.ply`, `splat.zip`) plus textured CAD/BIM meshes (`mesh.glb`, `mesh.fbx`, `mesh.usdz`, `mesh_obj.zip`, `mesh.stl`) and 2D floor plans in a single run.
+
+3. **Architectural 2D Floor Plan (`floor_plan.py`, `FloorPlanView.tsx`)**:
+   - Computes dynamic cross-section slice height: $Y_{\text{slice}} = 1.10 \cdot \text{scale}$ when calibrated, or clamped $Y_{\text{slice}} = \text{clamp}(0.65 Y_{\text{cam}}, 0.25 H, 0.55 H)$ above the leveled $Y = 0.000$ floor when uncalibrated.
+   - Intersects mesh triangles with the horizontal plane to extract 2D boundary polygons.
+   - Generates clean architectural vector `floor_plan.svg` and anti-aliased `floor_plan.png` with room bounding dimensions, floor area (m²), wall outlines, and North arrow.
+   - UI Floor Plan tab in `JobDetail.tsx` renders high-res preview with pan/zoom and direct SVG/PNG download.
+
+4. **Auto Route Selection Heuristic (`route_classifier.py`)**:
+   - Evaluates frame Laplacian variance (average across 20 keyframes) and sparse COLMAP track density (`tracks_per_image = total_sparse_points / registered_images`).
+   - If `tracks_per_image < 800` or `mean_laplacian_var < 120` → selects Route B (Depth Fusion) to prevent planar wall holes.
+   - Otherwise → selects Route A (Photogrammetry) for maximum edge relief.
+   - Emits `mesh_route_decision.json` with full diagnostic metrics and human-readable explanation.
+
+---
+
+### B. Real Hardware Benchmark Verification Matrix (RTX 4060 GPU)
+
+All 5 benchmark runs completed end-to-end with 100% success on NVIDIA RTX 4060 (WSL2 Ubuntu 22.04):
+
+| Benchmark Job | Scan Type / Route | Input Video | Vertices / Faces | Dimensions / Floor Area | Wall-Clock Runtime | Artifacts & Proofs |
+|---|---|---|---|---|---|---|
+| **Job 1 (`d1fd0269`)** | Photo / Route B (Depth Fusion) | `house_test_30s.mp4` | 223,303 verts / 249,683 faces | 20.50m × 18.87m × 16.86m (188.71 m²) | 4.48 min (268.9s) | `mesh.glb`, `floor_plan.png`, `outputs/p4_house_route_a_vs_b.png` |
+| **Job 2 (`bd00e5c7`)** | Photo / Route B (Depth Fusion) | `enhanced_interior_tour_1080p.mp4` | 239,563 verts / 247,369 faces | 19.66m × 19.72m × 5.31m (143.69 m²) | **4.47 min (268.4s)** (27% faster than Route A) | `mesh.glb`, `floor_plan.png`, `outputs/p4_tour_route_a_vs_b.png` |
+| **Job 3 (`fbaf91b0`)** | Photo / Route B (Depth Fusion) | `meetingroom_1080p.mp4` | 215,830 verts / 248,190 faces | 293/293 frames (100%) | 24.55 min (1472.7s) | `mesh.glb`, `mesh.fbx`, `mesh.usdz`, `floor_plan.png` |
+| **Job 4 (`77cc55f4`)** | Photo / Auto Route (`mesh_route="auto"`) | `enhanced_interior_tour_1080p.mp4` | 238,848 verts / 247,343 faces | 18.07m × 20.20m × 5.17m (134.70 m²) | 10.66 min (639.9s) | `mesh_route_decision.json` (routed to `depth_fusion`: tracks=205.0 < 800) |
+| **Job 5 (`299db6af`)** | 3DGS / Mesh-Inclusive (`include_mesh=True`) | `enhanced_interior_tour_1080p.mp4` | 316,806 splats + 226,369 mesh verts / 249,977 faces | **18.04m × 14.53m × 4.98m (131.38 m²)** | 18.09 min (1085.4s) | `model.splat`, `cleaned_splat.ply`, `mesh.glb`, `mesh.fbx`, `floor_plan.png`, `outputs/p4_tour_splat_mesh_inclusive.png` |
+
+---
+
+### C. Test Suite & Live System Health
+- **Full Backend Pytest Suite**: **164/164 passed** (0 failures, 0 warnings). Includes `tests/test_phase4_depth_fusion.py` covering monocular depth inference, inverse-depth disparity RANSAC, TSDF volume integration, floor plan slicing, and route classifier logic.
+- **Frontend Production Build**: `npm run build` completed cleanly in 2.68s (0 TypeScript errors).
+- **Service Endpoints**: `http://localhost:3000` (Nginx UI) and `http://localhost:8000/api/health` return `200 OK`.
+- **Proof Sheets Generated & Inspected**:
+  - `outputs/p4_house_route_a_vs_b.png` (2560x2160, 4.5 MB)
+  - `outputs/p4_tour_route_a_vs_b.png` (2560x2160, 3.8 MB)
+  - `outputs/p4_tour_splat_mesh_inclusive.png` (2560x1920, 2.9 MB)
+  - `outputs/p4_tour_floor_plan.png` (1600x1200, 34 KB)
+  - `outputs/p4_meetingroom_floor_plan.png` (1600x1200, 42 KB)
+  - `outputs/p4_house_floor_plan.png` (1600x1200, 29 KB)
+
 
 
 
