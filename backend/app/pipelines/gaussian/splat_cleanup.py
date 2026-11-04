@@ -7,6 +7,7 @@ Outputs cleaned_splat.ply, cameras_aligned.json, and quality_report.json.
 
 import json
 import math
+import re
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -87,8 +88,15 @@ class SplatCleanupStage(Stage):
                         "r_mat": r_mat,
                         "t_vec": t_vec,
                     })
-                    cam_positions.append(center)
-                    cam_up_vectors.append(up_vec)
+
+            # Natural key sort strictly ascending by frame index / filename (e.g. frame_0000.jpg first)
+            def _extract_frame_key(name: str) -> Tuple[int, str]:
+                digits = re.findall(r"\d+", name)
+                return (int(digits[-1]), name) if digits else (999999, name)
+
+            cams_info.sort(key=lambda c: _extract_frame_key(c["name"]))
+            cam_positions = [c["center"] for c in cams_info]
+            cam_up_vectors = [c["up"] for c in cams_info]
 
         if not cam_positions:
             cams_pos_arr = np.zeros((1, 3), dtype=np.float32)
@@ -270,6 +278,72 @@ class SplatCleanupStage(Stage):
         else:
             sor_retained_indices = cand_indices
 
+        # 3b. LightGaussian Global Visibility Pruning & View-Space Frustum Cleanliness
+        # Counts how many training cameras observe each Gaussian within their 3D view frustum.
+        # Cull interior ghost floaters observed by <= 1 camera and sitting far from dominant planes.
+        if len(cams_info) >= 3 and len(sor_retained_indices) > 0:
+            sor_pts = np.column_stack([x[sor_retained_indices], y[sor_retained_indices], z[sor_retained_indices]])
+            vis_counts = np.zeros(len(sor_retained_indices), dtype=np.int32)
+
+            for c in cams_info:
+                c_pos = c["center"]
+                c_fwd = c.get("forward", np.array([0.0, 0.0, 1.0]))
+                c_up = c.get("up", np.array([0.0, 1.0, 0.0]))
+                c_right = np.cross(c_fwd, c_up)
+                c_r_norm = np.linalg.norm(c_right)
+                if c_r_norm > 1e-6:
+                    c_right /= c_r_norm
+                else:
+                    c_right = np.array([1.0, 0.0, 0.0])
+
+                rel_v = sor_pts - c_pos
+                z_depth = rel_v @ c_fwd
+                x_lat = rel_v @ c_right
+                y_vert = rel_v @ c_up
+
+                in_frustum = (
+                    (z_depth > 0.08) &
+                    (z_depth < 1.6 * d_scene) &
+                    (np.abs(x_lat / (z_depth + 1e-5)) < 1.25) &
+                    (np.abs(y_vert / (z_depth + 1e-5)) < 1.25)
+                )
+                vis_counts += in_frustum.astype(np.int32)
+
+            dom_planes = []
+            analysis_file = ctx.workdir / "room_analysis.json"
+            if analysis_file.exists():
+                try:
+                    ra_data = json.loads(analysis_file.read_text())
+                    if ra_data.get("chosen_floor_plane"):
+                        dom_planes.append((
+                            np.array(ra_data["chosen_floor_plane"]["normal"], dtype=float),
+                            float(ra_data["chosen_floor_plane"]["d"])
+                        ))
+                    for wp in ra_data.get("wall_planes", []):
+                        dom_planes.append((np.array(wp["normal"], dtype=float), float(wp["d"])))
+                except Exception:
+                    pass
+
+            if not dom_planes:
+                dom_planes.append((np.array([0.0, 1.0, 0.0], dtype=float), float(-y_p5)))
+
+            min_plane_dist = np.full(len(sor_retained_indices), 1e6, dtype=np.float32)
+            for pn, pd in dom_planes:
+                pn_norm = np.linalg.norm(pn)
+                if pn_norm > 1e-6:
+                    pn_u = pn / pn_norm
+                    p_dists = np.abs(sor_pts @ pn_u + pd / pn_norm)
+                    min_plane_dist = np.minimum(min_plane_dist, p_dists)
+
+            cand_pancakes = is_pancake[sor_retained_indices]
+            is_ghost_floater = (vis_counts <= 1) & (min_plane_dist > 0.04 * d_scene) & (~cand_pancakes)
+            sor_retained_indices = sor_retained_indices[~is_ghost_floater]
+
+            ctx.log_cb(
+                f"[SplatCleanup] LightGaussian visibility pruning: culled {np.sum(is_ghost_floater):,} ghost floaters "
+                f"(<= 1 camera, > 0.04 D_scene from planes). Retained {len(sor_retained_indices):,} Gaussians."
+            )
+
         # 4. Camera-trajectory + room-plane envelope clipping
         if len(cams_pos) > 1:
             cam_min = np.min(cams_pos, axis=0)
@@ -373,13 +447,27 @@ class SplatCleanupStage(Stage):
         # Save cameras_aligned.json
         aligned_cameras_list = []
         for idx, c in enumerate(cams_info):
+            fwd = np.array(c.get("forward", [0.0, 0.0, 1.0]), dtype=float)
+            fwd_norm = np.linalg.norm(fwd)
+            fwd_unit = (fwd / fwd_norm) if fwd_norm > 1e-6 else np.array([0.0, 0.0, 1.0])
+
+            up_v = np.array(c.get("up", [0.0, 1.0, 0.0]), dtype=float)
+            up_norm = np.linalg.norm(up_v)
+            up_unit = (up_v / up_norm) if up_norm > 1e-6 else np.array([0.0, 1.0, 0.0])
+
             aligned_cameras_list.append({
                 "index": idx,
                 "name": c["name"],
                 "position": [round(float(v), 4) for v in c["center"]],
-                "up": [round(float(v), 4) for v in c["up"]],
-                "forward": [round(float(v), 4) for v in c.get("forward", [0.0, 0.0, 1.0])],
+                "up": [round(float(v), 4) for v in up_unit],
+                "forward": [round(float(v), 4) for v in fwd_unit],
             })
+
+        first_frame_cam = aligned_cameras_list[0] if aligned_cameras_list else None
+        for cam_entry in aligned_cameras_list:
+            if cam_entry["position"][1] > 0.15:
+                first_frame_cam = cam_entry
+                break
 
         cameras_json_data = {
             "num_cameras": len(aligned_cameras_list),
@@ -387,6 +475,7 @@ class SplatCleanupStage(Stage):
             "floor_level": 0.0,
             "mean_camera_up": [round(float(v), 4) for v in np.mean(cams_up, axis=0)],
             "median_camera_height": round(post_med_cam_y, 4),
+            "first_frame_camera": first_frame_cam,
             "cameras": aligned_cameras_list,
         }
         cameras_json_path = ctx.workdir / "cameras_aligned.json"

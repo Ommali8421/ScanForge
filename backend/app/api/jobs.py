@@ -660,6 +660,25 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
             if art_dir.exists():
                 (art_dir / "quality_report.json").write_text(rep_json)
 
+            # Synchronously scale camera positions in cameras_aligned.json
+            cam_file = workdir / "cameras_aligned.json"
+            if cam_file.exists():
+                try:
+                    cdata = json.loads(cam_file.read_text())
+                    for c in cdata.get("cameras", []):
+                        if "position" in c:
+                            c["position"] = [round(float(v) * new_factor, 4) for v in c["position"]]
+                    if cdata.get("first_frame_camera") and "position" in cdata["first_frame_camera"]:
+                        cdata["first_frame_camera"]["position"] = [
+                            round(float(v) * new_factor, 4) for v in cdata["first_frame_camera"]["position"]
+                        ]
+                    c_json = json.dumps(cdata, indent=2)
+                    cam_file.write_text(c_json)
+                    if art_dir.exists():
+                        (art_dir / "cameras_aligned.json").write_text(c_json)
+                except Exception as e_cam:
+                    logger.debug(f"cameras_aligned.json scale update notice: {e_cam}")
+
             # Update floor plan vectors & rasters automatically with new scale
             try:
                 from app.pipelines.mesh.floor_plan import update_floor_plan_scale

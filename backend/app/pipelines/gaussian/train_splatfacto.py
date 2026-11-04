@@ -59,8 +59,13 @@ class SplatfactoStage(Stage):
         config_path: Optional[Path] = None
         last_error = ""
 
-        # Total iterations: 15,000 for standard/high (crisp convergence within 8 GB VRAM), 10,000 for draft
-        total_iters = 10000 if quality == "draft" else 15000
+        # Total iterations: 18,000 for standard, 25,000 for high, 8,000 for draft
+        if quality == "draft":
+            total_iters = 8000
+        elif quality == "high":
+            total_iters = 25000
+        else:
+            total_iters = 18000
 
         for attempt in range(max_retries + 1):
             ctx.log_cb(

@@ -13,6 +13,8 @@ import {
   Compass,
   Zap,
   Sparkles,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 
 export type SplatTheme = "dark-slate" | "deep-void" | "studio-grey" | "white";
@@ -79,14 +81,23 @@ export const SplatViewer: React.FC<Props> = ({
   const [showCropPanel, setShowCropPanel] = useState(false);
   const [activePreset, setActivePreset] = useState<"inside" | "dollhouse" | "topdown" | "custom">("inside");
   const [alignedCameras, setAlignedCameras] = useState<AlignedCamera[]>([]);
+  const [firstFrameCamera, setFirstFrameCamera] = useState<AlignedCamera | null>(null);
 
-  // Quality Toggle: "fast" (.splat, shDegree 0) vs "hd" (.ply, shDegree 2)
-  const [splatQuality, setSplatQuality] = useState<"fast" | "hd">("fast");
+  // Quality Toggle: default to "hd" (.ply, shDegree 2) reflections when hdUrl/jobId available
+  const [splatQuality, setSplatQuality] = useState<"fast" | "hd">(hdUrl || jobId ? "hd" : "fast");
 
   // Navigation Mode: Orbit vs First-Person Walk
   const [navMode, setNavMode] = useState<"orbit" | "walk">("orbit");
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [speedMultiplier, setSpeedMultiplier] = useState(1.0);
+
+  // Fullscreen 3D World Mode
+  const outerWrapperRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreenFallback, setIsFullscreenFallback] = useState(false);
+
+  // Active Keypad HUD feedback state
+  const [activeHudKeys, setActiveHudKeys] = useState<{ [key: string]: boolean }>({});
 
   // Refs for low-latency 60-144 FPS animation loop
   const pressedKeysRef = useRef<Set<string>>(new Set());
@@ -198,8 +209,15 @@ export const SplatViewer: React.FC<Props> = ({
         return res.json();
       })
       .then((data) => {
-        if (active && data?.cameras && Array.isArray(data.cameras)) {
-          setAlignedCameras(data.cameras);
+        if (active && data) {
+          if (data.cameras && Array.isArray(data.cameras)) {
+            setAlignedCameras(data.cameras);
+          }
+          if (data.first_frame_camera) {
+            setFirstFrameCamera(data.first_frame_camera);
+          } else if (data.cameras && data.cameras.length > 0) {
+            setFirstFrameCamera(data.cameras[0]);
+          }
         }
       })
       .catch((e) => {
@@ -293,9 +311,8 @@ export const SplatViewer: React.FC<Props> = ({
     }
   };
 
-  // View Preset: Inside Room
-  const handlePresetInside = useCallback(() => {
-    setActivePreset("inside");
+  // Spawn at exact First Video Frame position and look direction (F1)
+  const spawnAtFirstFrame = useCallback(() => {
     if (!viewerRef.current?.camera) return;
     neutralizeOrbitControlsKeys(viewerRef.current);
     const cam = viewerRef.current.camera;
@@ -315,40 +332,64 @@ export const SplatViewer: React.FC<Props> = ({
       cropBoxRef.current = fullBox;
     }
 
-    if (alignedCameras.length > 0) {
-      const cam0 = alignedCameras[0];
-      const pos = cam0.position;
-      const fwd = cam0.forward;
+    const targetCam = firstFrameCamera || (alignedCameras.length > 0 ? alignedCameras[0] : null);
+    if (targetCam) {
+      const pos = targetCam.position;
+      const fwd = targetCam.forward;
       cam.position.set(pos[0], pos[1], pos[2]);
+
+      const fx = fwd[0];
+      const fy = fwd[1];
+      const fz = fwd[2];
+      const initialYaw = Math.atan2(-fx, -fz);
+      const initialPitch = Math.asin(THREE.MathUtils.clamp(fy, -0.98, 0.98));
+
+      yawRef.current = initialYaw;
+      pitchRef.current = initialPitch;
+
+      cam.rotation.order = "YXZ";
+      cam.rotation.set(initialPitch, initialYaw, 0, "YXZ");
+      cam.updateMatrixWorld(true);
+
+      const lookDir = new THREE.Vector3(fx, fy, fz).normalize();
       if (controls?.target) {
-        controls.target.set(
-          pos[0] + fwd[0] * 3.0,
-          pos[1] + fwd[1] * 3.0,
-          pos[2] + fwd[2] * 3.0
-        );
+        controls.target.copy(cam.position).addScaledVector(lookDir, 2.5);
       }
     } else {
       cam.position.set(0, 1.4, 0);
+      yawRef.current = 0;
+      pitchRef.current = 0;
+      cam.rotation.order = "YXZ";
+      cam.rotation.set(0, 0, 0, "YXZ");
       if (controls?.target) {
         controls.target.set(0, 1.3, 3.0);
       }
     }
 
     if (navModeRef.current === "walk") {
-      if (controls) controls.enabled = false;
-      const euler = new THREE.Euler(0, 0, 0, "YXZ");
-      euler.setFromQuaternion(cam.quaternion, "YXZ");
-      yawRef.current = euler.y;
-      pitchRef.current = Math.max((-85 * Math.PI) / 180, Math.min((85 * Math.PI) / 180, euler.x));
-      cam.rotation.order = "YXZ";
-      cam.rotation.set(pitchRef.current, yawRef.current, 0, "YXZ");
+      if (controls) {
+        controls.enabled = false;
+        if (!(controls as any)._sfOrigUpdate) {
+          (controls as any)._sfOrigUpdate = controls.update.bind(controls);
+        }
+        controls.update = () => false;
+      }
     } else {
       if (controls) {
+        if ((controls as any)._sfOrigUpdate) {
+          controls.update = (controls as any)._sfOrigUpdate;
+        }
         controls.enabled = true;
         controls.update?.();
       }
     }
-  }, [alignedCameras, bounds]);
+  }, [firstFrameCamera, alignedCameras, bounds]);
+
+  // View Preset: Inside Room
+  const handlePresetInside = useCallback(() => {
+    setActivePreset("inside");
+    spawnAtFirstFrame();
+  }, [spawnAtFirstFrame]);
 
   // View Preset: Dollhouse Cutaway (Orbits elevated 3/4 with top 18% ceiling cutaway)
   const handlePresetDollhouse = useCallback(() => {
@@ -445,30 +486,55 @@ export const SplatViewer: React.FC<Props> = ({
 
     if (navMode === "orbit") {
       // Orbit -> Walk:
-      // 1. Disable OrbitControls so they don't overwrite camera transforms
       if (controls) {
         controls.enabled = false;
+        if (!(controls as any)._sfOrigUpdate) {
+          (controls as any)._sfOrigUpdate = controls.update.bind(controls);
+        }
+        controls.update = () => false;
       }
-      // 2. Extract yaw and pitch directly from camera quaternion with 0 jump
-      const euler = new THREE.Euler(0, 0, 0, "YXZ");
-      euler.setFromQuaternion(cam.quaternion, "YXZ");
-      yawRef.current = euler.y;
-      pitchRef.current = Math.max((-85 * Math.PI) / 180, Math.min((85 * Math.PI) / 180, euler.x));
+
+      // First-frame spawn when entering Walk mode!
+      const targetCam = firstFrameCamera || (alignedCameras.length > 0 ? alignedCameras[0] : null);
+      if (targetCam) {
+        const pos = targetCam.position;
+        const fwd = targetCam.forward;
+        cam.position.set(pos[0], pos[1], pos[2]);
+        const fx = fwd[0];
+        const fy = fwd[1];
+        const fz = fwd[2];
+        yawRef.current = Math.atan2(-fx, -fz);
+        pitchRef.current = Math.asin(THREE.MathUtils.clamp(fy, -0.98, 0.98));
+      } else {
+        const euler = new THREE.Euler(0, 0, 0, "YXZ");
+        euler.setFromQuaternion(cam.quaternion, "YXZ");
+        yawRef.current = euler.y;
+        pitchRef.current = Math.max((-85 * Math.PI) / 180, Math.min((85 * Math.PI) / 180, euler.x));
+      }
+
       cam.rotation.order = "YXZ";
       cam.rotation.set(pitchRef.current, yawRef.current, 0, "YXZ");
+      cam.updateMatrixWorld(true);
+
+      const lookDir = new THREE.Vector3();
+      cam.getWorldDirection(lookDir);
+      if (controls?.target) {
+        controls.target.copy(cam.position).addScaledVector(lookDir, 2.0);
+      }
 
       setNavMode("walk");
       navModeRef.current = "walk";
     } else {
       // Walk -> Orbit:
-      // 1. Release pointer lock if active
       if (document.pointerLockElement) {
         document.exitPointerLock?.();
       }
-      // 2. Set target in front of camera at room-adaptive distance
-      const viewDir = new THREE.Vector3();
-      cam.getWorldDirection(viewDir);
-      if (controls?.target) {
+      if (controls) {
+        if ((controls as any)._sfOrigUpdate) {
+          controls.update = (controls as any)._sfOrigUpdate;
+        }
+        const viewDir = new THREE.Vector3();
+        cam.getWorldDirection(viewDir);
         const targetDist = Math.max(1.0, 0.25 * horizontalRoomSpanRef.current);
         controls.target.copy(cam.position).addScaledVector(viewDir, targetDist);
         controls.enabled = true;
@@ -478,7 +544,62 @@ export const SplatViewer: React.FC<Props> = ({
       setNavMode("orbit");
       navModeRef.current = "orbit";
     }
-  }, [navMode]);
+  }, [navMode, firstFrameCamera, alignedCameras]);
+
+  // Fullscreen 3D World Mode Toggle
+  const toggleFullscreen = useCallback(() => {
+    const el = outerWrapperRef.current;
+    if (!el) return;
+    if (!document.fullscreenElement) {
+      if (el.requestFullscreen) {
+        el.requestFullscreen().catch(() => {
+          setIsFullscreenFallback((prev) => !prev);
+        });
+      } else {
+        setIsFullscreenFallback((prev) => !prev);
+      }
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+      setIsFullscreenFallback(false);
+    }
+  }, []);
+
+  // Resize handler ensuring zero aspect ratio distortion
+  const handleResize = useCallback(() => {
+    if (!containerRef.current || !viewerRef.current?.camera || !viewerRef.current?.renderer) return;
+    const w = containerRef.current.clientWidth;
+    const h = containerRef.current.clientHeight;
+    if (w <= 0 || h <= 0) return;
+    const cam = viewerRef.current.camera;
+    const rend = viewerRef.current.renderer;
+    cam.aspect = w / h;
+    cam.updateProjectionMatrix?.();
+    rend.setSize?.(w, h);
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      const isFs = document.fullscreenElement === outerWrapperRef.current;
+      setIsFullscreen(isFs);
+      if (!isFs) setIsFullscreenFallback(false);
+      setTimeout(handleResize, 50);
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+
+    const ro = new ResizeObserver(() => {
+      handleResize();
+    });
+    if (containerRef.current) {
+      ro.observe(containerRef.current);
+    }
+
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      ro.disconnect();
+    };
+  }, [handleResize]);
 
   // Keyboard Event Listeners (Set<string> tracking with blur protection & event capturing)
   useEffect(() => {
@@ -488,33 +609,55 @@ export const SplatViewer: React.FC<Props> = ({
         key === "s" || code === "keys" ||
         key === "a" || code === "keya" ||
         key === "d" || code === "keyd" ||
+        key === "e" || code === "keye" ||
+        key === "q" || code === "keyq" ||
         key === " " || key === "space" || code === "space" ||
         key === "control" || code === "controlleft" || code === "controlright" ||
         key === "shift" || code === "shiftleft" || code === "shiftright" ||
+        key === "alt" || code === "altleft" || code === "altright" ||
         key === "c" || code === "keyc" ||
         key === "arrowup" || key === "arrowdown" || key === "arrowleft" || key === "arrowright"
       );
     };
 
+    const updateHudKeys = () => {
+      const keys = pressedKeysRef.current;
+      const hudMap: { [k: string]: boolean } = {};
+      if (keys.has("w") || keys.has("keyw") || keys.has("arrowup")) hudMap["w"] = true;
+      if (keys.has("a") || keys.has("keya") || keys.has("arrowleft")) hudMap["a"] = true;
+      if (keys.has("s") || keys.has("keys") || keys.has("arrowdown")) hudMap["s"] = true;
+      if (keys.has("d") || keys.has("keyd") || keys.has("arrowright")) hudMap["d"] = true;
+      if (keys.has(" ") || keys.has("space") || keys.has("e") || keys.has("keye")) hudMap[" "] = true;
+      if (keys.has("c") || keys.has("keyc") || keys.has("q") || keys.has("keyq") || keys.has("control") || keys.has("controlleft")) hudMap["c"] = true;
+      setActiveHudKeys(hudMap);
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
+      // 1. Input Box Safety First: never steal key events when typing into calibration / text boxes
       const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable)
-      ) {
+      const activeEl = document.activeElement as HTMLElement | null;
+      const isInput = (el: HTMLElement | null) =>
+        el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+      if (isInput(target) || isInput(activeEl)) {
         return;
       }
 
       const key = e.key ? e.key.toLowerCase() : "";
       const code = e.code ? e.code.toLowerCase() : "";
 
-      if (isMovementKey(key, code)) {
-        // Prevent default browser behavior (e.g. Space/Arrow scrolling)
+      if (code === "keyf" && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
-        // Stop OrbitControls on window from receiving the key and rotating or panning
+        toggleFullscreen();
+        return;
+      }
+      if (code === "f1") {
+        e.preventDefault();
+        spawnAtFirstFrame();
+        return;
+      }
+
+      if (isMovementKey(key, code)) {
+        e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
       }
@@ -523,6 +666,9 @@ export const SplatViewer: React.FC<Props> = ({
       if (code) pressedKeysRef.current.add(code);
       if (e.ctrlKey) pressedKeysRef.current.add("control");
       if (e.shiftKey) pressedKeysRef.current.add("shift");
+      if (e.altKey) pressedKeysRef.current.add("alt");
+
+      updateHudKeys();
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -541,10 +687,18 @@ export const SplatViewer: React.FC<Props> = ({
         pressedKeysRef.current.delete("shiftleft");
         pressedKeysRef.current.delete("shiftright");
       }
+      if (!e.altKey) {
+        pressedKeysRef.current.delete("alt");
+        pressedKeysRef.current.delete("altleft");
+        pressedKeysRef.current.delete("altright");
+      }
+
+      updateHudKeys();
     };
 
     const onBlur = () => {
       pressedKeysRef.current.clear();
+      setActiveHudKeys({});
     };
 
     window.addEventListener("keydown", onKeyDown, { capture: true });
@@ -558,15 +712,16 @@ export const SplatViewer: React.FC<Props> = ({
       window.removeEventListener("blur", onBlur);
       document.removeEventListener("visibilitychange", onBlur);
     };
-  }, []);
+  }, [toggleFullscreen, spawnAtFirstFrame]);
 
   // Continuous Camera-Relative 3D Movement Loop:
-  // W: forward, S: backward, A: left, D: right, Space: up, Ctrl: down, Shift: speed boost
+  // W: forward, S: backward, A: left, D: right, Space/E: up, Ctrl/C/Q: down, Shift: speed boost
   useEffect(() => {
     let animId: number;
     let lastTime = performance.now();
 
     const loop = (now: number) => {
+      // Unkillable loop: schedule at top of tick before checking scene readiness
       animId = requestAnimationFrame(loop);
       const dt = Math.min((now - lastTime) / 1000, 0.1);
       lastTime = now;
@@ -613,17 +768,19 @@ export const SplatViewer: React.FC<Props> = ({
       if (keys.has("a") || keys.has("keya") || keys.has("arrowleft")) {
         moveDelta.sub(right);
       }
-      // Space: Up (+Y)
-      if (keys.has(" ") || keys.has("space")) {
+      // Space / E: Up (+Y)
+      if (keys.has(" ") || keys.has("space") || keys.has("e") || keys.has("keye")) {
         moveDelta.add(worldUp);
       }
-      // CTRL / C: Down (-Y)
+      // CTRL / C / Q: Down (-Y)
       if (
         keys.has("control") ||
         keys.has("controlleft") ||
         keys.has("controlright") ||
         keys.has("c") ||
-        keys.has("keyc")
+        keys.has("keyc") ||
+        keys.has("q") ||
+        keys.has("keyq")
       ) {
         moveDelta.sub(worldUp);
       }
@@ -640,17 +797,31 @@ export const SplatViewer: React.FC<Props> = ({
           speedModifier *= 0.3;
         }
 
-        const baseSpeed = Math.max(1.0, 0.25 * horizontalRoomSpanRef.current);
+        const baseSpeed = Math.max(1.0, 0.22 * horizontalRoomSpanRef.current);
         const distance = baseSpeed * speedModifier * dt;
         moveDelta.multiplyScalar(distance);
 
         cam.position.add(moveDelta);
 
-        // Always translate controls.target by the EXACT same moveDelta so OrbitControls never rotates or fights camera!
         const controls = viewerRef.current?.controls;
-        if (controls && controls.target) {
-          controls.target.add(moveDelta);
-          controls.update?.();
+        if (navModeRef.current === "walk") {
+          // Walk mode: direct camera translation + pitch/yaw
+          cam.rotation.order = "YXZ";
+          cam.rotation.set(pitchRef.current, yawRef.current, 0, "YXZ");
+          cam.updateMatrixWorld(true);
+
+          const lookDir = new THREE.Vector3();
+          cam.getWorldDirection(lookDir);
+          if (controls?.target) {
+            controls.target.copy(cam.position).addScaledVector(lookDir, 2.0);
+          }
+        } else {
+          // Orbit mode: translate both camera and target synchronously
+          if (controls && controls.target) {
+            controls.target.add(moveDelta);
+            controls.update?.();
+          }
+          cam.updateMatrixWorld(true);
         }
       }
     };
@@ -786,12 +957,20 @@ export const SplatViewer: React.FC<Props> = ({
     }
 
     try {
-      const initialPos: [number, number, number] = savedPoseRef.current
-        ? [savedPoseRef.current.pos.x, savedPoseRef.current.pos.y, savedPoseRef.current.pos.z]
-        : [0, 1.4, 0];
-      const initialLookAt: [number, number, number] = savedPoseRef.current?.target
-        ? [savedPoseRef.current.target.x, savedPoseRef.current.target.y, savedPoseRef.current.target.z]
-        : [0, 1.3, 3.0];
+      let initialPos: [number, number, number] = [0, 1.4, 0];
+      let initialLookAt: [number, number, number] = [0, 1.3, 3.0];
+
+      if (savedPoseRef.current) {
+        initialPos = [savedPoseRef.current.pos.x, savedPoseRef.current.pos.y, savedPoseRef.current.pos.z];
+        if (savedPoseRef.current.target) {
+          initialLookAt = [savedPoseRef.current.target.x, savedPoseRef.current.target.y, savedPoseRef.current.target.z];
+        }
+      } else if (firstFrameCamera) {
+        const p = firstFrameCamera.position;
+        const f = firstFrameCamera.forward;
+        initialPos = [p[0], p[1], p[2]];
+        initialLookAt = [p[0] + f[0] * 3.0, p[1] + f[1] * 3.0, p[2] + f[2] * 3.0];
+      }
 
       viewer = new GaussianSplats3D.Viewer({
         rootElement: containerRef.current,
@@ -961,7 +1140,12 @@ export const SplatViewer: React.FC<Props> = ({
 
   return (
     <div
-      className="relative w-full h-[560px] lg:h-[650px] rounded-3xl overflow-hidden border border-zinc-800/80 shadow-2xl transition-colors duration-300"
+      ref={outerWrapperRef}
+      className={`relative w-full ${
+        isFullscreen || isFullscreenFallback
+          ? "fixed inset-0 z-[9999] w-screen h-screen rounded-none"
+          : "h-[560px] lg:h-[650px] rounded-3xl"
+      } overflow-hidden border border-zinc-800/80 shadow-2xl transition-colors duration-300`}
       style={{ backgroundColor: getThemeBg(theme) }}
     >
       {/* 3DGS Canvas Container */}
@@ -1025,6 +1209,15 @@ export const SplatViewer: React.FC<Props> = ({
       {/* Top Center 1-Click View Presets */}
       <div className="absolute top-5 inset-x-0 z-20 flex justify-center pointer-events-none">
         <div className="flex items-center space-x-1 p-1 rounded-2xl bg-zinc-950/80 border border-zinc-800/90 backdrop-blur-xl shadow-2xl pointer-events-auto">
+          <button
+            onClick={spawnAtFirstFrame}
+            className="flex items-center space-x-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all text-amber-300 hover:text-white hover:bg-amber-500/20"
+            title="Spawn at exact first video frame position & look direction (F1)"
+          >
+            <Footprints className="w-3.5 h-3.5 text-amber-400" />
+            <span>Start Frame (F1)</span>
+          </button>
+
           <button
             onClick={handlePresetInside}
             className={`flex items-center space-x-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all ${
@@ -1159,6 +1352,23 @@ export const SplatViewer: React.FC<Props> = ({
           title="Reset Camera View"
         >
           <RotateCw className="w-4 h-4" />
+        </button>
+
+        {/* Fullscreen 3D World Mode */}
+        <button
+          onClick={toggleFullscreen}
+          className={`p-2 rounded-xl text-xs font-bold transition-all shadow-lg backdrop-blur-md border ${
+            isFullscreen || isFullscreenFallback
+              ? "bg-indigo-500/30 text-indigo-200 border-indigo-500/60 ring-1 ring-indigo-500/50"
+              : "bg-zinc-900/80 text-zinc-300 border-zinc-800 hover:text-white hover:bg-zinc-800"
+          }`}
+          title={isFullscreen || isFullscreenFallback ? "Exit Fullscreen (Key F)" : "Fullscreen 3D World (Key F)"}
+        >
+          {isFullscreen || isFullscreenFallback ? (
+            <Minimize2 className="w-4 h-4 text-indigo-300" />
+          ) : (
+            <Maximize2 className="w-4 h-4 text-zinc-300" />
+          )}
         </button>
       </div>
 
@@ -1372,6 +1582,178 @@ export const SplatViewer: React.FC<Props> = ({
           </div>
         </div>
       )}
+
+      {/* Bottom-Left Interactive WASD + Up/Down HUD Pad */}
+      <div className="absolute bottom-5 left-5 z-20 pointer-events-auto flex flex-col space-y-1.5 bg-zinc-950/80 backdrop-blur-md p-2.5 rounded-2xl border border-zinc-800/80 shadow-xl select-none">
+        <div className="flex items-center justify-between px-1">
+          <span className="text-[10px] font-mono text-zinc-400 font-bold uppercase tracking-wider">
+            {navMode === "walk" ? "Walk Controls" : "Orbit Pan"}
+          </span>
+          <span className="text-[9px] font-mono text-cyan-400 font-bold">WASD</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          {/* WASD cluster */}
+          <div className="flex flex-col items-center space-y-1">
+            <button
+              onMouseDown={() => {
+                pressedKeysRef.current.add("w");
+                setActiveHudKeys((prev) => ({ ...prev, w: true }));
+              }}
+              onMouseUp={() => {
+                pressedKeysRef.current.delete("w");
+                setActiveHudKeys((prev) => ({ ...prev, w: false }));
+              }}
+              onTouchStart={() => {
+                pressedKeysRef.current.add("w");
+                setActiveHudKeys((prev) => ({ ...prev, w: true }));
+              }}
+              onTouchEnd={() => {
+                pressedKeysRef.current.delete("w");
+                setActiveHudKeys((prev) => ({ ...prev, w: false }));
+              }}
+              className={`w-7 h-7 rounded-lg text-[10px] font-bold font-mono flex items-center justify-center transition-all ${
+                activeHudKeys["w"]
+                  ? "bg-cyan-500 text-zinc-950 scale-95 shadow-md shadow-cyan-500/50"
+                  : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700"
+              }`}
+            >
+              W
+            </button>
+            <div className="flex space-x-1">
+              <button
+                onMouseDown={() => {
+                  pressedKeysRef.current.add("a");
+                  setActiveHudKeys((prev) => ({ ...prev, a: true }));
+                }}
+                onMouseUp={() => {
+                  pressedKeysRef.current.delete("a");
+                  setActiveHudKeys((prev) => ({ ...prev, a: false }));
+                }}
+                onTouchStart={() => {
+                  pressedKeysRef.current.add("a");
+                  setActiveHudKeys((prev) => ({ ...prev, a: true }));
+                }}
+                onTouchEnd={() => {
+                  pressedKeysRef.current.delete("a");
+                  setActiveHudKeys((prev) => ({ ...prev, a: false }));
+                }}
+                className={`w-7 h-7 rounded-lg text-[10px] font-bold font-mono flex items-center justify-center transition-all ${
+                  activeHudKeys["a"]
+                    ? "bg-cyan-500 text-zinc-950 scale-95 shadow-md shadow-cyan-500/50"
+                    : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700"
+                }`}
+              >
+                A
+              </button>
+              <button
+                onMouseDown={() => {
+                  pressedKeysRef.current.add("s");
+                  setActiveHudKeys((prev) => ({ ...prev, s: true }));
+                }}
+                onMouseUp={() => {
+                  pressedKeysRef.current.delete("s");
+                  setActiveHudKeys((prev) => ({ ...prev, s: false }));
+                }}
+                onTouchStart={() => {
+                  pressedKeysRef.current.add("s");
+                  setActiveHudKeys((prev) => ({ ...prev, s: true }));
+                }}
+                onTouchEnd={() => {
+                  pressedKeysRef.current.delete("s");
+                  setActiveHudKeys((prev) => ({ ...prev, s: false }));
+                }}
+                className={`w-7 h-7 rounded-lg text-[10px] font-bold font-mono flex items-center justify-center transition-all ${
+                  activeHudKeys["s"]
+                    ? "bg-cyan-500 text-zinc-950 scale-95 shadow-md shadow-cyan-500/50"
+                    : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700"
+                }`}
+              >
+                S
+              </button>
+              <button
+                onMouseDown={() => {
+                  pressedKeysRef.current.add("d");
+                  setActiveHudKeys((prev) => ({ ...prev, d: true }));
+                }}
+                onMouseUp={() => {
+                  pressedKeysRef.current.delete("d");
+                  setActiveHudKeys((prev) => ({ ...prev, d: false }));
+                }}
+                onTouchStart={() => {
+                  pressedKeysRef.current.add("d");
+                  setActiveHudKeys((prev) => ({ ...prev, d: true }));
+                }}
+                onTouchEnd={() => {
+                  pressedKeysRef.current.delete("d");
+                  setActiveHudKeys((prev) => ({ ...prev, d: false }));
+                }}
+                className={`w-7 h-7 rounded-lg text-[10px] font-bold font-mono flex items-center justify-center transition-all ${
+                  activeHudKeys["d"]
+                    ? "bg-cyan-500 text-zinc-950 scale-95 shadow-md shadow-cyan-500/50"
+                    : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700"
+                }`}
+              >
+                D
+              </button>
+            </div>
+          </div>
+          {/* Vertical elevation cluster: Space / C */}
+          <div className="flex flex-col items-center space-y-1 pl-1 border-l border-zinc-800">
+            <button
+              onMouseDown={() => {
+                pressedKeysRef.current.add(" ");
+                setActiveHudKeys((prev) => ({ ...prev, " ": true }));
+              }}
+              onMouseUp={() => {
+                pressedKeysRef.current.delete(" ");
+                setActiveHudKeys((prev) => ({ ...prev, " ": false }));
+              }}
+              onTouchStart={() => {
+                pressedKeysRef.current.add(" ");
+                setActiveHudKeys((prev) => ({ ...prev, " ": true }));
+              }}
+              onTouchEnd={() => {
+                pressedKeysRef.current.delete(" ");
+                setActiveHudKeys((prev) => ({ ...prev, " ": false }));
+              }}
+              className={`w-7 h-7 rounded-lg text-[9px] font-bold font-mono flex items-center justify-center transition-all ${
+                activeHudKeys[" "]
+                  ? "bg-emerald-400 text-zinc-950 scale-95 shadow-md shadow-emerald-400/50"
+                  : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700"
+              }`}
+              title="Elevate +Y (Space or E)"
+            >
+              +Y
+            </button>
+            <button
+              onMouseDown={() => {
+                pressedKeysRef.current.add("c");
+                setActiveHudKeys((prev) => ({ ...prev, c: true }));
+              }}
+              onMouseUp={() => {
+                pressedKeysRef.current.delete("c");
+                setActiveHudKeys((prev) => ({ ...prev, c: false }));
+              }}
+              onTouchStart={() => {
+                pressedKeysRef.current.add("c");
+                setActiveHudKeys((prev) => ({ ...prev, c: true }));
+              }}
+              onTouchEnd={() => {
+                pressedKeysRef.current.delete("c");
+                setActiveHudKeys((prev) => ({ ...prev, c: false }));
+              }}
+              className={`w-7 h-7 rounded-lg text-[9px] font-bold font-mono flex items-center justify-center transition-all ${
+                activeHudKeys["c"]
+                  ? "bg-emerald-400 text-zinc-950 scale-95 shadow-md shadow-emerald-400/50"
+                  : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700"
+              }`}
+              title="Descend -Y (C or Q)"
+            >
+              -Y
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* Bottom Center Download Strip */}
       <div className="absolute bottom-5 inset-x-0 z-20 flex justify-center pointer-events-none">

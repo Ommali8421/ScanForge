@@ -43,10 +43,16 @@ export const ScanTypeCards: React.FC<Props> = ({ selected, onSelect, lidarEnable
     },
   ];
 
+  const visibleOptions = options.filter((opt) => opt.id !== "lidar" || lidarEnabled);
+
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {options.map((opt) => {
+      <div
+        className={`grid grid-cols-1 ${
+          visibleOptions.length === 2 ? "md:grid-cols-2" : "md:grid-cols-3"
+        } gap-4`}
+      >
+        {visibleOptions.map((opt) => {
           const Icon = opt.icon;
           const isSelected = selected === opt.id;
           return (

@@ -21,6 +21,27 @@ from app.pipelines.base import Stage, JobContext, StageResult
 from app.utils.logging import logger
 
 
+def fast_guided_filter(guide: np.ndarray, src: np.ndarray, r: int = 5, eps: float = 1e-3) -> np.ndarray:
+    """
+    Fast O(1) per-pixel Guided Filter using OpenCV boxFilter.
+    Smooths flat planar regions according to RGB frame luminance while snapping sharp depth edges to object borders.
+    """
+    g = guide.astype(np.float32)
+    p = src.astype(np.float32)
+    ksize = (2 * r + 1, 2 * r + 1)
+    mean_I = cv2.boxFilter(g, cv2.CV_32F, ksize)
+    mean_p = cv2.boxFilter(p, cv2.CV_32F, ksize)
+    mean_Ip = cv2.boxFilter(g * p, cv2.CV_32F, ksize)
+    cov_Ip = mean_Ip - mean_I * mean_p
+    mean_II = cv2.boxFilter(g * g, cv2.CV_32F, ksize)
+    var_I = mean_II - mean_I * mean_I
+    a = cov_Ip / (var_I + eps)
+    b = mean_p - a * mean_I
+    mean_a = cv2.boxFilter(a, cv2.CV_32F, ksize)
+    mean_b = cv2.boxFilter(b, cv2.CV_32F, ksize)
+    return mean_a * g + mean_b
+
+
 def find_colmap_sparse_dir(path: Path) -> Path:
     """
     Locates the directory containing COLMAP sparse model files.
@@ -390,7 +411,13 @@ class DepthAlignStage(Stage):
         total_images = len(images)
         alignment_report = []
 
-        # Pass 3: Reconstruct depth maps and mask occlusion edges (Amendment 3)
+        prev_depth: Optional[np.ndarray] = None
+        prev_gray: Optional[np.ndarray] = None
+
+        frames_dir = ctx.workdir / "frames"
+        undist_dir = ctx.workdir / "undistorted" / "images"
+
+        # Pass 3: Reconstruct depth maps, apply TGM damping & RGB-guided filter, and mask occlusion edges
         for idx, img in enumerate(images):
             stem = Path(img["name"]).stem
             s_val = float(s_smooth_arr[idx])
@@ -408,7 +435,46 @@ class DepthAlignStage(Stage):
             depth_map = 1.0 / inv_depth_map
             depth_map = np.clip(depth_map, 0.05, z_max_scene)
 
-            # 1-pixel finite difference relative step discontinuity check (replaces 8x Sobel scaling bug)
+            h, w = depth_map.shape[:2]
+
+            # Try to load corresponding RGB image for guidance and TGM damping
+            rgb_gray: Optional[np.ndarray] = None
+            for cand_path in [
+                frames_dir / img["name"],
+                frames_dir / Path(img["name"]).name,
+                undist_dir / img["name"],
+                undist_dir / Path(img["name"]).name,
+            ]:
+                if cand_path.exists():
+                    try:
+                        bgr = cv2.imread(str(cand_path))
+                        if bgr is not None:
+                            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+                            if gray.shape != (h, w):
+                                gray = cv2.resize(gray, (w, h), interpolation=cv2.INTER_AREA)
+                            rgb_gray = gray
+                            break
+                    except Exception:
+                        pass
+
+            # 1. Flow-free Temporal Gradient Matching (TGM) damping on static low-change pixels
+            if rgb_gray is not None and prev_gray is not None and prev_depth is not None:
+                if prev_gray.shape == rgb_gray.shape and prev_depth.shape == depth_map.shape:
+                    delta_I = np.abs(rgb_gray - prev_gray)
+                    # Low-change pixels: damp temporal depth flutter
+                    static_mask = (delta_I < 0.05) & (prev_depth > 0.05) & (depth_map > 0.05)
+                    depth_map[static_mask] = 0.85 * depth_map[static_mask] + 0.15 * prev_depth[static_mask]
+
+            # 2. RGB-Guided Edge-Preserving Filter (guided by frame luminance)
+            if rgb_gray is not None:
+                try:
+                    guided_depth = fast_guided_filter(rgb_gray, depth_map, r=5, eps=1e-3)
+                    valid_g = (guided_depth > 0.05) & (depth_map > 0.05)
+                    depth_map[valid_g] = guided_depth[valid_g]
+                except Exception:
+                    pass
+
+            # 3. 1-pixel finite difference relative step discontinuity check (AFTER RGB guidance)
             # Only mask true occlusion jumps where relative step > 12% in a SINGLE pixel, leaving smooth floors/walls intact
             dz_dx = np.abs(np.diff(depth_map, axis=1, prepend=depth_map[:, :1]))
             dz_dy = np.abs(np.diff(depth_map, axis=0, prepend=depth_map[:1, :]))
@@ -424,6 +490,10 @@ class DepthAlignStage(Stage):
                 depth_smoothed[edge_mask] = 0.0
             except Exception:
                 depth_smoothed = depth_map
+
+            # Save state for next frame TGM damping
+            prev_depth = depth_smoothed.copy()
+            prev_gray = rgb_gray.copy() if rgb_gray is not None else None
 
             # Save aligned 32-bit float metric depth
             out_npy = depth_aligned_dir / f"{stem}.npy"

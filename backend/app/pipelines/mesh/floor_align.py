@@ -327,7 +327,8 @@ class FloorAlignAndScaleStage(Stage):
         "aligned_textured.glb",
         "aligned_mesh.ply",
         "floor_alignment.json",
-        "preview_textured.glb"
+        "preview_textured.glb",
+        "cameras_aligned.json"
     ]
 
     def run(self, ctx: JobContext) -> StageResult:
@@ -544,6 +545,100 @@ class FloorAlignAndScaleStage(Stage):
         fix_glb_pbr_materials(unscaled_glb)
 
         output_files = [out_glb, out_ply, meta_file, preview_glb]
+
+        # Export aligned camera poses -> cameras_aligned.json
+        sparse_dirs = [
+            ctx.workdir / "sparse_txt",
+            ctx.workdir / "sparse" / "0",
+            ctx.workdir / "aligned_sparse" / "0",
+            ctx.workdir / "nerfstudio_data" / "sparse" / "0",
+        ]
+        submodel_images = list(ctx.workdir.glob("sparse_txt/submodels/*/images.txt"))
+        if submodel_images:
+            sparse_dirs.insert(0, submodel_images[0].parent)
+
+        target_sparse = None
+        for d in sparse_dirs:
+            if (d / "images.txt").exists():
+                target_sparse = d
+                break
+
+        if target_sparse:
+            import re
+            from scipy.spatial.transform import Rotation as R_scipy
+
+            def _extract_frame_key(name: str) -> Tuple[int, str]:
+                digits = re.findall(r"\d+", name)
+                return (int(digits[-1]), name) if digits else (999999, name)
+
+            images_txt = target_sparse / "images.txt"
+            parsed_cams = []
+            for line in images_txt.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 10 and any(parts[9].lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
+                    qw, qx, qy, qz = map(float, parts[1:5])
+                    tx, ty, tz = map(float, parts[5:8])
+                    img_name = parts[9]
+
+                    r_mat = R_scipy.from_quat([qx, qy, qz, qw]).as_matrix()
+                    t_vec = np.array([tx, ty, tz], dtype=float)
+                    center_raw = -r_mat.T @ t_vec
+                    fwd_raw = r_mat.T @ np.array([0.0, 0.0, 1.0], dtype=float)
+                    up_raw = -r_mat.T[:, 1]
+
+                    parsed_cams.append({
+                        "name": img_name,
+                        "center": center_raw,
+                        "forward": fwd_raw,
+                        "up": up_raw,
+                    })
+
+            parsed_cams.sort(key=lambda c: _extract_frame_key(c["name"]))
+
+            aligned_cameras_list = []
+            for idx, c in enumerate(parsed_cams):
+                c_rot = R_total @ c["center"]
+                c_rot[up_idx] -= meta["Y_floor_offset"]
+                c_rot[horiz_indices[0]] -= meta["horizontal_center"][0]
+                c_rot[horiz_indices[1]] -= meta["horizontal_center"][1]
+                c_final = c_rot * float(scale)
+
+                fwd_rot = R_total @ c["forward"]
+                fwd_norm = np.linalg.norm(fwd_rot)
+                fwd_unit = (fwd_rot / fwd_norm) if fwd_norm > 1e-6 else np.array([0.0, 0.0, 1.0])
+
+                up_rot = R_total @ c["up"]
+                up_norm = np.linalg.norm(up_rot)
+                up_unit = (up_rot / up_norm) if up_norm > 1e-6 else np.array([0.0, 1.0, 0.0])
+
+                aligned_cameras_list.append({
+                    "index": idx,
+                    "name": c["name"],
+                    "position": [round(float(v), 4) for v in c_final],
+                    "up": [round(float(v), 4) for v in up_unit],
+                    "forward": [round(float(v), 4) for v in fwd_unit],
+                })
+
+            first_frame_cam = aligned_cameras_list[0] if aligned_cameras_list else None
+            for cam_entry in aligned_cameras_list:
+                if cam_entry["position"][1] > 0.15:
+                    first_frame_cam = cam_entry
+                    break
+
+            cameras_json_data = {
+                "num_cameras": len(aligned_cameras_list),
+                "up_axis": "+y" if abs(target_up[1]) > 0.9 else "+z",
+                "floor_level": 0.0,
+                "first_frame_camera": first_frame_cam,
+                "cameras": aligned_cameras_list,
+            }
+            cams_json_path = ctx.workdir / "cameras_aligned.json"
+            cams_json_path.write_text(json.dumps(cameras_json_data, indent=2))
+            output_files.append(cams_json_path)
+            ctx.log_cb(f"[{self.name}] Exported aligned camera poses -> cameras_aligned.json ({len(aligned_cameras_list)} cameras).")
 
         ctx.log_cb(
             f"[{self.name}] (100%) Floor alignment complete. Bounds: "

@@ -27,6 +27,38 @@ SPLAT_DTYPE = np.dtype([
 ])
 
 
+def compute_morton_order(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> np.ndarray:
+    """
+    Computes 3D Morton Z-order curve indices for spatial cache locality and fast WebGL sorting.
+    Quantizes coordinates to 10-bit integers (0 to 1023) and bit-interleaves.
+    """
+    if len(x) == 0:
+        return np.arange(0, dtype=np.int64)
+
+    min_x, max_x = float(np.min(x)), float(np.max(x))
+    min_y, max_y = float(np.min(y)), float(np.max(y))
+    min_z, max_z = float(np.min(z)), float(np.max(z))
+
+    span_x = max(max_x - min_x, 1e-4)
+    span_y = max(max_y - min_y, 1e-4)
+    span_z = max(max_z - min_z, 1e-4)
+
+    qx = np.clip(((x - min_x) / span_x * 1023.0).astype(np.uint32), 0, 1023)
+    qy = np.clip(((y - min_y) / span_y * 1023.0).astype(np.uint32), 0, 1023)
+    qz = np.clip(((z - min_z) / span_z * 1023.0).astype(np.uint32), 0, 1023)
+
+    def expand_bits_10(v: np.ndarray) -> np.ndarray:
+        v = v.astype(np.uint64)
+        v = (v | (v << 16)) & 0x030000FF
+        v = (v | (v << 8))  & 0x0300F00F
+        v = (v | (v << 4))  & 0x030C30C3
+        v = (v | (v << 2))  & 0x09249249
+        return v
+
+    morton = expand_bits_10(qx) | (expand_bits_10(qy) << 1) | (expand_bits_10(qz) << 2)
+    return np.argsort(morton)
+
+
 def pack_ply_to_splat(ply_path: Path, splat_path: Path, scale_factor: float = 1.0) -> int:
     """
     Packs 3DGS PLY into compact 32-byte .splat format for WebGL / Three.js rendering.
@@ -134,6 +166,21 @@ class SplatFormatConverterStage(Stage):
             input_ply = ctx.workdir / "splat.ply"
         if not input_ply.exists():
             raise FileNotFoundError(f"[FormatConverter] Splat PLY missing at {input_ply}")
+
+        # Apply 3D Morton Z-order curve sorting for optimal WebGL cache locality
+        from plyfile import PlyData, PlyElement
+        pdata = PlyData.read(str(input_ply))
+        vdata = pdata["vertex"].data
+        if len(vdata) > 0:
+            morton_order = compute_morton_order(
+                np.asarray(vdata["x"], dtype=np.float32),
+                np.asarray(vdata["y"], dtype=np.float32),
+                np.asarray(vdata["z"], dtype=np.float32),
+            )
+            vdata_sorted = vdata[morton_order]
+            sorted_elem = PlyElement.describe(vdata_sorted, "vertex")
+            PlyData([sorted_elem], text=False).write(str(input_ply))
+            ctx.log_cb(f"[FormatConverter] Applied 3D Morton Z-order spatial curve sorting to {len(vdata_sorted):,} Gaussians.")
 
         # 1. Binary .splat (32 bytes per Gaussian)
         splat_file = ctx.workdir / "cleaned_splat.splat"
