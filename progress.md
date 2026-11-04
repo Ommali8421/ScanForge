@@ -1012,6 +1012,29 @@ All 5 benchmark runs completed end-to-end with 100% success on NVIDIA RTX 4060 (
    - Container `scanforge-frontend-1` recreated and running; `curl -I http://localhost:3000` returns `HTTP/1.1 200 OK`.
    - `docker compose exec -T worker-gpu pytest tests/test_p4_part2_upgrades.py` passes 4/4 in 1.34s.
 
+---
+
+### G. Comprehensive README.md Overhaul & Architectural Blueprint
+1. **Architectural & Flow Documentation**:
+   - Overhauled root `README.md` into an authoritative technical manual.
+   - Built 3 full Mermaid diagrams:
+     - **System Topology & Container Microservices**: Ingress reverse proxy, FastAPI application server, Redis Pub/Sub & RQ brokers, persistent volumes, React/Three.js frontend.
+     - **Reconstruction Pipeline & Data Flow**: Complete stage transitions from multi-criteria video ingest cut filters to COLMAP SfM, auto-route decision, Route A (OpenMVS Delaunay) vs Route B (Depth Anything V2 TSDF), single-run mesh-inclusive 3DGS, geometric post-processing, and multi-format export.
+     - **Cross-Container Cancellation Protocol**: Sequence diagram detailing sub-3s VRAM reclamation via Redis `scanforge:cancel:{id}` and dedicated process-group sessions (`os.killpg`).
+2. **Technical Innovations Synthesized**:
+   - Detailed visibility-aware 3D Delaunay meshing (eliminating Screened Poisson 3x ceiling balloons).
+   - The Zero-Retexturing Coordinate Seam (<0.15s scale calibration).
+   - Single-run mesh-inclusive 3DGS with orthogonal Kabsch camera transform ($8.09 \times 10^{-5}$ error, 100% texture coverage, 0.0% void).
+   - Tangent-space normal and roughness PBR synthesis + 4px UV gutter dilation.
+   - Border-locked quadric decimation (`boundary_weight = 10.0`) & `gltfpack` quantization.
+   - Native `.spz` splat compression (~11x smaller).
+   - True 1-pixel finite difference depth discontinuity filter (`step_rel > 0.12`).
+   - Studio 3D WASD navigation with OrbitControls neutralization and synchronized target translation.
+3. **Verification & Benchmark Documentation**:
+   - Documented multi-room benchmark results across Tanks & Temples (Meetingroom, Ballroom, Courtroom: 864/864 frames registered, 100%, 29.24M points, 0 failures).
+   - Documented real-world indoor walkthroughs (House, Tour) and over-pruning elimination metrics.
+   - Full 10+ deliverable asset formats table, complete API contract, quickstart guides, and licensing audit.
+
 
 
 
