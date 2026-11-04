@@ -1035,6 +1035,25 @@ All 5 benchmark runs completed end-to-end with 100% success on NVIDIA RTX 4060 (
    - Documented real-world indoor walkthroughs (House, Tour) and over-pruning elimination metrics.
    - Full 10+ deliverable asset formats table, complete API contract, quickstart guides, and licensing audit.
 
+---
+
+### H. Studio 3D WASD Navigation Definite Fix & Container Dist Mount
+1. **Root Cause Isolation**:
+   - In `@mkkellogg/gaussian-splats-3d`, OrbitControls key handler `handleKeyDown` specifically bound `LEFT: 'KeyA', UP: 'KeyW', RIGHT: 'KeyD', BOTTOM: 'KeyS'`.
+   - Previous attempt to call `stopListenToKeyEvents` failed on duplicate controls reference (`viewer.controls === viewer.perspectiveControls`), throwing unhandled null reference on `this._domElementKeyEvents.removeEventListener`.
+   - In `docker-compose.yml`, the frontend container ran static files from image build time rather than host dist output.
+2. **Definitive Fix**:
+   - In `SplatViewer.tsx`: Added instance deduplication via `Set`, checked `_domElementKeyEvents` prior to cleanup, explicitly set `c.handleKeyDown = () => {}`, cleared `c.keys = { LEFT: "", UP: "", RIGHT: "", BOTTOM: "" }`, and removed `viewer.keyDownListener`.
+   - In `MeshViewer.tsx`: Neutralized OrbitControls keys with `controls.listenToKeyEvents = () => {}`, `controls.keys = { LEFT: "", ... }`, and `(controls as any).handleKeyDown = () => {}`.
+   - In `docker-compose.yml`: Added `./frontend/dist:/usr/share/nginx/html:ro` so Vite production builds on the host are immediately served by Nginx on port 3000.
+3. **Empirical Verification**:
+   - `npm --prefix frontend run build` completed in 3.21s producing `dist/assets/index-CGCcjm9F.js`.
+   - Container `scanforge-frontend-1` recreated with volume mount and verified live (`curl -I http://localhost:3000/assets/index-CGCcjm9F.js` -> HTTP 200 OK).
+   - `python3 scripts/stress_test_frontend_contracts.py` passed with 0 defects (`VERDICT: APPROVE`).
+   - `docker compose exec -T worker-gpu pytest tests/test_p4_part2_upgrades.py` passed 4/4 in 1.81s.
+   - Pushed commit `f92dd35` to GitHub origin/main.
+
+
 
 
 
