@@ -408,11 +408,12 @@ class DepthAlignStage(Stage):
             depth_map = 1.0 / inv_depth_map
             depth_map = np.clip(depth_map, 0.05, z_max_scene)
 
-            # Amendment 3: Zero out occlusion-boundary "flying pixels" (|grad(z)| / z > 0.08 -> 0)
-            gx = cv2.Sobel(depth_map, cv2.CV_32F, 1, 0, ksize=3)
-            gy = cv2.Sobel(depth_map, cv2.CV_32F, 0, 1, ksize=3)
-            grad = np.sqrt(gx**2 + gy**2)
-            edge_mask = (grad / np.maximum(depth_map, 1e-4)) > 0.08
+            # 1-pixel finite difference relative step discontinuity check (replaces 8x Sobel scaling bug)
+            # Only mask true occlusion jumps where relative step > 12% in a SINGLE pixel, leaving smooth floors/walls intact
+            dz_dx = np.abs(np.diff(depth_map, axis=1, prepend=depth_map[:, :1]))
+            dz_dy = np.abs(np.diff(depth_map, axis=0, prepend=depth_map[:1, :]))
+            step_rel = np.maximum(dz_dx, dz_dy) / np.maximum(depth_map, 1e-4)
+            edge_mask = step_rel > 0.12
             depth_map[edge_mask] = 0.0
 
             # Bilateral edge-preserving smoothing

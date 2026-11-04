@@ -103,11 +103,86 @@ def render_mesh_views(glb_path: str, out_dir: str, prefix: str):
     print(f"Rendered: {scene.render.filepath}")
 
     # View 2: Interior Eye-Level Walkthrough View
-    eye_z = min_z + max(1.0, height * 0.35)
-    cam_obj.location = (cx - dim_h * 0.22, cy - dim_h * 0.22, eye_z)
-    look_target = Vector((cx + dim_h * 0.25, cy + dim_h * 0.25, eye_z))
-    direction = look_target - cam_obj.location
-    cam_obj.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+    # Render from an ACTUAL registered camera pose inside the room
+    # (transformed from sparse_txt/images.txt + floor_alignment.json, matching Panel 1's camera in splat_proof.png)
+    found_registered_cam = False
+    job_dir = Path(glb_path).parent
+    align_file = job_dir / "floor_alignment.json"
+
+    sparse_dirs = [
+        job_dir / "sparse_txt",
+        job_dir / "sparse" / "0",
+        job_dir / "nerfstudio_data" / "sparse" / "0",
+    ]
+    images_txt = None
+    for sd in sparse_dirs:
+        if (sd / "images.txt").exists():
+            images_txt = sd / "images.txt"
+            break
+
+    if align_file.exists() and images_txt is not None:
+        try:
+            import json
+            import numpy as np
+            from mathutils import Quaternion
+
+            meta = json.loads(align_file.read_text())
+            R_total = np.array(meta["R_total"], dtype=float)
+            Y_floor_offset = float(meta.get("Y_floor_offset", 0.0))
+            center_h0, center_h1 = meta.get("horizontal_center", [0.0, 0.0])
+            scale = float(meta.get("scale", 1.0))
+
+            lines = images_txt.read_text().splitlines()
+            cams = []
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 10 and any(parts[9].lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
+                    qw, qx, qy, qz = map(float, parts[1:5])
+                    tx, ty, tz = map(float, parts[5:8])
+                    name = parts[9]
+                    q = Quaternion((qw, qx, qy, qz))
+                    r_mat = np.array(q.to_matrix())
+                    c_raw = -r_mat.T @ np.array([tx, ty, tz])
+                    fwd_raw = r_mat[2, :]
+                    up_raw = -r_mat[1, :]
+                    cams.append((name, c_raw, fwd_raw, up_raw))
+
+            if cams:
+                idx1 = min(int(len(cams) * 0.25), len(cams) - 1)
+                name, c_raw, fwd_raw, up_raw = cams[idx1]
+
+                # Transform to aligned glTF frame
+                c_rot = R_total @ c_raw
+                c_rot[1] -= Y_floor_offset
+                c_rot[0] -= center_h0
+                c_rot[2] -= center_h1
+                C_gltf = c_rot * scale
+
+                fwd_gltf = R_total @ fwd_raw
+                fwd_gltf /= np.linalg.norm(fwd_gltf)
+
+                # Convert to Blender world coords: [X_gltf, -Z_gltf, Y_gltf]
+                c_blender = Vector((C_gltf[0], -C_gltf[2], C_gltf[1]))
+                fwd_blender = Vector((fwd_gltf[0], -fwd_gltf[2], fwd_gltf[1]))
+
+                cam_obj.location = c_blender
+                look_target = c_blender + fwd_blender * 3.0
+                direction = look_target - cam_obj.location
+                cam_obj.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+                print(f"Set registered camera '{name}' (idx {idx1}) at {c_blender}, fwd {fwd_blender}")
+                found_registered_cam = True
+        except Exception as e:
+            print(f"Notice: registered camera extraction failed ({e}), falling back to interior offset.")
+
+    if not found_registered_cam:
+        eye_z = min_z + max(1.0, height * 0.35)
+        cam_obj.location = (cx - dim_h * 0.22, cy - dim_h * 0.22, eye_z)
+        look_target = Vector((cx + dim_h * 0.25, cy + dim_h * 0.25, eye_z))
+        direction = look_target - cam_obj.location
+        cam_obj.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
 
     scene.render.filepath = str(out_path / f"{prefix}_interior.png")
     bpy.ops.render.render(write_still=True)

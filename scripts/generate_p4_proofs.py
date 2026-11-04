@@ -246,7 +246,18 @@ def composite_splat_mesh_sheet(out_file: Path):
         fp_fitted.paste(fp_resized, (ox, oy))
         canvas.paste(fp_fitted, (20 + PANEL_W + GAP, HEADER_H + 20 + PANEL_H + GAP))
     draw.rectangle([(20 + PANEL_W + GAP, HEADER_H + 20 + PANEL_H + GAP), (20 + 2 * PANEL_W + GAP, HEADER_H + 60 + PANEL_H + GAP)], fill=(0, 0, 0, 200))
-    draw.text((35 + PANEL_W + GAP, HEADER_H + 28 + PANEL_H + GAP), "4. Generated 2D Floor Plan Layout (131.4 m² | 18.04m x 14.53m)", fill=(255, 255, 255), font=font_sec)
+    # Dynamic floor plan caption from quality report
+    fp_title = "4. Generated 2D Floor Plan Layout"
+    qr_path = Path(JOBS["tour_splat_mesh"]["qr"])
+    if qr_path.exists():
+        try:
+            q_info = json.loads(qr_path.read_text())
+            fa = q_info.get("floor_area_sqm", 0.0)
+            dims = q_info.get("dimensions_meters", {})
+            fp_title = f"4. Generated 2D Floor Plan Layout ({fa:.1f} m² | {dims.get('length', 0):.2f}m x {dims.get('width', 0):.2f}m)"
+        except Exception:
+            pass
+    draw.text((35 + PANEL_W + GAP, HEADER_H + 28 + PANEL_H + GAP), fp_title, fill=(255, 255, 255), font=font_sec)
 
     canvas.save(out_file, quality=95)
     print(f"Saved splat-mesh inclusive sheet to {out_file} ({out_file.stat().st_size:,} bytes)")
@@ -279,8 +290,8 @@ def main():
     out_splat_mesh = Path("/data/jobs/p4_proofs/p4_tour_splat_mesh_inclusive.png")
     composite_splat_mesh_sheet(out_file=out_splat_mesh)
 
-    # Copy individual floor plan assets
-    shutil.copy2("/data/jobs/a78fc585-4120-48b5-8512-17d2b6afa8f2/floor_plan.png", WORK_DIR / "p4_house_floor_plan.png")
+    # Copy individual floor plan assets (House Route B d1fd0269 is sealed, unlike hole-ridden Route A a78fc585)
+    shutil.copy2("/data/jobs/d1fd0269-4325-4f98-9c80-6c70aedbc19c/floor_plan.png", WORK_DIR / "p4_house_floor_plan.png")
     shutil.copy2("/data/jobs/299db6af-de22-4055-af38-b2c615e076e7/floor_plan.png", WORK_DIR / "p4_tour_floor_plan.png")
     if Path("/data/jobs/fbaf91b0-9df8-4cf9-a5e4-4cd85e243f12/floor_plan.png").exists():
         shutil.copy2("/data/jobs/fbaf91b0-9df8-4cf9-a5e4-4cd85e243f12/floor_plan.png", WORK_DIR / "p4_meetingroom_floor_plan.png")

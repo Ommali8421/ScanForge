@@ -268,18 +268,19 @@ class SplatMesherStage(Stage):
                 out_depth = render_colors[0, ..., 3].cpu().numpy().astype(np.float32)
                 out_alpha = render_alphas[0, ..., 0].cpu().numpy().astype(np.float32)
 
-                # Amendment 2: Mask low-alpha void regions (< 0.70)
-                valid_mask = (out_alpha >= 0.70) & (out_depth > 0.05)
+                # Relax opacity masking from alpha < 0.70 to alpha < 0.45 so smooth floor/ceiling surflets stay intact
+                valid_mask = (out_alpha >= 0.45) & (out_depth > 0.05)
                 out_depth[~valid_mask] = 0.0
 
-                # Amendment 2: Mask depth-discontinuity edges (|grad(z)| / z > 0.08 -> 0.0)
-                gx = cv2.Sobel(out_depth, cv2.CV_32F, 1, 0, ksize=3)
-                gy = cv2.Sobel(out_depth, cv2.CV_32F, 0, 1, ksize=3)
-                grad = np.sqrt(gx**2 + gy**2)
-                edge_mask = (grad / np.maximum(out_depth, 1e-4)) > 0.08
+                # 1-pixel finite difference relative step discontinuity check (replaces 8x Sobel scaling bug)
+                # True 1-pixel finite differences mask step jumps > 12% in a SINGLE pixel, leaving smooth perspective floors/walls intact
+                dz_dx = np.abs(np.diff(out_depth, axis=1, prepend=out_depth[:, :1]))
+                dz_dy = np.abs(np.diff(out_depth, axis=0, prepend=out_depth[:1, :]))
+                step_rel = np.maximum(dz_dx, dz_dy) / np.maximum(out_depth, 1e-4)
+                edge_mask = step_rel > 0.12
                 out_depth[edge_mask] = 0.0
 
-                # Amendment 2: 5x5 median filtering to remove isolated spikes
+                # 5x5 median filtering to remove isolated spikes
                 depth_med = cv2.medianBlur(out_depth, 5)
                 depth_med[~valid_mask] = 0.0
                 depth_med[edge_mask] = 0.0

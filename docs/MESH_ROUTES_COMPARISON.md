@@ -107,15 +107,15 @@ When `scan_type="gaussian_splat"` and `include_mesh=True`, ScanForge trains a hi
 | **3DGS Training** | 15,000 steps `splatfacto` via Nerfstudio with high-realism flags: `--pipeline.model.use-bilateral-grid True`, `--pipeline.model.camera-optimizer.mode SO3xR3`, `--pipeline.model.rasterize-mode antialiased`, `--train-split-fraction 1.0` |
 | **Planar Seed Augmentation** | Up to 40,000 stratified planar seed points on SIFT-sparse wall/floor planes (total initial points capped $\le 110,000$, peak VRAM $< 3.5$ GB) |
 | **Gaussian Count** | 316,806 cleaned Gaussians (`cleaned_splat.ply`, 75 MB; `model.splat`, 9.7 MB) |
-| **Splat Mesher TSDF** | Rendered expected depth into Open3D `UniformTSDFVolume` (`res=384`, `sdf_trunc=8*voxel`), Sobel gradient edge masking ($|\nabla z|/z > 0.08 \rightarrow 0$), 5x5 median blur, alpha $\ge 0.70$ |
+| **Splat Mesher TSDF** | Rendered expected depth into Open3D `UniformTSDFVolume` (`res=384`, `sdf_trunc=8*voxel`), 1-pixel finite difference relative step check ($\max(\Delta z_x, \Delta z_y)/z > 0.12 \rightarrow 0$), 5x5 median blur, alpha $\ge 0.45$ (replaces 8x Sobel scaling bug that erased oblique floors) |
 | **Co-Registration Alignment** | Exact Kabsch/SVD rigid transform to raw COLMAP `sparse/0` poses (max error $8.09 \times 10^{-5}$) |
-| **Texture Coverage** | **100.0%** (185,655 / 185,655 faces textured; 0.0% untextured grey void; 99.97% room pixel coverage in viewport) |
+| **Texture Coverage** | **100.0%** (185,655 / 185,655 faces textured; 0.0% untextured grey void; 99.62% total viewport coverage, 99.52% lower-half floor coverage) |
 | **Post-Processing Chain** | SplatMesher → MeshCleanup → PlaneRepair → Decimate → OpenMVSTexture → FloorAlign → FloorPlan → MeshExport |
-| **Final Mesh Geometry** | 102,710 vertices, 185,655 faces |
+| **Final Mesh Geometry** | 102,710 vertices, 185,655 faces (Fresh validation run `f47fbb34`: 227k verts / 250k faces, Grade B) |
 | **Manhattan Yaw Snapping** | $\theta_{\text{peak}} = 84.5^\circ$, $\Delta\text{yaw} = +5.5^\circ$; all walls squared to $0^\circ, 90^\circ, 180^\circ, 270^\circ$ via 90-bin wrap-around padded histogram |
 | **Floor Leveling** | Floor leveled to $Y = 0.000$ (median inlier $Y = +0.000000$, mean $Y = -0.006$m; $|Y_{\text{floor}}| < 0.02$ verified) via bounded 5cm inlier threshold |
 | **PBR Material Defaults** | `doubleSided=True`, `metallicFactor=0.0`, `roughnessFactor=1.0` |
-| **Floor Plan Artifacts** | `floor_plan.svg` (90 KB), `floor_plan.png` (52 KB), 1,560 CAD segments |
+| **Floor Plan Artifacts** | `floor_plan.svg`, `floor_plan.png` (crisp single-stroke CAD segments, 12° snapping, flood-fill enclosed floor area 103.6–152.5 m²) |
 | **All Export Formats** | `.glb` (14 MB), `.fbx` (17 MB), `.usdz` (26 MB), `.stl` (12 MB), `.ply` (9.5 MB), `.xyz` (13 MB), `.obj.zip` (14 MB) |
 | **Proof Sheet** | [p4_tour_splat_mesh_inclusive.png](../outputs/p4_tour_splat_mesh_inclusive.png) |
 

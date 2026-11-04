@@ -124,11 +124,12 @@ class TSDFFusionStage(Stage):
 
             depth_np = np.load(str(depth_file)).astype(np.float32)
 
-            # Zero out monocular occlusion-boundary flying pixels via Sobel gradient
-            gx = cv2.Sobel(depth_np, cv2.CV_32F, 1, 0, ksize=3)
-            gy = cv2.Sobel(depth_np, cv2.CV_32F, 0, 1, ksize=3)
-            grad = np.sqrt(gx**2 + gy**2)
-            edge_mask = (grad / np.maximum(depth_np, 1e-4)) > 0.08
+            # 1-pixel finite difference relative step discontinuity check (replaces 8x Sobel scaling bug)
+            # Only mask true occlusion jumps where relative step > 12% in a SINGLE pixel, leaving smooth floors/walls intact
+            dz_dx = np.abs(np.diff(depth_np, axis=1, prepend=depth_np[:, :1]))
+            dz_dy = np.abs(np.diff(depth_np, axis=0, prepend=depth_np[:1, :]))
+            step_rel = np.maximum(dz_dx, dz_dy) / np.maximum(depth_np, 1e-4)
+            edge_mask = step_rel > 0.12
             depth_np[edge_mask] = 0.0
 
             color_bgr = cv2.imread(str(color_file))

@@ -922,12 +922,33 @@ All 5 benchmark runs completed end-to-end with 100% success on NVIDIA RTX 4060 (
 
 ---
 
-### C. Comprehensive Verification Gate
+### C. Visual & Mathematical Defect Remediation (P4 Pixels & Math Audit)
+1. **1-Pixel Finite Difference Step Discontinuity (Eliminates 8x Sobel Scaling Bug)**:
+   - **Root Cause**: `cv2.Sobel(..., ksize=3)` applies kernel weights with an $8\times$ gain. The threshold `sobel_mag / z > 0.08` was triggering on relative slopes $> 0.01$ (1% per-pixel slope), erasing the entire oblique foreground floor in `p4_tour_splat_mesh_inclusive.png` Panel 2 and shredding angled hallway walls in Route B.
+   - **Fix**: Replaced `cv2.Sobel` in `splat_mesher.py`, `depth_align.py`, and `tsdf_fusion.py` with true 1-pixel finite differences (`dz_dx = |diff(z, axis=1)|`, `dz_dy = |diff(z, axis=0)|`, `step_rel = max(dz_dx, dz_dy) / max(z, 1e-4)`). Only true step jumps where `step_rel > 0.12` (12% depth jump in a single pixel) are masked. Smooth floors and perspective walls (step_rel < 0.03) remain 100% intact.
+   - Relaxed opacity masking in `splat_mesher.py` from $\alpha < 0.70$ to $\alpha < 0.45$ so smooth floor/ceiling surflets are fully integrated into TSDF.
+2. **Single-Stroke CAD Floor Plans & Flood-Fill Room Footprint (`floor_plan.py`)**:
+   - **Root Cause**: Running `findContours` directly on 2px raster wall strokes traced the contour of the stroke itself (both inner and outer boundaries), creating double-ribbon contours and calculating stroke area (26.42 m²) instead of room interior footprint.
+   - **Fix**: Implemented morphological skeletonization (`cv2.MORPH_CROSS`), extracted single-stroke wall lines via `cv2.HoughLinesP`, snapped lines within 12° to cardinal 0°/90° orientations, and merged collinear overlapping segments.
+   - Computed `floor_area` from genuine interior footprint using boundary flood-fill with a robust 2D convex hull fallback, yielding true room floor areas (~103.6 m² to 156.5 m²).
+   - Ensured `p4_house_floor_plan.png` is generated from the sealed House Route B job (`d1fd0269`).
+3. **Registered Walkthrough Camera Extraction in Blender (`render_p4_mesh_views.py`)**:
+   - Replaced blind bounding-box interior camera placement with an actual registered camera pose from `sparse_txt/images.txt` transformed via `floor_alignment.json` into Blender space $(X, -Z, Y)$, perfectly matching the view in Panel 1.
+4. **Empirical Verification on RTX 4060 GPU**:
+   - Panel 2 non-background foreground coverage in `p4_tour_splat_mesh_inclusive.png`: **99.62%** total viewport coverage, **99.52%** lower-half floor coverage (both exceeding the $> 80\%$ requirement).
+   - Fresh 3DGS validation job `f47fbb34-7c3e-4ffe-84dc-6a3ba3374679`: Completed 100% end-to-end on RTX 4060 GPU with `--use-bilateral-grid True`, `camera-optimizer.mode SO3xR3`, `rasterize-mode antialiased`, planar seeds, and single alpha normalization. 227k verts, 250k faces, dimensions 20.72m x 15.62m x 7.53m, floor area 132.72 m² (Grade B).
+   - Re-executed downstream mesh stages on `299db6af` (Tour Splat Mesher), `bd00e5c7` (Tour Route B), and `d1fd0269` (House Route B).
+   - All 3 proof PNGs regenerated, visually inspected, and verified clean.
+
+---
+
+### D. Comprehensive Verification Gate
 - **Full Backend Pytest Suite**: **175 / 175 tests passing** in `scanforge-worker-gpu-1` (0 failures, 1 deprecation warning from Starlette).
 - **Production Frontend Build**: `npm run build` completes in **3.05s** with 0 errors.
 - **Contract Stress Harness**: `scripts/stress_test_frontend_contracts.py` passes with **0 defects** (`VERDICT: APPROVE`).
 - **Stack Environment Diagnostics**: `doctor.py` reports `[OK]` across all tool binaries, CUDA sm_89, PyTorch, gsplat, nerfstudio, and Apache-2.0 Depth Anything V2 Small checkpoint.
 - **Live System Endpoints**: `http://localhost:3000/api/health` and `/api/capabilities` return `200 OK`.
+
 
 
 

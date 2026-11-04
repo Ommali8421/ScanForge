@@ -65,11 +65,25 @@ def generate_quality_report_dict(
     horizontal_faces = np.abs(face_normals[:, up_idx]) > 0.8
     floor_face_mask = near_floor & horizontal_faces
 
-    if np.sum(floor_face_mask) > 10:
-        floor_area_sqm = float(round(np.sum(mesh.area_faces[floor_face_mask]), 2))
+    sum_face_area = float(np.sum(mesh.area_faces[floor_face_mask])) if np.sum(floor_face_mask) > 10 else 0.0
+
+    # Compute 2D robust hull of floor/interior vertices to guard against missing floor faces
+    try:
+        from scipy.spatial import ConvexHull
+        horiz_indices = [0, 2] if up_idx == 1 else [0, 1]
+        v_2d = mesh.vertices[:, horiz_indices]
+        p2 = np.percentile(v_2d, 2, axis=0)
+        p98 = np.percentile(v_2d, 98, axis=0)
+        inlier_mask = (v_2d[:, 0] >= p2[0]) & (v_2d[:, 0] <= p98[0]) & (v_2d[:, 1] >= p2[1]) & (v_2d[:, 1] <= p98[1])
+        hull = ConvexHull(v_2d[inlier_mask])
+        hull_area = float(hull.volume)
+    except Exception:
+        hull_area = length * width * 0.70
+
+    if sum_face_area >= 0.40 * hull_area:
+        floor_area_sqm = float(round(sum_face_area, 2))
     else:
-        # Fallback to horizontal 2D bounding box area
-        floor_area_sqm = float(round(length * width * 0.7, 2))
+        floor_area_sqm = float(round(max(sum_face_area, 0.75 * hull_area), 2))
 
     # Quality Grade heuristic
     if is_watertight and non_manifold_edges == 0:

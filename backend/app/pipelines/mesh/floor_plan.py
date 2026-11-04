@@ -138,43 +138,104 @@ def slice_mesh_xz(
             pz0 = int(round((grid_size / 2.0) + (seg[0, 1] - center_z) * scale))
             px1 = int(round((grid_size / 2.0) + (seg[1, 0] - center_x) * scale))
             pz1 = int(round((grid_size / 2.0) + (seg[1, 1] - center_z) * scale))
-            cv2.line(grid, (px0, pz0), (px1, pz1), 255, thickness=2)
+            cv2.line(grid, (px0, pz0), (px1, pz1), 255, thickness=3)
 
         # Morphological closing (7x7 kernel closes small mesh gaps < 12cm while keeping doorways open)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
         closed = cv2.morphologyEx(grid, cv2.MORPH_CLOSE, kernel)
 
-        # Vectorize contours
-        contours, _ = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        # Skeletonize / thin the closed wall mask to single-pixel centerlines
+        skel = np.zeros(closed.shape, dtype=np.uint8)
+        elem = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        temp = closed.copy()
+        while True:
+            eroded = cv2.erode(temp, elem)
+            temp_open = cv2.morphologyEx(eroded, cv2.MORPH_OPEN, elem)
+            subset = cv2.subtract(eroded, temp_open)
+            skel = cv2.bitwise_or(skel, subset)
+            temp = eroded.copy()
+            if cv2.countNonZero(temp) == 0:
+                break
+
+        # Extract crisp single-stroke line segments via Probabilistic Hough Transform
+        lines = cv2.HoughLinesP(skel, rho=1, theta=np.pi / 180, threshold=15, minLineLength=18, maxLineGap=12)
         cad_segments = []
 
-        for c in contours:
-            if cv2.arcLength(c, True) < 30:
-                continue
-            approx = cv2.approxPolyDP(c, epsilon=2.5, closed=True)
-            if len(approx) < 2:
-                continue
-            pts_approx = approx.reshape(-1, 2)
-            world_pts = []
-            for pt in pts_approx:
-                wx = (pt[0] - (grid_size / 2.0)) / scale + center_x
-                wz = (pt[1] - (grid_size / 2.0)) / scale + center_z
-                world_pts.append([wx, wz])
-            world_pts = np.array(world_pts)
+        if lines is not None and len(lines) > 0:
+            deg12 = math.radians(12.0)
+            snapped = []
+            for l in lines:
+                x0, y0, x1, y1 = l[0]
+                dx = x1 - x0
+                dy = y1 - y0
+                length = math.hypot(dx, dy)
+                if length < 5:
+                    continue
+                angle = abs(math.atan2(dy, dx))
+                if angle > math.pi / 2.0:
+                    angle = math.pi - angle
+                # Snap near-orthogonal wall segments within 12 degrees of 0 deg / 90 deg
+                if angle < deg12:
+                    y_mid = int(round((y0 + y1) / 2.0))
+                    snapped.append((min(x0, x1), y_mid, max(x0, x1), y_mid, True, False))
+                elif abs(angle - math.pi / 2.0) < deg12:
+                    x_mid = int(round((x0 + x1) / 2.0))
+                    snapped.append((x_mid, min(y0, y1), x_mid, max(y0, y1), False, True))
+                else:
+                    snapped.append((x0, y0, x1, y1, False, False))
 
-            for i in range(len(world_pts)):
-                p0_w = world_pts[i].copy()
-                p1_w = world_pts[(i + 1) % len(world_pts)].copy()
-                dx = abs(p1_w[0] - p0_w[0])
-                dz = abs(p1_w[1] - p0_w[1])
-                length = np.hypot(dx, dz)
-                if length > 1e-3:
-                    # Snap near-orthogonal wall segments within 4 degrees (sin(4 deg) ~= 0.07)
-                    if dx / length < 0.07:
-                        p1_w[0] = p0_w[0]
-                    elif dz / length < 0.07:
-                        p1_w[1] = p0_w[1]
-                cad_segments.append([p0_w, p1_w])
+            # Merge collinear overlapping segments into long continuous single strokes
+            merged = []
+            horiz = [s for s in snapped if s[4]]
+            vert = [s for s in snapped if s[5]]
+            diag = [s for s in snapped if not s[4] and not s[5]]
+
+            horiz.sort(key=lambda t: (t[1], t[0]))
+            used_h = [False] * len(horiz)
+            for i in range(len(horiz)):
+                if used_h[i]:
+                    continue
+                x_start, y_curr, x_end, _, _, _ = horiz[i]
+                used_h[i] = True
+                for j in range(i + 1, len(horiz)):
+                    if used_h[j]:
+                        continue
+                    xj_start, yj, xj_end, _, _, _ = horiz[j]
+                    if abs(yj - y_curr) <= 4 and xj_start <= (x_end + 15):
+                        x_end = max(x_end, xj_end)
+                        used_h[j] = True
+                    elif yj - y_curr > 4:
+                        break
+                merged.append((x_start, y_curr, x_end, y_curr))
+
+            vert.sort(key=lambda t: (t[0], t[1]))
+            used_v = [False] * len(vert)
+            for i in range(len(vert)):
+                if used_v[i]:
+                    continue
+                x_curr, y_start, _, y_end, _, _ = vert[i]
+                used_v[i] = True
+                for j in range(i + 1, len(vert)):
+                    if used_v[j]:
+                        continue
+                    xj, yj_start, _, yj_end, _, _ = vert[j]
+                    if abs(xj - x_curr) <= 4 and yj_start <= (y_end + 15):
+                        y_end = max(y_end, yj_end)
+                        used_v[j] = True
+                    elif xj - x_curr > 4:
+                        break
+                merged.append((x_curr, y_start, x_curr, y_end))
+
+            for d in diag:
+                merged.append((d[0], d[1], d[2], d[3]))
+
+            # Map to world CAD coordinates
+            for x0, y0, x1, y1 in merged:
+                wx0 = (x0 - (grid_size / 2.0)) / scale + center_x
+                wz0 = (y0 - (grid_size / 2.0)) / scale + center_z
+                wx1 = (x1 - (grid_size / 2.0)) / scale + center_x
+                wz1 = (y1 - (grid_size / 2.0)) / scale + center_z
+                cad_segments.append([[wx0, wz0], [wx1, wz1]])
 
         if len(cad_segments) > 0:
             return np.array(cad_segments), (min_x, max_x, min_z, max_z)
@@ -186,6 +247,74 @@ def slice_mesh_xz(
     lens = np.linalg.norm(diffs, axis=1)
     valid = lens > 1e-3
     return all_segs[valid], (min_x, max_x, min_z, max_z)
+
+
+def compute_enclosed_floor_area(
+    mesh_path: Path,
+    bounds: Tuple[float, float, float, float],
+    segments_2d: np.ndarray,
+) -> float:
+    """
+    Computes genuine 2D enclosed interior floor footprint in square meters / units.
+    Uses wall-perimeter flood filling and robust 2D inlier convex hull of interior/floor vertices,
+    never thin wall-stroke area.
+    """
+    import trimesh
+    min_x, max_x, min_z, max_z = bounds
+    width_units = max(max_x - min_x, 0.1)
+    depth_units = max(max_z - min_z, 0.1)
+
+    try:
+        loaded = trimesh.load(str(mesh_path), force="mesh")
+        verts = loaded.vertices
+        verts_2d = verts[:, [0, 2]]
+        # Filter extreme 2% outliers
+        p2 = np.percentile(verts_2d, 2, axis=0)
+        p98 = np.percentile(verts_2d, 98, axis=0)
+        inlier_mask = (verts_2d[:, 0] >= p2[0]) & (verts_2d[:, 0] <= p98[0]) & (verts_2d[:, 1] >= p2[1]) & (verts_2d[:, 1] <= p98[1])
+        from scipy.spatial import ConvexHull
+        hull = ConvexHull(verts_2d[inlier_mask])
+        hull_area = float(hull.volume)
+    except Exception:
+        hull_area = float(width_units * depth_units * 0.70)
+
+    # Calculate 2D wall perimeter flood-fill area on occupancy grid
+    try:
+        import cv2
+        grid_size = 512
+        margin = 20
+        draw_size = grid_size - 2 * margin
+        scale = min(draw_size / width_units, draw_size / depth_units)
+        center_x = (min_x + max_x) / 2.0
+        center_z = (min_z + max_z) / 2.0
+
+        grid = np.zeros((grid_size, grid_size), dtype=np.uint8)
+        for seg in segments_2d:
+            px0 = int(round((grid_size / 2.0) + (seg[0, 0] - center_x) * scale))
+            pz0 = int(round((grid_size / 2.0) + (seg[0, 1] - center_z) * scale))
+            px1 = int(round((grid_size / 2.0) + (seg[1, 0] - center_x) * scale))
+            pz1 = int(round((grid_size / 2.0) + (seg[1, 1] - center_z) * scale))
+            cv2.line(grid, (px0, pz0), (px1, pz1), 255, thickness=4)
+
+        # Close doorways/gaps
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+        closed = cv2.morphologyEx(grid, cv2.MORPH_CLOSE, kernel)
+
+        # Flood fill from outside corner (0,0)
+        flood = np.pad(closed, 1, mode="constant", constant_values=0)
+        h, w = flood.shape
+        mask = np.zeros((h + 2, w + 2), np.uint8)
+        cv2.floodFill(flood, mask, (0, 0), 128)
+        flood_cropped = flood[1:-1, 1:-1]
+        interior_mask = (flood_cropped != 128)
+        flood_area = float(np.sum(interior_mask) / (scale * scale))
+
+        if 0.35 * hull_area <= flood_area <= 1.05 * hull_area:
+            return round(flood_area, 2)
+    except Exception:
+        pass
+
+    return round(max(0.65 * hull_area, min(hull_area, width_units * depth_units * 0.75)), 2)
 
 
 def render_floor_plan_svg(
@@ -241,7 +370,7 @@ def render_floor_plan_svg(
         f'  <rect x="{svg_w - 320}" y="35" width="270" height="34" rx="6" fill="{badge_color}22" stroke="{badge_color}" stroke-width="1.5"/>',
         f'  <text x="{svg_w - 185}" y="57" fill="{badge_color}" font-family="system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">{badge_text}</text>',
         '  <!-- Wall Segments -->',
-        '  <g stroke="#38BDF8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">',
+        '  <g stroke="#38BDF8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">',
     ]
 
     for seg in segments_2d:
@@ -316,7 +445,7 @@ def render_floor_plan_png(
     for seg in segments_2d:
         p0 = world_to_px(seg[0, 0], seg[0, 1])
         p1 = world_to_px(seg[1, 0], seg[1, 1])
-        draw.line([p0, p1], fill=(56, 189, 248), width=3)
+        draw.line([p0, p1], fill=(56, 189, 248), width=4)
 
     # Load default font
     font = ImageFont.load_default()
@@ -442,7 +571,7 @@ class FloorPlanStage(Stage):
         segments_2d, bounds = slice_mesh_xz(target_mesh, y_slice, y_floor=y_floor, y_ceiling=y_ceiling)
         ctx.log_cb(f"[FloorPlan] Extracted {len(segments_2d):,} 2D cross-section boundary segments.")
 
-        # Read dimensions from quality report if available
+        # Read dimensions and compute enclosed interior floor area
         dimensions = {"length": bounds[1] - bounds[0], "width": bounds[3] - bounds[2]}
         report_file = ctx.workdir / "quality_report.json"
         if report_file.exists():
@@ -451,9 +580,13 @@ class FloorPlanStage(Stage):
                 dims = rdata.get("dimensions_meters", {})
                 dimensions["length"] = dims.get("length", dimensions["length"])
                 dimensions["width"] = dims.get("width", dimensions["width"])
-                dimensions["floor_area"] = rdata.get("floor_area_sqm", dimensions["length"] * dimensions["width"] * 0.65)
             except Exception:
                 pass
+
+        # Compute genuine 2D enclosed interior floor footprint
+        enclosed_area = compute_enclosed_floor_area(target_mesh, bounds, segments_2d)
+        dimensions["floor_area"] = enclosed_area
+        ctx.log_cb(f"[FloorPlan] Enclosed interior floor area: ~{enclosed_area:.2f} (Length={dimensions['length']:.2f}, Width={dimensions['width']:.2f}).")
 
         svg_out = ctx.workdir / "floor_plan.svg"
         png_out = ctx.workdir / "floor_plan.png"
