@@ -65,6 +65,8 @@ export const MeshViewer: React.FC<Props> = ({
 
   const initialCamPos = useRef<THREE.Vector3>(new THREE.Vector3(0, 2, 5));
   const initialTarget = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
+  const pressedKeysRef = useRef<Set<string>>(new Set());
+  const modelSpanRef = useRef<number>(6.0);
 
   const getCanvasColor = (theme: CanvasTheme) => {
     switch (theme) {
@@ -85,6 +87,84 @@ export const MeshViewer: React.FC<Props> = ({
       return "white";
     });
   };
+
+  // Keyboard Event Listeners (WASD + Space/Ctrl + Shift movement with capture phase)
+  useEffect(() => {
+    const isMovementKey = (key: string, code: string) => {
+      return (
+        key === "w" || code === "keyw" ||
+        key === "s" || code === "keys" ||
+        key === "a" || code === "keya" ||
+        key === "d" || code === "keyd" ||
+        key === " " || key === "space" || code === "space" ||
+        key === "control" || code === "controlleft" || code === "controlright" ||
+        key === "shift" || code === "shiftleft" || code === "shiftright" ||
+        key === "c" || code === "keyc" ||
+        key === "arrowup" || key === "arrowdown" || key === "arrowleft" || key === "arrowright"
+      );
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const key = e.key ? e.key.toLowerCase() : "";
+      const code = e.code ? e.code.toLowerCase() : "";
+
+      if (isMovementKey(key, code)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+
+      if (key) pressedKeysRef.current.add(key);
+      if (code) pressedKeysRef.current.add(code);
+      if (e.ctrlKey) pressedKeysRef.current.add("control");
+      if (e.shiftKey) pressedKeysRef.current.add("shift");
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      const key = e.key ? e.key.toLowerCase() : "";
+      const code = e.code ? e.code.toLowerCase() : "";
+
+      if (key) pressedKeysRef.current.delete(key);
+      if (code) pressedKeysRef.current.delete(code);
+      if (!e.ctrlKey) {
+        pressedKeysRef.current.delete("control");
+        pressedKeysRef.current.delete("controlleft");
+        pressedKeysRef.current.delete("controlright");
+      }
+      if (!e.shiftKey) {
+        pressedKeysRef.current.delete("shift");
+        pressedKeysRef.current.delete("shiftleft");
+        pressedKeysRef.current.delete("shiftright");
+      }
+    };
+
+    const onBlur = () => {
+      pressedKeysRef.current.clear();
+    };
+
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    window.addEventListener("keyup", onKeyUp, { capture: true });
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onBlur);
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+      window.removeEventListener("keyup", onKeyUp, { capture: true });
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onBlur);
+    };
+  }, []);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -116,8 +196,11 @@ export const MeshViewer: React.FC<Props> = ({
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.screenSpacePanning = true;
-    controls.minDistance = 0.1;
-    controls.maxDistance = 200;
+    controls.minDistance = 0.05;
+    controls.maxDistance = 500;
+    // Neutralize default OrbitControls key listeners to prevent fighting WASD
+    controls.listenToKeyEvents = () => {};
+    controls.keys = { LEFT: "", UP: "", RIGHT: "", BOTTOM: "" };
     controlsRef.current = controls;
 
     // 5. Lights (Full multi-source illumination for glTF PBR and unlit geometry)
@@ -218,6 +301,7 @@ export const MeshViewer: React.FC<Props> = ({
             group.add(pcdObject);
 
             const dist = maxDim * 1.6;
+            modelSpanRef.current = maxDim;
             camera.position.set(dist * 0.7, dist * 0.6, dist * 0.8);
             controls.target.set(0, 0, 0);
             controls.update();
@@ -280,6 +364,7 @@ export const MeshViewer: React.FC<Props> = ({
             group.add(model);
 
             const dist = maxDim * 1.6;
+            modelSpanRef.current = maxDim;
             camera.position.set(dist * 0.7, dist * 0.6, dist * 0.8);
             controls.target.set(0, 0, 0);
             controls.update();
@@ -331,10 +416,84 @@ export const MeshViewer: React.FC<Props> = ({
     };
     window.addEventListener("resize", handleResize);
 
-    // 11. Animation Loop
+    // 11. Animation Loop with WASD Movement
     let animId: number;
+    let lastTime = performance.now();
+
     const animate = () => {
       animId = requestAnimationFrame(animate);
+      const now = performance.now();
+      const dt = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
+
+      const keys = pressedKeysRef.current;
+      if (camera && keys.size > 0) {
+        const viewDir = new THREE.Vector3();
+        camera.getWorldDirection(viewDir);
+
+        let forward = new THREE.Vector3(viewDir.x, 0, viewDir.z);
+        if (forward.lengthSq() < 1e-4) {
+          forward.set(camera.up.x, 0, camera.up.z);
+        }
+        if (forward.lengthSq() < 1e-4) {
+          forward.set(0, 0, -1);
+        } else {
+          forward.normalize();
+        }
+
+        const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+        const worldUp = new THREE.Vector3(0, 1, 0);
+
+        const moveDelta = new THREE.Vector3(0, 0, 0);
+
+        // W: Forward
+        if (keys.has("w") || keys.has("keyw") || keys.has("arrowup")) {
+          moveDelta.add(forward);
+        }
+        // S: Backward
+        if (keys.has("s") || keys.has("keys") || keys.has("arrowdown")) {
+          moveDelta.sub(forward);
+        }
+        // D: Right
+        if (keys.has("d") || keys.has("keyd") || keys.has("arrowright")) {
+          moveDelta.add(right);
+        }
+        // A: Left
+        if (keys.has("a") || keys.has("keya") || keys.has("arrowleft")) {
+          moveDelta.sub(right);
+        }
+        // Space: Up (+Y)
+        if (keys.has(" ") || keys.has("space")) {
+          moveDelta.add(worldUp);
+        }
+        // CTRL / C: Down (-Y)
+        if (
+          keys.has("control") ||
+          keys.has("controlleft") ||
+          keys.has("controlright") ||
+          keys.has("c") ||
+          keys.has("keyc")
+        ) {
+          moveDelta.sub(worldUp);
+        }
+
+        if (moveDelta.lengthSq() > 1e-6) {
+          moveDelta.normalize();
+
+          let speed = Math.max(1.0, 0.25 * modelSpanRef.current);
+          if (keys.has("shift") || keys.has("shiftleft") || keys.has("shiftright")) {
+            speed *= 2.5;
+          }
+          const distance = speed * dt;
+          moveDelta.multiplyScalar(distance);
+
+          camera.position.add(moveDelta);
+          if (controls && controls.target) {
+            controls.target.add(moveDelta);
+          }
+        }
+      }
+
       controls.autoRotate = autoRotate;
       controls.autoRotateSpeed = 2.0;
       controls.update();
@@ -612,6 +771,23 @@ export const MeshViewer: React.FC<Props> = ({
           </>
         )}
       </div>
+
+      {/* Navigation HUD Pill (WASD / Fly Mode) */}
+      {!measureMode && (
+        <div
+          className="absolute top-4 right-4 z-10 hidden sm:flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-zinc-950/80 backdrop-blur-md border border-zinc-800 text-[11px] font-mono text-zinc-400 shadow-xl select-none"
+          title="W: Forward • S: Backward • A: Left • D: Right • Space: Up • Ctrl: Down • Shift: Boost • Left-Drag: Orbit"
+        >
+          <span className="text-cyan-400 font-bold">WASD</span>
+          <span>Move</span>
+          <span className="text-zinc-600">•</span>
+          <span className="text-cyan-400 font-bold">Space/Ctrl</span>
+          <span>Up/Down</span>
+          <span className="text-zinc-600">•</span>
+          <span className="text-cyan-400 font-bold">Shift</span>
+          <span>Boost</span>
+        </div>
+      )}
 
       {/* Floating Instructions Banner (when measure mode is active) */}
       {measureMode && (

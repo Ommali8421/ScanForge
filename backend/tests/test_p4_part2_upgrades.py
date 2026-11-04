@@ -156,3 +156,4 @@ def test_spz_splat_export(tmp_path):
     loaded = spz.GaussianSplat.load(str(spz_path))
     assert loaded.num_points == N
     assert loaded.sh_degree == 2
+

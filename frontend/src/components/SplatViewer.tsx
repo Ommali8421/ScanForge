@@ -256,10 +256,38 @@ export const SplatViewer: React.FC<Props> = ({
     applyGpuClipping(cropBox);
   }, [cropBox, applyGpuClipping]);
 
+  // Helper to completely neutralize OrbitControls built-in key interception
+  const neutralizeOrbitControlsKeys = (viewerInstance: any) => {
+    if (!viewerInstance) return;
+    const ctrls = [
+      viewerInstance.controls,
+      viewerInstance.perspectiveControls,
+      viewerInstance.orthographicControls,
+    ];
+    for (const c of ctrls) {
+      if (c) {
+        try {
+          c.stopListenToKeyEvents?.();
+          c.listenToKeyEvents = () => {}; // Neutralize re-binding
+          c.keys = { LEFT: "", UP: "", RIGHT: "", BOTTOM: "" };
+          c.enableKeys = false;
+        } catch (err) {
+          console.debug("OrbitControls key neutralization notice:", err);
+        }
+      }
+    }
+    if (viewerInstance.keyDownListener) {
+      try {
+        window.removeEventListener("keydown", viewerInstance.keyDownListener);
+      } catch (_) {}
+    }
+  };
+
   // View Preset: Inside Room
   const handlePresetInside = useCallback(() => {
     setActivePreset("inside");
     if (!viewerRef.current?.camera) return;
+    neutralizeOrbitControlsKeys(viewerRef.current);
     const cam = viewerRef.current.camera;
     const controls = viewerRef.current.controls;
 
@@ -316,6 +344,7 @@ export const SplatViewer: React.FC<Props> = ({
   const handlePresetDollhouse = useCallback(() => {
     setActivePreset("dollhouse");
     if (!viewerRef.current?.camera) return;
+    neutralizeOrbitControlsKeys(viewerRef.current);
     const cam = viewerRef.current.camera;
     const controls = viewerRef.current.controls;
 
@@ -363,6 +392,7 @@ export const SplatViewer: React.FC<Props> = ({
   const handlePresetTopDown = useCallback(() => {
     setActivePreset("topdown");
     if (!viewerRef.current?.camera) return;
+    neutralizeOrbitControlsKeys(viewerRef.current);
     const cam = viewerRef.current.camera;
     const controls = viewerRef.current.controls;
 
@@ -399,6 +429,7 @@ export const SplatViewer: React.FC<Props> = ({
   // Seamless Handoff between Orbit and First-Person Walk Mode
   const toggleNavMode = useCallback(() => {
     if (!viewerRef.current?.camera) return;
+    neutralizeOrbitControlsKeys(viewerRef.current);
     const cam = viewerRef.current.camera;
     const controls = viewerRef.current.controls;
 
@@ -439,8 +470,22 @@ export const SplatViewer: React.FC<Props> = ({
     }
   }, [navMode]);
 
-  // Keyboard Event Listeners (Set<string> tracking with blur protection)
+  // Keyboard Event Listeners (Set<string> tracking with blur protection & event capturing)
   useEffect(() => {
+    const isMovementKey = (key: string, code: string) => {
+      return (
+        key === "w" || code === "keyw" ||
+        key === "s" || code === "keys" ||
+        key === "a" || code === "keya" ||
+        key === "d" || code === "keyd" ||
+        key === " " || key === "space" || code === "space" ||
+        key === "control" || code === "controlleft" || code === "controlright" ||
+        key === "shift" || code === "shiftleft" || code === "shiftright" ||
+        key === "c" || code === "keyc" ||
+        key === "arrowup" || key === "arrowdown" || key === "arrowleft" || key === "arrowright"
+      );
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (
@@ -452,31 +497,61 @@ export const SplatViewer: React.FC<Props> = ({
       ) {
         return;
       }
-      const key = e.key.toLowerCase();
-      pressedKeysRef.current.add(key);
+
+      const key = e.key ? e.key.toLowerCase() : "";
+      const code = e.code ? e.code.toLowerCase() : "";
+
+      if (isMovementKey(key, code)) {
+        // Prevent default browser behavior (e.g. Space/Arrow scrolling)
+        e.preventDefault();
+        // Stop OrbitControls on window from receiving the key and rotating or panning
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+
+      if (key) pressedKeysRef.current.add(key);
+      if (code) pressedKeysRef.current.add(code);
+      if (e.ctrlKey) pressedKeysRef.current.add("control");
+      if (e.shiftKey) pressedKeysRef.current.add("shift");
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase();
-      pressedKeysRef.current.delete(key);
+      const key = e.key ? e.key.toLowerCase() : "";
+      const code = e.code ? e.code.toLowerCase() : "";
+
+      if (key) pressedKeysRef.current.delete(key);
+      if (code) pressedKeysRef.current.delete(code);
+      if (!e.ctrlKey) {
+        pressedKeysRef.current.delete("control");
+        pressedKeysRef.current.delete("controlleft");
+        pressedKeysRef.current.delete("controlright");
+      }
+      if (!e.shiftKey) {
+        pressedKeysRef.current.delete("shift");
+        pressedKeysRef.current.delete("shiftleft");
+        pressedKeysRef.current.delete("shiftright");
+      }
     };
 
     const onBlur = () => {
       pressedKeysRef.current.clear();
     };
 
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    window.addEventListener("keyup", onKeyUp, { capture: true });
     window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onBlur);
 
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+      window.removeEventListener("keyup", onKeyUp, { capture: true });
       window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onBlur);
     };
   }, []);
 
-  // Continuous Camera-Relative 3D Movement Loop (WASD + Q/E / Space/C)
+  // Continuous Camera-Relative 3D Movement Loop:
+  // W: forward, S: backward, A: left, D: right, Space: up, Ctrl: down, Shift: speed boost
   useEffect(() => {
     let animId: number;
     let lastTime = performance.now();
@@ -495,46 +570,77 @@ export const SplatViewer: React.FC<Props> = ({
       const viewDir = new THREE.Vector3();
       cam.getWorldDirection(viewDir);
 
-      // Horizontal forward on XZ plane
-      let forwardXZ = new THREE.Vector3(viewDir.x, 0, viewDir.z);
-      if (forwardXZ.lengthSq() < 1e-6) {
-        forwardXZ.set(cam.up.x, 0, cam.up.z);
+      // Horizontal forward vector on XZ plane
+      let forward = new THREE.Vector3(viewDir.x, 0, viewDir.z);
+      if (forward.lengthSq() < 1e-4) {
+        forward.set(cam.up.x, 0, cam.up.z);
       }
-      if (forwardXZ.lengthSq() < 1e-6) {
-        forwardXZ.set(0, 0, -1);
+      if (forward.lengthSq() < 1e-4) {
+        forward.set(0, 0, -1);
       } else {
-        forwardXZ.normalize();
+        forward.normalize();
       }
 
-      // Horizontal right strafe vector = forwardXZ x (0, 1, 0)
-      const rightXZ = new THREE.Vector3().crossVectors(forwardXZ, new THREE.Vector3(0, 1, 0)).normalize();
+      // Horizontal right strafe vector = forward x (0, 1, 0)
+      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+      const worldUp = new THREE.Vector3(0, 1, 0);
 
-      const moveDelta = new THREE.Vector3();
-      if (keys.has("w") || keys.has("arrowup")) moveDelta.add(forwardXZ);
-      if (keys.has("s") || keys.has("arrowdown")) moveDelta.sub(forwardXZ);
-      if (keys.has("d") || keys.has("arrowright")) moveDelta.add(rightXZ);
-      if (keys.has("a") || keys.has("arrowleft")) moveDelta.sub(rightXZ);
-      if (keys.has("e") || keys.has(" ") || keys.has("space")) moveDelta.y += 1.0;
-      if (keys.has("q") || keys.has("c")) moveDelta.y -= 1.0;
+      const moveDelta = new THREE.Vector3(0, 0, 0);
+
+      // W: Forward
+      if (keys.has("w") || keys.has("keyw") || keys.has("arrowup")) {
+        moveDelta.add(forward);
+      }
+      // S: Backward
+      if (keys.has("s") || keys.has("keys") || keys.has("arrowdown")) {
+        moveDelta.sub(forward);
+      }
+      // D: Right
+      if (keys.has("d") || keys.has("keyd") || keys.has("arrowright")) {
+        moveDelta.add(right);
+      }
+      // A: Left
+      if (keys.has("a") || keys.has("keya") || keys.has("arrowleft")) {
+        moveDelta.sub(right);
+      }
+      // Space: Up (+Y)
+      if (keys.has(" ") || keys.has("space")) {
+        moveDelta.add(worldUp);
+      }
+      // CTRL / C: Down (-Y)
+      if (
+        keys.has("control") ||
+        keys.has("controlleft") ||
+        keys.has("controlright") ||
+        keys.has("c") ||
+        keys.has("keyc")
+      ) {
+        moveDelta.sub(worldUp);
+      }
 
       if (moveDelta.lengthSq() > 1e-6) {
         moveDelta.normalize();
 
-        // Speed modifiers: Shift = 2.5x, Alt = 0.3x
-        let speedModifier = speedMultiplierRef.current;
-        if (keys.has("shift")) speedModifier *= 2.5;
-        if (keys.has("alt")) speedModifier *= 0.3;
+        // Speed modifiers: Shift = 2.5x speed boost, Alt = 0.3x
+        let speedModifier = speedMultiplierRef.current || 1.0;
+        if (keys.has("shift") || keys.has("shiftleft") || keys.has("shiftright")) {
+          speedModifier *= 2.5;
+        }
+        if (keys.has("alt") || keys.has("altleft") || keys.has("altright")) {
+          speedModifier *= 0.3;
+        }
 
-        const baseSpeed = Math.max(0.5, 0.22 * horizontalRoomSpanRef.current);
+        const baseSpeed = Math.max(1.0, 0.25 * horizontalRoomSpanRef.current);
         const distance = baseSpeed * speedModifier * dt;
         moveDelta.multiplyScalar(distance);
 
         cam.position.add(moveDelta);
 
-        // In Orbit mode, move controls.target by the EXACT same delta so OrbitControls never snaps camera back!
-        if (navModeRef.current === "orbit" && viewerRef.current?.controls?.target) {
-          viewerRef.current.controls.target.add(moveDelta);
-          viewerRef.current.controls.update?.();
+        // Always translate controls.target by the EXACT same moveDelta so OrbitControls never rotates or fights camera!
+        const controls = viewerRef.current?.controls;
+        if (controls && controls.target) {
+          controls.target.add(moveDelta);
+          controls.update?.();
         }
       }
     };
@@ -691,6 +797,7 @@ export const SplatViewer: React.FC<Props> = ({
       });
 
       viewerRef.current = viewer;
+      neutralizeOrbitControlsKeys(viewer);
 
       viewer
         .addSplatScene(activeUrl, {
@@ -721,6 +828,7 @@ export const SplatViewer: React.FC<Props> = ({
 
           try {
             viewer.start();
+            neutralizeOrbitControlsKeys(viewer);
           } catch (e) {
             console.debug("viewer.start exception:", e);
           }
@@ -986,7 +1094,7 @@ export const SplatViewer: React.FC<Props> = ({
               ? "bg-cyan-500/25 text-cyan-200 border-cyan-500/60 shadow-cyan-500/20 ring-1 ring-cyan-500/40"
               : "bg-zinc-900/80 text-zinc-300 border-zinc-800 hover:text-white hover:bg-zinc-800"
           }`}
-          title={navMode === "walk" ? "Click to return to Orbit Mode" : "Switch to First-Person WASD Walk Mode"}
+          title="WASD: Move Forward/Back/Left/Right • Space: Up • Ctrl: Down • Shift: Speed Up"
         >
           <Footprints className="w-3.5 h-3.5 text-cyan-400" />
           <span>{navMode === "walk" ? "Walk Mode (WASD)" : "Orbit"}</span>
@@ -995,7 +1103,7 @@ export const SplatViewer: React.FC<Props> = ({
         {/* Speed Slider in HUD */}
         <div
           className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 rounded-xl bg-zinc-900/80 border border-zinc-800 text-xs backdrop-blur-md shadow-lg"
-          title="Nav Speed Multiplier (Shift=2.5x, Alt=0.3x)"
+          title="Nav Speed Multiplier (W/S/A/D: Move, Space: Up, Ctrl: Down, Shift: 2.5x Boost)"
         >
           <span className="text-[11px] font-mono text-zinc-400">Speed</span>
           <input

@@ -58,7 +58,7 @@
 | 3DGS Pre-Training Upright Y=0 Floor Alignment | **VERIFIED** | Sparse COLMAP model points and camera poses transformed into upright $Y=0.000$ frame prior to training; dataparser flags (`orientation-method none`, `center-method none`, `auto-scale-poses False`) ensure splat sits upright on floor matching meshes without spherical harmonics distortion |
 | 4-Stage Interior Floater Cleanup | **VERIFIED** | Mist culling ($\alpha < 0.05$), giant floater filter ($S > 3\times\text{median}$ / $0.5$m), spatial KDTree SOR ($k=20, \sigma=2.0$), and room envelope clipping. Retained 47-49% highest-fidelity Gaussians while eliminating exterior and boundary floaters. |
 | 32-Byte .splat Binary Web Deliverable | **VERIFIED** | Vectorized NumPy packing of linear scales, sigmoid opacity, SH DC RGB, and unit quaternions into byte-exact 32-byte `.splat` format (6.15 MB - 7.60 MB); round-trip unit tested in `backend/tests/test_phase3_splat.py` |
-| Studio Splat Viewer & WASD / Fast-vs-HD Navigation | **VERIFIED** | Built with `@mkkellogg/gaussian-splats-3d` in `frontend/src/components/SplatViewer.tsx` supporting continuous camera-relative 3D WASD loop (`requestAnimationFrame`, $dt \le 0.1$s), Pointer Lock & mouse-drag look, zero-conflict Orbit mode (synchronous `controls.target` tracking), scale-adaptive velocity ($0.22 \times \text{span}$), Speed Slider (0.2x-3.0x), Shift (2.5x) / Alt (0.3x) modifiers, 6-slider real-time crop box, and Fast (.splat, SH degree 0) vs HD Reflections (.ply, SH degree 2) toggle preserving camera pose & GPU crop-box shader uniforms (`sfCropMin`, `sfCropMax`, `sfCropEnabled`). |
+| Studio Splat & Mesh Viewers & WASD 3D Navigation | **VERIFIED** | Built in `frontend/src/components/SplatViewer.tsx` and `MeshViewer.tsx`. Full 3D camera-relative movement: W (forward), S (backward), A (strafe left), D (strafe right), Space (elevate +Y), Ctrl/C (elevate -Y), Shift (2.5x speed boost). Neutralized OrbitControls key interception via capture-phase isolation (`capture: true`) and co-translation of `controls.target` and `camera.position` by the exact same `moveDelta` vector, completely eliminating camera rotation fighting and pan inversion across all modes. Verified via `npm run build` (0 errors), `stress_test_frontend_contracts.py` (0 defects), and live container rebuild (`curl -I http://localhost:3000` -> 200 OK). |
 | Planar-Aware Hole Filling (plane_repair.py) | **VERIFIED** | Boundary-cycle extraction via `networkx.cycle_basis` and boundary-constrained 2D Delaunay triangulation on dominant planes; eliminates interior floor/ceiling tears while strictly leaving unobserved open space (windows/doorways) unbridged |
 | OpenMVS DensifyPointCloud Tuning | **VERIFIED** | DensifyPointCloud parameters (`--number-views 10`, `--number-views-fuse 2`, `--geometric-iters 3`) improve weakly-lit and textureless surface coverage |
 | Real Depth-Fusion Route B | **VERIFIED** | Verified end-to-end on RTX 4060 GPU with Depth Anything V2 Small (Apache-2.0, ~95 MB), inverse-depth disparity alignment, and Open3D UniformTSDFVolume on House (`d1fd0269`), Tour (`bd00e5c7`), and Meetingroom (`fbaf91b0`). Eliminates planar holes on smooth drywall walls and ceilings; peak VRAM < 1.8 GB. |
@@ -973,6 +973,44 @@ All 5 benchmark runs completed end-to-end with 100% success on NVIDIA RTX 4060 (
    - Collinear gap bridging increased to 0.45m along shared 0°/90° wall axes while strictly preserving doorways $\ge 0.80$m.
 5. **Docker Stack Persistence (`worker-gpu.Dockerfile`, `doctor.py`)**:
    - Standalone `gltfpack 1.3` binary and `spz` relative import fix persisted directly in Docker build and verified in `scripts/doctor.py`.
+
+---
+
+### F. Studio 3D WASD Navigation Overhaul (`SplatViewer.tsx` & `MeshViewer.tsx`)
+1. **Root Cause Analysis (Why Model Rotated on A/D and Panned Vertically on W/S)**:
+   - In `@mkkellogg/gaussian-splats-3d` (`gaussian-splats-3d.umd.cjs`), `OrbitControls` defaults to `this.keys = { LEFT: 'KeyA', UP: 'KeyW', RIGHT: 'KeyD', BOTTOM: 'KeyS' }` and registers `controls.listenToKeyEvents(window)`.
+   - When **W** or **S** was pressed, OrbitControls intercepted the keystroke as `UP`/`BOTTOM` and executed `pan(0, keyPanSpeed)` (screen-space vertical up/down pan).
+   - When **A** or **D** was pressed, OrbitControls intercepted the keystroke as `LEFT`/`RIGHT` and executed `rotateLeft()` or `pan()`, rotating the model rather than strafing horizontally.
+   - Changing `camera.position` in a custom loop without simultaneously translating `controls.target` caused OrbitControls to compute a new spherical orientation pointing back at the old target, fighting the camera and causing disorienting model spin.
+   - `MeshViewer.tsx` lacked a WASD loop, so keys either triggered default OrbitControls arrow pan or were unhandled.
+
+2. **Complete Dual-Viewer Implementation**:
+   - **OrbitControls Key Neutralization (`SplatViewer.tsx` & `MeshViewer.tsx`)**:
+     - Explicitly called `controls.stopListenToKeyEvents()`, overrode `controls.listenToKeyEvents = () => {}`, cleared `controls.keys = { LEFT: "", UP: "", RIGHT: "", BOTTOM: "" }`, and removed `viewer.keyDownListener`.
+     - Neutralization re-invoked on viewer instantiation, splat scene load completion, navigation mode toggles, and all preset camera resets ("Inside Room", "Dollhouse", "Top Down").
+   - **Capturing-Phase Event Isolation (`capture: true`)**:
+     - Registered `window.addEventListener("keydown", onKeyDown, { capture: true })` and `keyup` listeners.
+     - When any movement key is pressed (`W`, `A`, `S`, `D`, `Space`, `Control`, `Shift`, `C`, or Arrows), `e.preventDefault()`, `e.stopPropagation()`, and `e.stopImmediatePropagation()` are immediately invoked, completely stopping browser scrolling and preventing OrbitControls from intercepting the event.
+     - Ignores key events when focused on input fields (`INPUT`, `TEXTAREA`, `SELECT`, `isContentEditable`) and clears keys on window `blur`.
+   - **Full 3D Camera-Relative Translation Vector**:
+     - **W**: Forward along horizontal ground projection $\mathbf{f} = \frac{(v_x, 0, v_z)}{\|(v_x, 0, v_z)\|}$ (with vertical look fallback).
+     - **S**: Backward ($-\mathbf{f}$).
+     - **A**: Strafe Left ($-\mathbf{r}$ where $\mathbf{r} = \mathbf{f} \times (0, 1, 0)$).
+     - **D**: Strafe Right ($+\mathbf{r}$).
+     - **Space**: Elevate Up ($+Y$ world elevation).
+     - **CTRL / C**: Elevate Down ($-Y$ world elevation; aliased to `C` to protect users against accidental browser `Ctrl+W` tab closing).
+     - **Shift**: 2.5x Speed Boost multiplier.
+     - **Alt**: 0.3x Precision Crawl modifier.
+   - **Co-Translation of `controls.target` and `camera.position`**:
+     - Both `camera.position.add(moveDelta)` and `controls.target.add(moveDelta)` are executed simultaneously in the animation loop. Because the vector between camera and target remains invariant under pure translation, OrbitControls never snaps, rotates, or fights the user.
+   - **MeshViewer Navigation HUD**:
+     - Added navigation badge to `MeshViewer.tsx` (`WASD Move • Space/Ctrl Up/Down • Shift Boost`) mirroring `SplatViewer.tsx`.
+
+3. **Empirical Verification**:
+   - Frontend TypeScript compilation and Vite production bundle succeeded cleanly in **2.94s** (`dist/assets/index-LDKgzqUi.js`, 0 errors).
+   - `python3 scripts/stress_test_frontend_contracts.py` completed with **0 defects** (`VERDICT: APPROVE`).
+   - Container `scanforge-frontend-1` recreated and running; `curl -I http://localhost:3000` returns `HTTP/1.1 200 OK`.
+   - `docker compose exec -T worker-gpu pytest tests/test_p4_part2_upgrades.py` passes 4/4 in 1.34s.
 
 
 

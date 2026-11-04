@@ -142,3 +142,4 @@ def synthesize_pbr_maps(
     cv2.imwrite(str(roughness_map_path), cv2.cvtColor(pbr_packed, cv2.COLOR_RGB2BGR))
 
     return dilated_diffuse_path, normal_map_path, roughness_map_path
+
