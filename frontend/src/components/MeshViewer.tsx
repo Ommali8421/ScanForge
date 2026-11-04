@@ -201,6 +201,7 @@ export const MeshViewer: React.FC<Props> = ({
     // Neutralize default OrbitControls key listeners to prevent fighting WASD
     controls.listenToKeyEvents = () => {};
     controls.keys = { LEFT: "", UP: "", RIGHT: "", BOTTOM: "" };
+    (controls as any).handleKeyDown = () => {};
     controlsRef.current = controls;
 
     // 5. Lights (Full multi-source illumination for glTF PBR and unlit geometry)

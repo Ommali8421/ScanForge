@@ -259,17 +259,26 @@ export const SplatViewer: React.FC<Props> = ({
   // Helper to completely neutralize OrbitControls built-in key interception
   const neutralizeOrbitControlsKeys = (viewerInstance: any) => {
     if (!viewerInstance) return;
+    const seen = new Set();
     const ctrls = [
       viewerInstance.controls,
       viewerInstance.perspectiveControls,
       viewerInstance.orthographicControls,
     ];
     for (const c of ctrls) {
-      if (c) {
+      if (c && !seen.has(c)) {
+        seen.add(c);
         try {
-          c.stopListenToKeyEvents?.();
+          if (c._domElementKeyEvents) {
+            c.stopListenToKeyEvents?.();
+          }
+        } catch (err) {
+          console.debug("stopListenToKeyEvents notice:", err);
+        }
+        try {
           c.listenToKeyEvents = () => {}; // Neutralize re-binding
           c.keys = { LEFT: "", UP: "", RIGHT: "", BOTTOM: "" };
+          c.handleKeyDown = () => {}; // Kill keydown handler completely
           c.enableKeys = false;
         } catch (err) {
           console.debug("OrbitControls key neutralization notice:", err);
@@ -279,6 +288,7 @@ export const SplatViewer: React.FC<Props> = ({
     if (viewerInstance.keyDownListener) {
       try {
         window.removeEventListener("keydown", viewerInstance.keyDownListener);
+        viewerInstance.keyDownListener = () => {};
       } catch (_) {}
     }
   };
