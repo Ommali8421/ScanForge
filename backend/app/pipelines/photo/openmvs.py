@@ -815,6 +815,25 @@ class OpenMVSTextureStage(Stage):
 
         texture_png = ctx.workdir / "scene_textured.png"
         preview_textured_glb = ctx.workdir / "preview_textured.glb"
+        normal_map_png = ctx.workdir / "normal_map.png"
+        roughness_map_png = ctx.workdir / "roughness_map.png"
+
+        # Apply 4px UV gutter dilation and synthesize tangent-space Normal Map & PBR Roughness Map
+        if texture_png.exists():
+            try:
+                from app.pipelines.mesh.pbr_baker import synthesize_pbr_maps
+                ctx.log_cb("[OpenMVS] Baking 4px UV gutter dilation, tangent-space Normal Map, and PBR Roughness Map...")
+                dilated_diffuse, norm_path, rough_path = synthesize_pbr_maps(
+                    diffuse_path=texture_png,
+                    output_dir=ctx.workdir,
+                    relief_k=0.85,
+                    roughness_range=(0.45, 0.95),
+                )
+                if dilated_diffuse.exists():
+                    shutil.copy2(dilated_diffuse, texture_png)
+                ctx.log_cb("[OpenMVS] Generated normal_map.png and roughness_map.png successfully.")
+            except Exception as e:
+                ctx.log_cb(f"[OpenMVS] Notice: PBR map synthesis skipped: {e}")
 
         # Orient textured mesh so up = +Y
         try:
@@ -840,6 +859,10 @@ class OpenMVSTextureStage(Stage):
             outputs.append(texture_png)
         if preview_textured_glb.exists():
             outputs.append(preview_textured_glb)
+        if normal_map_png.exists():
+            outputs.append(normal_map_png)
+        if roughness_map_png.exists():
+            outputs.append(roughness_map_png)
 
         ctx.log_cb(
             f"[OpenMVS] Textured mesh completed: {output_glb.name} ({output_glb.stat().st_size / (1024*1024):.2f} MB)"

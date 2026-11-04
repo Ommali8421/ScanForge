@@ -674,8 +674,36 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
             # Synchronize mesh.glb with the scaled GLB
             out_mesh_glb = workdir / "mesh.glb"
             shutil.copy2(out_glb, out_mesh_glb)
+
+            # Re-run gltfpack on mesh.glb so the calibrated download preserves web quantization/meshopt compression
+            gltfpack_bin = shutil.which("gltfpack")
+            if gltfpack_bin:
+                try:
+                    packed_cal = workdir / "mesh_packed_cal.glb"
+                    cmd_gp = [
+                        gltfpack_bin,
+                        "-i", str(out_mesh_glb),
+                        "-o", str(packed_cal),
+                        "-cf",
+                        "-kn", "-km", "-ke",
+                        "-vp", "14",
+                        "-vt", "12",
+                        "-vn", "8",
+                    ]
+                    res = subprocess.run(cmd_gp, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+                    if res.returncode == 0 and packed_cal.exists() and packed_cal.stat().st_size > 0:
+                        shutil.move(str(packed_cal), str(out_mesh_glb))
+                        from app.pipelines.mesh.floor_align import fix_glb_pbr_materials
+                        fix_glb_pbr_materials(out_mesh_glb)
+                        preview_glb = workdir / "preview_textured.glb"
+                        shutil.copy2(out_mesh_glb, preview_glb)
+                except Exception as e_cal:
+                    logger.warning(f"gltfpack calibration sync notice: {e_cal}")
+
             if art_dir.exists():
-                shutil.copy2(out_glb, art_dir / "mesh.glb")
+                shutil.copy2(out_mesh_glb, art_dir / "mesh.glb")
+                if (workdir / "preview_textured.glb").exists():
+                    shutil.copy2(workdir / "preview_textured.glb", art_dir / "preview_textured.glb")
 
             # Synchronize PLY, STL, XYZ, OBJ ZIP, FBX, USDZ deliverables so /download/* never serves 1.0x stale geometry
             try:
@@ -793,11 +821,30 @@ def calibrate_scale(id: str, payload: CalibrateRequest):
                 pack_ply_to_splat(out_ply, out_splat, scale_factor=1.0)
                 shutil.copy2(out_splat, workdir / "model.splat")
 
+                # Also update compressed .spz
+                out_spz = workdir / "cleaned_splat.spz"
+                try:
+                    import spz
+                    splat_obj = spz.GaussianSplat(
+                        positions=np.ascontiguousarray(np.column_stack([vdata["x"], vdata["y"], vdata["z"]]), dtype=np.float32),
+                        scales=np.ascontiguousarray(np.column_stack([vdata["scale_0"], vdata["scale_1"], vdata["scale_2"]]), dtype=np.float32),
+                        rotations=np.ascontiguousarray(np.column_stack([vdata["rot_0"], vdata["rot_1"], vdata["rot_2"], vdata["rot_3"]]), dtype=np.float32),
+                        alphas=np.ascontiguousarray(vdata["opacity"], dtype=np.float32),
+                        colors=np.ascontiguousarray(np.column_stack([vdata["f_dc_0"], vdata["f_dc_1"], vdata["f_dc_2"]]), dtype=np.float32),
+                    )
+                    splat_obj.save(str(out_spz))
+                    shutil.copy2(out_spz, workdir / "model.spz")
+                except Exception as e_spz:
+                    logger.debug(f"spz calibration update notice: {e_spz}")
+
                 if art_dir.exists():
                     shutil.copy2(out_ply, art_dir / "cleaned_splat.ply")
                     shutil.copy2(out_ply, art_dir / "model.ply")
                     shutil.copy2(out_splat, art_dir / "cleaned_splat.splat")
                     shutil.copy2(out_splat, art_dir / "model.splat")
+                    if out_spz.exists():
+                        shutil.copy2(out_spz, art_dir / "cleaned_splat.spz")
+                        shutil.copy2(out_spz, art_dir / "model.spz")
         except Exception as e:
             logger.warning(f"Error during gaussian_splat recalibration: {e}")
 

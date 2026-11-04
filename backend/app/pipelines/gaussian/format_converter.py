@@ -153,13 +153,44 @@ class SplatFormatConverterStage(Stage):
         has_spz = False
         try:
             import spz
-            # If spz provides conversion utility or pack function
-            if hasattr(spz, "pack"):
-                ctx.log_cb("[FormatConverter] Generating compressed .spz format...")
-                # spz.pack implementation if available
+            from plyfile import PlyData
+            pdata = PlyData.read(str(input_ply))
+            vertex = pdata["vertex"].data
+            N = len(vertex)
+            if N > 0:
+                pos = np.ascontiguousarray(np.column_stack([vertex["x"], vertex["y"], vertex["z"]]), dtype=np.float32)
+                scales = np.ascontiguousarray(np.column_stack([vertex["scale_0"], vertex["scale_1"], vertex["scale_2"]]), dtype=np.float32)
+                rots = np.ascontiguousarray(np.column_stack([vertex["rot_0"], vertex["rot_1"], vertex["rot_2"], vertex["rot_3"]]), dtype=np.float32)
+                alphas = np.ascontiguousarray(vertex["opacity"], dtype=np.float32)
+                colors = np.ascontiguousarray(np.column_stack([vertex["f_dc_0"], vertex["f_dc_1"], vertex["f_dc_2"]]), dtype=np.float32)
+
+                sh_keys = [k for k in vertex.dtype.names if k.startswith("f_rest_")]
+                sh_deg = 0
+                sph_harm = None
+                if len(sh_keys) >= 24:
+                    sh_deg = 2
+                    sph_harm = np.ascontiguousarray(np.column_stack([vertex[k] for k in sh_keys[:24]]), dtype=np.float32)
+                elif len(sh_keys) >= 9:
+                    sh_deg = 1
+                    sph_harm = np.ascontiguousarray(np.column_stack([vertex[k] for k in sh_keys[:9]]), dtype=np.float32)
+
+                splat_obj = spz.GaussianSplat(
+                    positions=pos,
+                    scales=scales,
+                    rotations=rots,
+                    alphas=alphas,
+                    colors=colors,
+                    sh_degree=sh_deg,
+                    spherical_harmonics=sph_harm,
+                )
+                splat_obj.save(str(spz_file))
+                shutil.copy2(spz_file, ctx.workdir / "model.spz")
                 has_spz = True
+                spz_mb = spz_file.stat().st_size / (1024 * 1024)
+                ctx.log_cb(f"[FormatConverter] Exported compressed .spz splat: {spz_file.name} ({spz_mb:.2f} MB, Degree-{sh_deg} SH).")
         except Exception as e:
-            logger.debug(f"spz optional conversion skipped: {e}")
+            logger.debug(f"spz export error: {e}")
+            ctx.log_cb(f"[FormatConverter] Notice: .spz export skipped: {e}")
 
         # 3. Create ZIP bundle
         zip_path = ctx.workdir / "splat.zip"
@@ -187,7 +218,7 @@ class SplatFormatConverterStage(Stage):
         if cameras_json.exists():
             out_files.append(cameras_json)
         if has_spz and spz_file.exists():
-            out_files.append(spz_file)
+            out_files.extend([spz_file, ctx.workdir / "model.spz"])
 
         return StageResult(
             success=True,

@@ -131,6 +131,32 @@ class MeshExportStage(Stage):
             export_mesh.export(str(out_glb))
             from app.pipelines.mesh.floor_align import fix_glb_pbr_materials
             fix_glb_pbr_materials(out_glb)
+
+            # Apply gltfpack quantization and meshopt compression with -cf fallback (maintaining Blender 4.1 compatibility)
+            gltfpack_bin = shutil.which("gltfpack")
+            if gltfpack_bin:
+                try:
+                    packed_glb = ctx.workdir / "mesh_packed.glb"
+                    cmd_gp = [
+                        gltfpack_bin,
+                        "-i", str(out_glb),
+                        "-o", str(packed_glb),
+                        "-cf",
+                        "-kn", "-km", "-ke",
+                        "-vp", "14",
+                        "-vt", "12",
+                        "-vn", "8",
+                    ]
+                    res = subprocess.run(cmd_gp, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+                    if res.returncode == 0 and packed_glb.exists() and packed_glb.stat().st_size > 0:
+                        shutil.move(str(packed_glb), str(out_glb))
+                        fix_glb_pbr_materials(out_glb)
+                        preview_glb = ctx.workdir / "preview_textured.glb"
+                        shutil.copy2(out_glb, preview_glb)
+                        ctx.log_cb(f"[{self.name}] Applied gltfpack quantization and meshopt compression (-cf fallback) -> {out_glb.stat().st_size / (1024*1024):.2f} MB.")
+                except Exception as e_gp:
+                    ctx.log_cb(f"[{self.name}] Notice: gltfpack optimization skipped: {e_gp}")
+
             exported_files.append(out_glb)
         except Exception as e:
             ctx.log_cb(f"[{self.name}] Warning: GLB export failed: {e}")

@@ -155,6 +155,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN curl -sSL https://download.blender.org/release/Blender4.1/blender-4.1.0-linux-x64.tar.xz | tar -xJ -C /opt/ && \
     ln -sf /opt/blender-4.1.0-linux-x64/blender /usr/local/bin/blender
 
+# Install gltfpack 1.3 for fast meshopt compression and KHR_mesh_quantization
+RUN curl -sSL https://github.com/zeux/meshoptimizer/releases/download/v1.3/gltfpack-ubuntu.zip -o /tmp/gltfpack.zip && \
+    python3 -c "import zipfile, shutil, os; z = zipfile.ZipFile('/tmp/gltfpack.zip'); z.extractall('/tmp/gltfpack_bin'); shutil.copy2('/tmp/gltfpack_bin/gltfpack', '/usr/local/bin/gltfpack'); os.chmod('/usr/local/bin/gltfpack', 0o755); shutil.rmtree('/tmp/gltfpack_bin'); os.remove('/tmp/gltfpack.zip')"
+
 # Copy compiled binaries from existing worker image and symlink to /usr/local/bin
 COPY --from=scanforge-worker-gpu:latest /opt/colmap /opt/colmap
 COPY --from=scanforge-worker-gpu:latest /opt/openmvs /opt/openmvs
@@ -190,7 +194,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     /opt/venv/bin/pip install -c /opt/constraints.txt --find-links https://docs.gsplat.studio/whl/ gsplat && \
     /opt/venv/bin/pip install -c /opt/constraints.txt nerfstudio && \
-    (/opt/venv/bin/pip install -c /opt/constraints.txt spz || echo "spz fallback")
+    (/opt/venv/bin/pip install -c /opt/constraints.txt spz || echo "spz fallback") && \
+    (sed -i 's/from spz import/from .spz import/' /opt/venv/lib/python3.11/site-packages/spz/__init__.py 2>/dev/null || true)
 
 # Install backend dependencies (Open3D, Trimesh, FastAPI, etc.)
 WORKDIR /workspace

@@ -489,6 +489,29 @@ class FloorAlignAndScaleStage(Stage):
 
         meta_file.write_text(json.dumps(meta, indent=2))
 
+        # Attach synthesized PBR textures (Normal and Roughness maps) if available
+        normal_png = ctx.workdir / "normal_map.png"
+        roughness_png = ctx.workdir / "roughness_map.png"
+        diffuse_png = ctx.workdir / "scene_textured.png"
+
+        if normal_png.exists() and roughness_png.exists() and diffuse_png.exists():
+            try:
+                from PIL import Image
+                diff_img = Image.open(str(diffuse_png))
+                norm_img = Image.open(str(normal_png))
+                rough_img = Image.open(str(roughness_png))
+                aligned_mesh.visual.material = trimesh.visual.material.PBRMaterial(
+                    baseColorTexture=diff_img,
+                    normalTexture=norm_img,
+                    metallicRoughnessTexture=rough_img,
+                    metallicFactor=0.0,
+                    roughnessFactor=1.0,
+                    doubleSided=True,
+                )
+                ctx.log_cb(f"[{self.name}] Attached PBR textures (normalTexture, metallicRoughnessTexture) to aligned master mesh.")
+            except Exception as e:
+                ctx.log_cb(f"[{self.name}] Notice: PBR texture attachment fallback ({e})")
+
         ctx.log_cb(f"[{self.name}] (80%) Exporting aligned assets: aligned_textured.glb, aligned_mesh.ply, preview_textured.glb...")
         aligned_mesh.export(str(out_glb))
         shutil.copy2(out_glb, preview_glb)
@@ -507,6 +530,8 @@ class FloorAlignAndScaleStage(Stage):
                 scale=1.0,
                 target_up=target_up
             )
+            if hasattr(aligned_mesh.visual, "material"):
+                unscaled_mesh.visual.material = aligned_mesh.visual.material
             unscaled_mesh.export(str(unscaled_glb))
 
         # Also export untextured geometry PLY

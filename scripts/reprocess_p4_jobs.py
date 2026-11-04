@@ -21,7 +21,7 @@ def clean_and_run_splat_mesh(job_id: str):
     print(f"==========================================")
     workdir = storage_service.get_job_workdir(job_id)
     stages = [
-        "splat_mesher", "mesh_cleanup", "plane_repair", "decimate",
+        "splat_format_converter", "splat_mesher", "mesh_cleanup", "plane_repair", "decimate",
         "openmvs_texture", "floor_align_scale", "floor_plan",
         "quality_report", "mesh_export"
     ]
@@ -35,7 +35,7 @@ def clean_and_run_splat_mesh(job_id: str):
         "mesh_splat_raw.ply", "mesh_dense.ply", "mesh_cleaned.ply",
         "mesh_repaired.ply", "mesh_decimated.ply", "scene_textured.*",
         "aligned_*", "mesh.*", "preview_textured.glb", "floor_plan.*",
-        "floor_alignment.json"
+        "floor_alignment.json", "*.spz", "normal_map.png", "roughness_map.png"
     ]
     for pat in patterns:
         for f in workdir.glob(pat):
@@ -68,7 +68,7 @@ def clean_and_run_depth_fusion(job_id: str):
         "mesh_tsdf_raw.ply", "mesh_dense.ply", "mesh_cleaned.ply",
         "mesh_repaired.ply", "mesh_decimated.ply", "scene_textured.*",
         "aligned_*", "mesh.*", "preview_textured.glb", "floor_plan.*",
-        "floor_alignment.json"
+        "floor_alignment.json", "normal_map.png", "roughness_map.png"
     ]
     for pat in patterns:
         for f in workdir.glob(pat):

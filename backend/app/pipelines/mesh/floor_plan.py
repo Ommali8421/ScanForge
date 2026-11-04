@@ -185,6 +185,12 @@ def slice_mesh_xz(
                     snapped.append((x0, y0, x1, y1, False, False))
 
             # Merge collinear overlapping segments into long continuous single strokes
+            # Gap-bridging along shared 0°/90° wall axes up to 0.45 units (while keeping >= 0.80 doorways open)
+            gap_bridge_px = max(15, int(round(0.45 * scale)))
+            doorway_px = max(25, int(round(0.80 * scale)))
+            gap_bridge_px = min(gap_bridge_px, doorway_px - 2)
+            transverse_tol_px = max(4, int(round(0.10 * scale)))
+
             merged = []
             horiz = [s for s in snapped if s[4]]
             vert = [s for s in snapped if s[5]]
@@ -201,10 +207,10 @@ def slice_mesh_xz(
                     if used_h[j]:
                         continue
                     xj_start, yj, xj_end, _, _, _ = horiz[j]
-                    if abs(yj - y_curr) <= 4 and xj_start <= (x_end + 15):
+                    if abs(yj - y_curr) <= transverse_tol_px and xj_start <= (x_end + gap_bridge_px):
                         x_end = max(x_end, xj_end)
                         used_h[j] = True
-                    elif yj - y_curr > 4:
+                    elif yj - y_curr > transverse_tol_px:
                         break
                 merged.append((x_start, y_curr, x_end, y_curr))
 
@@ -219,10 +225,10 @@ def slice_mesh_xz(
                     if used_v[j]:
                         continue
                     xj, yj_start, _, yj_end, _, _ = vert[j]
-                    if abs(xj - x_curr) <= 4 and yj_start <= (y_end + 15):
+                    if abs(xj - x_curr) <= transverse_tol_px and yj_start <= (y_end + gap_bridge_px):
                         y_end = max(y_end, yj_end)
                         used_v[j] = True
-                    elif xj - x_curr > 4:
+                    elif xj - x_curr > transverse_tol_px:
                         break
                 merged.append((x_curr, y_start, x_curr, y_end))
 

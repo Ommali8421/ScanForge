@@ -131,3 +131,17 @@ When `scan_type="gaussian_splat"` and `include_mesh=True`, ScanForge trains a hi
    - Use `mesh_route="auto"`. The auto-route classifier reliably diagnoses scene texture and track density, directing sparse-track walkthroughs to Route B and dense scenes to Route A.
 4. **For 3D Gaussian Splatting:**
    - Always enable `include_mesh=True` when architectural deliverables (CAD/BIM mesh, FBX/USDZ, and 2D floor plans) are required alongside photorealistic 3DGS visualization.
+
+---
+
+## 6. High-Impact 3D Quality Upgrades (PBR, Decimation, Compression & .spz)
+
+| Feature | Implementation | Performance & Visual Verification |
+|---|---|---|
+| **UV Gutter Dilation** | `dilate_uv_gutters(gutter_px=4)` in `pbr_baker.py` dilates diffuse RGB atlas pixels 4px across chart boundary seams into background voids | Eliminates black/grey mipmap seam artifacts when viewing meshes from distance or grazing angles |
+| **Tangent-Space Normal Map** | High-pass luminance gradient ($Y_{\text{hp}} = Y - \text{GaussianBlur}(Y, (9,9), 2.0)$) scaled by $k=0.85/255.0$ with 2px chart seam erosion | Emits `normal_map.png` ($[128, 128, 255]$ neutral baseline). Embedded as `normalTexture` in `mesh.glb` with Three.js `normalScale.set(0.45, 0.45)` for crisp surface relief under dynamic studio lighting |
+| **PBR Roughness Map** | Local standard deviation / variance normalized to $[0.45, 0.95]$ with default $0.85$ matte fill outside UV charts; packed with `metallic=0` | Emits `roughness_map.png` embedded as `metallicRoughnessTexture` in `mesh.glb`; prevents artificial gloss while rendering realistic drywall, carpet, and wood response |
+| **Border-Locked Decimation** | `boundary_weight = 10.0` passed to Open3D quadric decimation in `decimate.py` | Strictly locks open door and window boundary loops, preventing perimeter collapse and portal tearing during simplification |
+| **Fast Web GLB Compression** | `gltfpack -cf -kn -km -vp 14 -vt 12 -vn 8` applied in `exporters.py` to `mesh.glb` and `preview_textured.glb` | Compact 14-bit position and 12-bit UV quantization via `KHR_mesh_quantization` and `EXT_meshopt_compression` with uncompressed fallback (`-cf`) for 100% Blender 4.1 import compatibility. Decoded client-side via Three.js `MeshoptDecoder` |
+| **Compressed .spz Splat Export** | Native `spz.GaussianSplat` Python/Rust encoder in `format_converter.py` using C-contiguous arrays | Emits `cleaned_splat.spz` and `model.spz` with Degree-2 Spherical Harmonics (~11x smaller: 75 MB PLY $\to$ 7.19 MB .spz; 10 MB .splat $\to$ 5.97 MB .spz). Packed into `splat.zip` and exposed in Deliverables Vault |
+| **Collinear Wall Dash Bridging** | Increased collinear gap bridging to 0.45m in `floor_plan.py` along shared 0°/90° wall axes while strictly preserving doorways $\ge 0.80$m | Connects broken dashed wall strokes into continuous architectural CAD lines while keeping doorways unobstructed |

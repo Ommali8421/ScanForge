@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
@@ -235,6 +236,7 @@ export const MeshViewer: React.FC<Props> = ({
         );
       } else {
         const gltfLoader = new GLTFLoader();
+        gltfLoader.setMeshoptDecoder(MeshoptDecoder);
         gltfLoader.load(
           modelUrl,
           (gltf) => {
@@ -243,7 +245,7 @@ export const MeshViewer: React.FC<Props> = ({
             }
             const model = gltf.scene;
 
-            // Fix glTF materials: ensure metalness=0, roughness=1, double-sided, and sRGB color space
+            // Fix glTF materials: ensure metalness=0, roughness=1, double-sided, sRGB color space, and normal scale
             model.traverse((child) => {
               if ((child as THREE.Mesh).isMesh) {
                 const mesh = child as THREE.Mesh;
@@ -255,6 +257,10 @@ export const MeshViewer: React.FC<Props> = ({
                     mat.metalness = 0.0; // Prevent pitch-black render without HDR env map
                     mat.roughness = 1.0;
                     mat.side = THREE.DoubleSide; // Render both exterior and interior faces
+                    if (mat.normalMap) {
+                      mat.normalScale.set(0.45, 0.45);
+                      mat.normalMap.needsUpdate = true;
+                    }
                     if (mat.map) {
                       mat.map.colorSpace = THREE.SRGBColorSpace;
                       mat.map.needsUpdate = true;

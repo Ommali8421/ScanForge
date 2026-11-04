@@ -99,11 +99,11 @@ class DecimateStage(Stage):
             target_mesh = o3d_mesh
         else:
             ctx.log_cb(
-                f"[Decimate] Decimating from {initial_faces:,} to {poly_target:,} faces (boundary_weight=1.0)..."
+                f"[Decimate] Decimating from {initial_faces:,} to {poly_target:,} faces with border locking (boundary_weight=10.0)..."
             )
             target_mesh = o3d_mesh.simplify_quadric_decimation(
                 target_number_of_triangles=poly_target,
-                boundary_weight=1.0,
+                boundary_weight=10.0,
             )
 
         # Post-decimation plane-safe spike filter:

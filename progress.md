@@ -42,7 +42,7 @@
 | Nginx Reverse Proxy (Port 3000) | **VERIFIED** | Reverse-proxies UI (`/`) and API (`/api/`) with chunked transfer and disabled buffering. Configured with dynamic Docker DNS resolver (`127.0.0.11 valid=10s`) and dynamic upstream variable binding to prevent 502 Bad Gateway / Connection Refused on container recreations (`fa04d9e`). Tested with 43 MB video upload (`enhanced_interior_tour_1080p.mp4`). |
 | Artifact Generation & Download | **VERIFIED** | Validated download of generated `.ply`, `.png`, and `.json` outputs, including directory artifacts |
 | Scale Calibration Math | **VERIFIED** | Two consecutive calibrations tested, verifying cumulative scale factor `1.5 * 2.0 = 3.0` |
-| Backend Pytest Suite | **VERIFIED** | 175/175 tests passing in container (`test_phase4_depth_fusion.py`, `test_phase5_hardening.py`, `test_sfm_diagnostic.py`, `test_portability.py`, `test_colmap_compat.py`, `test_ingest_crop_and_cuts.py`, `test_phase2_mesh.py`, `test_phase3_exporters.py`, `test_phase3_splat.py`, `test_tier1_feature_coverage.py`, `test_tier2_boundaries_corners.py`, `test_adversarial_geometry.py`, etc.) |
+| Backend Pytest Suite | **VERIFIED** | 179/179 tests passing in container (`test_p4_part2_upgrades.py`, `test_phase4_depth_fusion.py`, `test_phase5_hardening.py`, `test_sfm_diagnostic.py`, `test_portability.py`, `test_colmap_compat.py`, `test_ingest_crop_and_cuts.py`, `test_phase2_mesh.py`, `test_phase3_exporters.py`, `test_phase3_splat.py`, `test_tier1_feature_coverage.py`, `test_tier2_boundaries_corners.py`, `test_adversarial_geometry.py`, etc.) |
 | Dynamic VRAM Detection & Tiers | **VERIFIED** | Tested `SCANFORGE_VRAM_GB` override vs `nvidia-smi` total memory minus 0.5 GB safety margin; logs tier selection and source; preserves 2000 px COLMAP cap on 8 GB tier (`f1ec5ac`) |
 | Ingest Auto-Crop & Multi-Criteria Cut Filter | **VERIFIED** | Auto-detected letterbox bars (`cropdetect=24:2:0`); cropped 60px top/bottom bars on `enhanced_interior_tour_1080p.mp4` to 1080x1800 (`65a594e`). Multi-criteria cut validation rejected false cuts on textureless walls and exposure shifts while preserving real sequence cuts. |
 | Adaptive Keyframe Extraction | **VERIFIED** | Evaluated frames with Laplacian sharpness scoring, Farneback optical flow, and homography rotation check |
@@ -70,6 +70,10 @@
 | Pre-Flight Low-Disk Space Guard (HTTP 507) | **VERIFIED** | Pre-flight check rejects uploads with `HTTP 507 Insufficient Storage` if available disk is below `SCANFORGE_MIN_FREE_DISK_GB=5.0`. Unit and integration tested in `test_phase5_hardening.py`. |
 | Storage Lifecycle Purge & Scratch File Cleanup | **VERIFIED** | Automated TTL job cleanup deletes jobs older than 30 days (`SCANFORGE_JOB_TTL_DAYS`). `POST /api/jobs/{id}/cleanup-scratch` reclaims > 80% disk space per job by pruning raw depth maps and dense point clouds while preserving all deliverables. |
 | Actionable Error Diagnostics & Remediation | **VERIFIED** | `classify_error` maps exceptions to structured error codes (`ERR_LOW_SFM_REGISTRATION`, `ERR_MOTION_BLUR`, `ERR_PURE_ROTATION`, `ERR_CUDA_OOM`, `ERR_CORRUPT_INPUT`, `ERR_GENERIC_FAILURE`) and renders interactive remediation checklists in UI. |
+| Tangent-Space Normal & Roughness PBR Baking | **VERIFIED** | 4px UV gutter dilation (`pbr_baker.py`) stops mipmap bleed; high-pass luminance gradient ($Y - \text{GaussianBlur}(Y)$) with 2px seam erosion synthesizes `normal_map.png` ($[128, 128, 255]$ baseline); local variance maps `roughness_map.png` ($[0.45, 0.95]$); both embedded in `mesh.glb` with Three.js `normalScale.set(0.45, 0.45)`. |
+| Border-Locked Decimation & Web GLB Compression | **VERIFIED** | Open boundary loops locked with `boundary_weight = 10.0` in `decimate.py` to prevent doorway/window portal tearing; `gltfpack -cf -kn -km -vp 14 -vt 12 -vn 8` compresses web GLB assets with `KHR_mesh_quantization` + `EXT_meshopt_compression` (with uncompressed fallback for 100% Blender 4.1 import); decoded client-side via `MeshoptDecoder`. |
+| Compressed .spz Splat Export | **VERIFIED** | Native `spz.GaussianSplat` Python/Rust encoder generates `.spz` preserving Degree 1 & 2 Spherical Harmonics (~11x smaller: 75 MB PLY $\to$ 7.19 MB .spz); exported as `cleaned_splat.spz` and `model.spz`, bundled into `splat.zip`, and exposed in Deliverables Vault. |
+| Collinear Wall Dash Bridging | **VERIFIED** | `floor_plan.py` bridges collinear wall gaps along shared 0°/90° axes up to 0.45m while strictly preserving doorways ($\ge 0.80$m); emits continuous architectural lines. |
 | Apple LiDAR / Record3D Ingestion | **UNVERIFIED** | P6 scope; behind feature flag `ENABLE_LIDAR=false` |
 | Public GitHub Backup | **VERIFIED** | Pushed to `https://github.com/Ommali8421/ScanForge.git` (`origin/main`); zero secrets or personal emails |
 
@@ -943,11 +947,32 @@ All 5 benchmark runs completed end-to-end with 100% success on NVIDIA RTX 4060 (
 ---
 
 ### D. Comprehensive Verification Gate
-- **Full Backend Pytest Suite**: **175 / 175 tests passing** in `scanforge-worker-gpu-1` (0 failures, 1 deprecation warning from Starlette).
-- **Production Frontend Build**: `npm run build` completes in **3.05s** with 0 errors.
+- **Full Backend Pytest Suite**: **179 / 179 tests passing** in `scanforge-worker-gpu-1` (0 failures, 1 deprecation warning from Starlette).
+- **Production Frontend Build**: `npm run build` completes in **2.76s** with 0 errors.
 - **Contract Stress Harness**: `scripts/stress_test_frontend_contracts.py` passes with **0 defects** (`VERDICT: APPROVE`).
-- **Stack Environment Diagnostics**: `doctor.py` reports `[OK]` across all tool binaries, CUDA sm_89, PyTorch, gsplat, nerfstudio, and Apache-2.0 Depth Anything V2 Small checkpoint.
+- **Stack Environment Diagnostics**: `doctor.py` reports `[OK]` across all tool binaries (including `gltfpack 1.3` and native `spz`), CUDA sm_89, PyTorch, gsplat, nerfstudio, and Apache-2.0 Depth Anything V2 Small checkpoint.
 - **Live System Endpoints**: `http://localhost:3000/api/health` and `/api/capabilities` return `200 OK`.
+
+---
+
+### E. Part 2: High-Impact 3D Quality Upgrades & Deliverables
+1. **PBR Normal & Roughness Map Baking (`pbr_baker.py`)**:
+   - 4px UV gutter dilation (`dilate_uv_gutters`) applied to diffuse atlas prior to derivative calculations, eliminating mipmap seam bleeding.
+   - High-pass luminance gradient ($Y_{\text{hp}} = Y - \text{GaussianBlur}(Y, (9,9), 2.0)$) scaled by $k = 0.85/255.0$ with 2px UV chart seam erosion synthesizes tangent-space `normal_map.png` ($[128, 128, 255]$ baseline).
+   - Local luminance standard deviation normalized to $[0.45, 0.95]$ with $0.85$ matte fill outside charts generates `roughness_map.png` (`metallic=0`).
+   - Maps embedded into `aligned_textured.glb` and quantized `mesh.glb`. In `MeshViewer.tsx`, `material.normalScale.set(0.45, 0.45)` renders realistic surface relief under Three.js lighting.
+2. **Border-Locked Decimation & Web GLB Compression (`decimate.py`, `exporters.py`, `MeshViewer.tsx`)**:
+   - `boundary_weight = 10.0` passed to quadric decimation, locking boundary loops around doorways and window portals.
+   - `gltfpack -cf -kn -km -vp 14 -vt 12 -vn 8` compresses web GLB models with `KHR_mesh_quantization` + `EXT_meshopt_compression` while retaining uncompressed fallback buffers for 100% Blender 4.1 import compatibility.
+   - Three.js `GLTFLoader` in `MeshViewer.tsx` wired with `MeshoptDecoder` for instant client-side decoding.
+   - `aligned_textured.glb` preserved as uncompressed master for `/calibrate` and Blender FBX/USDZ exports; automatically re-quantized during scale calibration.
+3. **Compressed .spz Splat Export (`format_converter.py`, `JobDetail.tsx`)**:
+   - Integrated native `spz` Python/Rust library with C-contiguous float32 arrays, preserving Degree 1 & 2 Spherical Harmonics (~11x smaller: 75 MB PLY $\to$ 7.19 MB .spz; 10 MB .splat $\to$ 5.97 MB .spz).
+   - Exports `cleaned_splat.spz` and `model.spz`, bundled into `splat.zip`, and surfaced in the Deliverables Export Vault.
+4. **CAD Floor Plan Collinear Wall Bridging (`floor_plan.py`)**:
+   - Collinear gap bridging increased to 0.45m along shared 0°/90° wall axes while strictly preserving doorways $\ge 0.80$m.
+5. **Docker Stack Persistence (`worker-gpu.Dockerfile`, `doctor.py`)**:
+   - Standalone `gltfpack 1.3` binary and `spz` relative import fix persisted directly in Docker build and verified in `scripts/doctor.py`.
 
 
 

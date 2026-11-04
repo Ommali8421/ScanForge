@@ -235,13 +235,26 @@ class PlaneRepairStage(Stage):
         # Normal agreement threshold: |n_v . n_p| > 0.9
         normal_agreement_thresh = 0.90
 
+        # Strengthened smooth C1 planar floor regularization for pillowy TSDF bumps (within 0.06 * H_room)
+        h_room = 3.0
+        analysis_json = ctx.workdir / "room_analysis.json"
+        if analysis_json.exists():
+            try:
+                ra_data = json.loads(analysis_json.read_text())
+                h_room = float(ra_data.get("room_height") or ra_data.get("dimensions", {}).get("height") or 3.0)
+            except Exception:
+                h_room = 3.0
+
+        floor_snap_thresh = max(snap_thresh, 0.06 * h_room)
+        floor_normal_agreement = 0.82
+
         vertices_moved = 0
         max_displacement = 0.0
         displacements = []
 
         ctx.log_cb(
             f"[PlaneRepair] Snapping vertices with |n_v . n_p| > {normal_agreement_thresh} "
-            f"within distance {snap_thresh:.4f}..."
+            f"within distance {snap_thresh:.4f} (floor snap thresh: {floor_snap_thresh:.4f}, agreement: {floor_normal_agreement})..."
         )
 
         # 1. Normal-aware plane snapping and corner handling
@@ -259,13 +272,17 @@ class PlaneRepairStage(Stage):
                 d = plane["d"]
                 dot = abs(float(np.dot(nv, np_vec)))
 
-                if dot > normal_agreement_thresh:
+                is_floor = (plane.get("name") == "floor")
+                p_thresh = floor_snap_thresh if is_floor else snap_thresh
+                p_agree = floor_normal_agreement if is_floor else normal_agreement_thresh
+
+                if dot > p_agree:
                     dist = abs(float(np.dot(np_vec, v) + d))
-                    if dist <= snap_thresh:
+                    if dist <= p_thresh:
                         # Soft C1 falloff to prevent sawtooth tearing at boundaries/shelves:
                         # Full weight at dist -> 0 and dot -> 1, smoothly tapering to 0 at cutoff edges
-                        w_dist = smoothstep(snap_thresh, 0.0, dist)
-                        w_norm = smoothstep(normal_agreement_thresh, 1.0, dot)
+                        w_dist = smoothstep(p_thresh, 0.0, dist)
+                        w_norm = smoothstep(p_agree, 1.0, dot)
                         w = w_dist * w_norm
                         matching_planes.append((plane, dist, w))
 

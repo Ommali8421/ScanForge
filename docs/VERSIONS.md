@@ -27,6 +27,7 @@ Pinned versions for all ScanForge external tools, Docker base images, Python pac
 | VCGLib | `cdcseacave/VCG` | OpenMVS geometry library dependency |
 | FFmpeg | `4.4.2` | `ffmpeg -version` |
 | Blender | `4.1.0` | `blender --version` |
+| gltfpack | `1.3` | `gltfpack -v` |
 
 ---
 
@@ -46,6 +47,7 @@ Pinned versions for all ScanForge external tools, Docker base images, Python pac
 | `opencv-python-headless` | `4.10.0.84` | Video decoding, sharpness, optical flow & trajectory rendering |
 | `gsplat` | `1.4.0` | 3D Gaussian Splatting rasterizer (verified sm_89 CUDA 12.1) |
 | `nerfstudio` | `1.1.5` | splatfacto model training (verified headless P3) |
+| `spz` | `0.0.1` | Native C++/Rust 3D Gaussian Splat compression library (Niantic) |
 
 ---
 

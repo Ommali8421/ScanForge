@@ -510,6 +510,7 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
                   const all = job.artifacts || [];
                   const hasModelSplat = all.some((a) => a.filename === "model.splat");
                   const hasModelPly = all.some((a) => a.filename === "model.ply");
+                  const hasModelSpz = all.some((a) => a.filename === "model.spz");
                   const hasModelGlb = all.some((a) => a.filename === "model.glb" || a.filename === "mesh.glb");
 
                   const deliverables = all.filter((art) => {
@@ -534,6 +535,7 @@ export const JobDetail: React.FC<Props> = ({ jobId, onBack }) => {
                     // Deduplicate cleaned vs model
                     if (hasModelSplat && fn === "cleaned_splat.splat") return false;
                     if (hasModelPly && fn === "cleaned_splat.ply") return false;
+                    if (hasModelSpz && fn === "cleaned_splat.spz") return false;
                     if (hasModelGlb && (fn.startsWith("preview_") || fn.startsWith("scene_"))) return false;
 
                     const validExts = [".splat", ".ply", ".spz", ".glb", ".gltf", ".zip", ".fbx", ".usdz", ".stl", ".xyz"];

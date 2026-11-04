@@ -166,6 +166,7 @@ def main():
     check_command("OpenMVS ReconstructMesh", ["ReconstructMesh", "--help"], "OpenMVS ReconstructMesh is required for real GPU photogrammetry.")
     check_command("OpenMVS TextureMesh", ["TextureMesh", "--help"], "OpenMVS TextureMesh is required for real GPU photogrammetry.")
     check_command("Blender", ["blender", "--version"], "Blender is required for FBX/USDZ conversions.")
+    check_command("gltfpack", ["gltfpack", "-v"], "Install gltfpack for glTF meshopt compression and KHR_mesh_quantization.")
     check_command("Nerfstudio ns-train", ["ns-train", "--help"], "Nerfstudio ns-train is required for 3D Gaussian Splatting.", timeout=15)
     check_command("Nerfstudio ns-export", ["ns-export", "--help"], "Nerfstudio ns-export is required for 3D Gaussian Splatting.", timeout=15)
 
@@ -206,6 +207,12 @@ def main():
         print_status("Trimesh", True, f"v{trimesh.__version__}")
     except ImportError:
         print_status("Trimesh", False, "Not installed in active Python environment", "Install trimesh for format exports.")
+
+    try:
+        import spz
+        print_status("spz", True, "Native C/Rust library loaded (GaussianSplat)")
+    except Exception as e:
+        print_status("spz", False, f"Failed to import ({e})", "Ensure spz is installed and relative import patched.")
 
     print("\n--- P4 Depth Pipeline ---")
     da_module = Path("/workspace/backend/app/pipelines/depth/depth_anything_v2/dpt.py")
