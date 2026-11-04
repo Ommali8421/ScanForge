@@ -133,7 +133,47 @@ List scan jobs with pagination.
 
 #### `GET /api/jobs/{id}`
 Retrieve complete job status, stage logs, and generated artifacts.
-- **Response `200 OK`**: Job object (detailed).
+- **Response `200 OK`**:
+  ```json
+  {
+    "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "status": "completed",
+    "scan_type": "photo",
+    "quality": "standard",
+    "current_stage": "export",
+    "progress": 100,
+    "cumulative_scale": 1.0,
+    "error": null,
+    "error_code": null,
+    "error_details": null,
+    "log_tail": ["[COLMAP] Registered 293 / 293 frames (100.0%)"],
+    "options": {
+      "mesh_route": "auto"
+    },
+    "output_formats": ["glb", "obj", "ply"],
+    "original_filename": "room.mp4",
+    "created_at": "2026-10-09T10:00:00Z",
+    "started_at": "2026-10-09T10:00:05Z",
+    "completed_at": "2026-10-09T10:02:15Z",
+    "artifacts": []
+  }
+  ```
+- **Error Diagnostics Schema**:
+  When `status` is `"failed"`, `error_code` contains a machine-readable failure category (`ERR_LOW_SFM_REGISTRATION`, `ERR_MOTION_BLUR`, `ERR_PURE_ROTATION`, `ERR_CUDA_OOM`, `ERR_CORRUPT_INPUT`, or `ERR_GENERIC_FAILURE`), and `error_details` provides structured guidance:
+  ```json
+  {
+    "error_code": "ERR_LOW_SFM_REGISTRATION",
+    "error_details": {
+      "title": "Insufficient Camera Registration",
+      "reason": "SfM registered fewer than 60% of video frames due to poor feature matches or low overlap.",
+      "checklist": [
+        "Aim for > 70% frame overlap.",
+        "Walk in a slow, continuous perimeter loop around the room.",
+        "Ensure even lighting; avoid featureless blank walls by including corners or furniture in view."
+      ]
+    }
+  }
+  ```
 
 #### `GET /api/jobs/{id}/events`
 Server-Sent Events (SSE) stream for real-time progress and logging.
@@ -142,7 +182,8 @@ Server-Sent Events (SSE) stream for real-time progress and logging.
   - `stage`: `{"stage": "mesh_reconstruct", "progress": 45, "message": "Densifying point cloud"}`
   - `log`: `{"timestamp": "10:01:02", "line": "[OpenMVS] Points: 154,230"}`
   - `completed`: `{"job_id": "...", "status": "completed"}`
-  - `error`: `{"job_id": "...", "status": "failed", "error": "CUDA out of memory"}`
+  - `cancelled`: `{"job_id": "...", "status": "cancelled", "message": "Job cancelled by user"}`
+  - `error`: `{"job_id": "...", "status": "failed", "error": "CUDA out of memory", "error_code": "ERR_CUDA_OOM", "error_details": {...}}`
 
 #### `POST /api/jobs/{id}/cancel`
 Cancel a queued or currently executing job across container boundaries via Redis bridge (`scanforge:cancel:{id}`). Kills active subprocesses and their process groups (`os.killpg`) within `< 3.0s`, freeing GPU VRAM immediately. Job status transitions to `cancelled` (never `failed`).

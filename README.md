@@ -4,8 +4,8 @@
 
 [![License](https://img.shields.io/badge/license-MIT%20%2F%20AGPL--3.0-blue.svg)](docs/LICENSES.md)
 [![Hardware](https://img.shields.io/badge/GPU-RTX%204060%20(8%20GB%20VRAM)-green.svg)](AGENTS.md)
-[![Status](https://img.shields.io/badge/Milestone-P2c%20Phase%202%20Verified-brightgreen.svg)](progress.md)
-[![Tests](https://img.shields.io/badge/tests-50%2F50%20passing-success.svg)](progress.md)
+[![Status](https://img.shields.io/badge/Milestone-P5%20Hardened%20%26%20Verified-brightgreen.svg)](progress.md)
+[![Tests](https://img.shields.io/badge/tests-175%2F175%20passing-success.svg)](progress.md)
 
 ---
 
@@ -28,7 +28,7 @@ ScanForge enforces strict verification honesty and living project tracking. Befo
 | **M1–M2** | High-fidelity indoor mesh optimization & studio UI/UX redesign | **Done & Verified** | Spatial 3D studio, Dark/Light theme, interactive user guide, 153/153 tests pass |
 | **P3** | 3D Gaussian Splatting (`splatfacto` / `gsplat`) + upright $Y=0.000$ alignment + .splat converter + Studio SplatViewer | **Done & Verified** | Upright post-export orientation, 1-click view presets, photorealistic proof renders across 4 indoor datasets |
 | **P4** | Route B (depth-fusion mesh) + mesh-inclusive 3DGS + Auto heuristic + floor plan + room dimensions | **Done & Verified** | Depth Anything V2 Small (Apache-2.0), TSDF fusion, Kabsch transform (100% texture coverage, 0.0% void), Manhattan yaw alignment, architectural CAD floor plans (`floor_plan.svg`, `floor_plan.png`) |
-| **P5** | Production Hardening: process-group cancel, crash resume, disk guards, scratch purge, structured error diagnostics, WASD controls | **Done & Verified** | Cross-container cancel via Redis bridge, `POST /api/jobs/{id}/resume`, HTTP 507 low-disk rejection, 170/170 tests passing |
+| **P5** | Production Hardening: process-group cancel, crash resume, disk guards, scratch purge, structured error diagnostics, WASD controls | **Done & Verified** | Cross-container cancel via Redis bridge, `POST /api/jobs/{id}/resume`, HTTP 507 low-disk rejection, 175/175 tests passing |
 | **P6** | LiDAR / RGB-D pipeline (feature-flagged `ENABLE_LIDAR=false`) + synthetic test data | **Next Milestone** | Ready to start |
 
 ---
@@ -160,7 +160,7 @@ scanforge/
 │   │   ├── queue/          # RQ Redis queue worker & job dispatch
 │   │   └── services/       # Job, storage, and event streaming services
 │   ├── scripts/            # Blender headless rendering & composite sheet scripts
-│   └── tests/              # Pytest unit & integration test suite (50 tests)
+│   └── tests/              # Pytest unit & integration test suite (175 tests)
 │
 ├── frontend/               # React + TypeScript + Vite + Tailwind web application
 │   ├── src/

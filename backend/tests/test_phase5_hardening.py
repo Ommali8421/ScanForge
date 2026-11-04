@@ -199,3 +199,121 @@ def test_crash_resume_endpoint_and_cache_skipping(test_client, tmp_path):
     resp_invalid = test_client.post(f"/api/jobs/{job_id}/resume")
     assert resp_invalid.status_code == 400
     assert "Only failed or cancelled jobs" in resp_invalid.json()["detail"]
+
+
+def test_pipeline_idempotent_stage_caching_skips_upstream(tmp_path):
+    """Verify Pipeline skips completed upstream stages via .cache_<stage>.json upon resume."""
+    from app.pipelines.base import Pipeline
+
+    class MockStage1(Stage):
+        name = "mock_stage_1"
+        weight = 1.0
+        declared_outputs = ["stage1_output.txt"]
+        call_count = 0
+
+        def run(self, ctx: JobContext) -> StageResult:
+            self.call_count += 1
+            out = ctx.workdir / "stage1_output.txt"
+            out.write_text("stage 1 done")
+            return StageResult(success=True, output_files=[out])
+
+    class MockStage2(Stage):
+        name = "mock_stage_2"
+        weight = 1.0
+        declared_outputs = ["stage2_output.txt"]
+        call_count = 0
+
+        def run(self, ctx: JobContext) -> StageResult:
+            self.call_count += 1
+            out = ctx.workdir / "stage2_output.txt"
+            out.write_text("stage 2 done")
+            return StageResult(success=True, output_files=[out])
+
+    s1 = MockStage1()
+    s2 = MockStage2()
+    pipeline = Pipeline("mock", [s1, s2])
+
+    ctx = JobContext(
+        job_id="test-cache-job",
+        workdir=tmp_path,
+        params={"quality": "standard"},
+        cancel_token=CancelToken(),
+        progress_cb=lambda s, p, m: None,
+        log_cb=lambda m: None,
+    )
+
+    # First run: both stages execute
+    pipeline.run(ctx)
+    assert s1.call_count == 1
+    assert s2.call_count == 1
+    assert (tmp_path / ".cache_mock_stage_1.json").exists()
+    assert (tmp_path / ".cache_mock_stage_2.json").exists()
+
+    # Second run (simulating resume): both stages should be skipped via cache!
+    s1_resumed = MockStage1()
+    s2_resumed = MockStage2()
+    pipeline_resumed = Pipeline("mock", [s1_resumed, s2_resumed])
+
+    pipeline_resumed.run(ctx)
+    assert s1_resumed.call_count == 0  # SKIPPED
+    assert s2_resumed.call_count == 0  # SKIPPED
+
+
+def test_cleanup_expired_jobs_ttl_atomic_deletion(tmp_path):
+    """Verify cleanup_expired_jobs deletes jobs older than TTL and removes files in tmp_path."""
+    from datetime import datetime, timezone, timedelta
+    from app.services.cleanup import cleanup_expired_jobs
+
+    expired_id = "test-expired-job-111"
+    fresh_id = "test-fresh-job-222"
+
+    # Create directories in tmp_path
+    expired_dir = tmp_path / expired_id
+    expired_dir.mkdir(parents=True)
+    (expired_dir / "mesh.glb").write_text("old mesh")
+
+    fresh_dir = tmp_path / fresh_id
+    fresh_dir.mkdir(parents=True)
+    (fresh_dir / "mesh.glb").write_text("new mesh")
+
+    # Add jobs to database
+    with Session(engine) as session:
+        # 35 days ago (older than 30 day TTL)
+        old_time = datetime.now(timezone.utc) - timedelta(days=35)
+        j_old = Job(
+            id=expired_id,
+            status="completed",
+            scan_type="photo",
+            quality="draft",
+            original_filename="old.mp4",
+            created_at=old_time
+        )
+        j_fresh = Job(
+            id=fresh_id,
+            status="completed",
+            scan_type="photo",
+            quality="draft",
+            original_filename="fresh.mp4",
+            created_at=datetime.now(timezone.utc)
+        )
+        session.add(j_old)
+        session.add(j_fresh)
+        session.commit()
+
+    def mock_delete_files(jid):
+        d = tmp_path / jid
+        if d.exists():
+            shutil.rmtree(d)
+
+    with patch("app.services.cleanup.storage_service.delete_job_files", side_effect=mock_delete_files):
+        deleted = cleanup_expired_jobs()
+        assert deleted >= 1
+
+    # Verify expired job deleted from DB and files removed
+    with Session(engine) as session:
+        assert session.get(Job, expired_id) is None
+        assert session.get(Job, fresh_id) is not None
+
+    assert not expired_dir.exists()
+    assert fresh_dir.exists()
+
