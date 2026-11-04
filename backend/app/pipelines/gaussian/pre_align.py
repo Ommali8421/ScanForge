@@ -101,6 +101,132 @@ def align_sparse_model(
     return point_count
 
 
+def generate_planar_seeds(
+    aligned_points_file: Path,
+    chosen_floor: Optional[Dict[str, Any]],
+    wall_planes: List[Dict[str, Any]],
+    R_total: np.ndarray,
+    t_vec: np.ndarray,
+    max_seeds: int = 40000,
+    max_total_points: int = 110000,
+) -> int:
+    """
+    Augments aligned sparse points with stratified planar seed points on SIFT-sparse
+    wall and floor regions. Capped at max_seeds and max_total_points <= 110,000.
+    Returns number of newly added seed points.
+    """
+    if not aligned_points_file.exists():
+        return 0
+
+    lines = [l for l in aligned_points_file.read_text().splitlines() if not l.startswith("#") and l.strip()]
+    if not lines:
+        return 0
+
+    pts = []
+    max_pid = 0
+    for l in lines:
+        parts = l.split()
+        if len(parts) >= 7:
+            try:
+                pid = int(parts[0])
+                if pid > max_pid:
+                    max_pid = pid
+                pts.append([float(parts[1]), float(parts[2]), float(parts[3]), int(parts[4]), int(parts[5]), int(parts[6])])
+            except (ValueError, IndexError):
+                continue
+
+    if not pts:
+        return 0
+
+    pts_arr = np.array(pts)
+    curr_count = len(pts_arr)
+    budget = min(max_seeds, max(0, max_total_points - curr_count))
+    if budget < 50:
+        return 0
+
+    candidate_planes = []
+    if chosen_floor and chosen_floor.get("qualifies", True):
+        candidate_planes.append(("floor", chosen_floor))
+    for w in (wall_planes or []):
+        if w.get("inliers", 0) >= 30:
+            candidate_planes.append(("wall", w))
+
+    if not candidate_planes:
+        return 0
+
+    seeds_per_plane = max(100, budget // len(candidate_planes))
+    new_seeds = []
+
+    for ptype, pinfo in candidate_planes:
+        if len(new_seeds) >= budget:
+            break
+        fn_raw = np.array(pinfo.get("normal", [0.0, 1.0, 0.0]), dtype=float)
+        fd_raw = float(pinfo.get("d", 0.0))
+        fn_norm = np.linalg.norm(fn_raw)
+        if fn_norm < 1e-6:
+            continue
+        fn_raw /= fn_norm
+
+        # Transform plane to aligned space:
+        fn_al = R_total @ fn_raw
+        fn_al_norm = np.linalg.norm(fn_al)
+        if fn_al_norm < 1e-6:
+            continue
+        fn_al /= fn_al_norm
+        fd_al = fd_raw - float(np.dot(fn_raw, R_total.T @ t_vec))
+
+        # Distances of existing aligned points to aligned plane
+        dists = np.abs(np.dot(pts_arr[:, :3], fn_al) + fd_al)
+        inliers = pts_arr[dists < 0.08]
+        if len(inliers) < 30:
+            continue
+
+        bmin = inliers[:, :3].min(axis=0)
+        bmax = inliers[:, :3].max(axis=0)
+        median_rgb = np.clip(np.median(inliers[:, 3:6], axis=0), 0, 255).astype(int)
+
+        n_side = int(math.isqrt(seeds_per_plane))
+        n_side = max(10, min(n_side, 60))
+
+        if ptype == "floor":
+            xs = np.linspace(bmin[0], bmax[0], n_side)
+            zs = np.linspace(bmin[2], bmax[2], n_side)
+            gx, gz = np.meshgrid(xs, zs)
+            gy = np.full_like(gx, 0.0)  # Leveled floor is at Y=0.000
+            grid = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
+        else:
+            # Wall plane
+            tangent = np.cross(fn_al, np.array([0.0, 1.0, 0.0]))
+            t_norm = np.linalg.norm(tangent)
+            if t_norm < 1e-4:
+                continue
+            tangent /= t_norm
+
+            h_proj = inliers[:, :3] @ tangent
+            y_proj = inliers[:, 1]
+            h_vals = np.linspace(float(np.percentile(h_proj, 2)), float(np.percentile(h_proj, 98)), n_side)
+            y_vals = np.linspace(float(np.percentile(y_proj, 2)), float(np.percentile(y_proj, 98)), max(10, n_side // 2))
+            gh, gy = np.meshgrid(h_vals, y_vals)
+
+            p0 = -fd_al * fn_al
+            grid = p0 + np.outer(gh.ravel(), tangent) + np.column_stack([np.zeros_like(gy.ravel()), gy.ravel(), np.zeros_like(gy.ravel())])
+
+        for pt in grid:
+            if len(new_seeds) >= budget:
+                break
+            new_seeds.append((pt[0], pt[1], pt[2], median_rgb[0], median_rgb[1], median_rgb[2]))
+
+    if not new_seeds:
+        return 0
+
+    with open(aligned_points_file, "a") as fout:
+        for idx, s in enumerate(new_seeds):
+            pid = max_pid + 1 + idx
+            fout.write(f"{pid} {s[0]:.6f} {s[1]:.6f} {s[2]:.6f} {s[3]} {s[4]} {s[5]} 1.000000\n")
+
+    return len(new_seeds)
+
+
 class PreTrainFloorAlignStage(Stage):
     """
     Pre-train stage that aligns the COLMAP sparse model so Nerfstudio trains
@@ -180,8 +306,9 @@ class PreTrainFloorAlignStage(Stage):
         P_rot = P @ R_total.T
 
         if chosen_floor is not None:
+            thresh = min(0.02 * scene_diag, 0.05)
             dists = np.abs(np.dot(P, fn_oriented) + fd_oriented)
-            inlier_mask = dists < (0.02 * scene_diag)
+            inlier_mask = dists < thresh
             if np.sum(inlier_mask) >= 30:
                 y_floor = float(np.median(P_rot[inlier_mask, 1]))
             else:
@@ -205,6 +332,23 @@ class PreTrainFloorAlignStage(Stage):
         # Output aligned sparse directory
         dest_sparse = ctx.workdir / "aligned_sparse" / "0"
         transformed_pts_count = align_sparse_model(src_sparse, dest_sparse, R_total, t_vec)
+
+        # Planar surface seeding on SIFT-sparse wall/floor regions (up to 40k points, max total <= 110k)
+        new_seeds_count = generate_planar_seeds(
+            aligned_points_file=dest_sparse / "points3D.txt",
+            chosen_floor=chosen_floor,
+            wall_planes=wall_planes,
+            R_total=R_total,
+            t_vec=t_vec,
+            max_seeds=40000,
+            max_total_points=110000,
+        )
+        total_pts = transformed_pts_count + new_seeds_count
+        if new_seeds_count > 0:
+            ctx.log_cb(
+                f"[PreTrainAlign] Augmented sparse cloud with {new_seeds_count:,} stratified planar seed points "
+                f"across detected wall/floor planes (total: {total_pts:,} points <= 110,000 budget)."
+            )
 
         # Prepare Nerfstudio data directory
         ns_data_dir = ctx.workdir / "nerfstudio_data"
@@ -236,7 +380,8 @@ class PreTrainFloorAlignStage(Stage):
             "y_floor": y_floor,
             "center_x": c_x,
             "center_z": c_z,
-            "transformed_points": transformed_pts_count,
+            "transformed_points": total_pts,
+            "planar_seeds_added": new_seeds_count,
             "has_verified_floor": chosen_floor is not None,
         }
 

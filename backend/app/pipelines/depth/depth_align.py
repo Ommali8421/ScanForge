@@ -347,11 +347,13 @@ class DepthAlignStage(Stage):
 
             raw_fits.append((s_est, t_est, inliers, raw_disp))
 
-        # Interpolate frames with low inliers (< 3) from nearest confident neighbors
-        valid_indices = [i for i, f in enumerate(raw_fits) if f[2] >= 3]
+        # Interpolate frames with low inliers (< 15) from nearest confident neighbors
+        valid_indices = [i for i, f in enumerate(raw_fits) if f[2] >= 15]
+        if not valid_indices:
+            valid_indices = [i for i, f in enumerate(raw_fits) if f[2] >= 5]
         if valid_indices:
             for i, f in enumerate(raw_fits):
-                if f[2] < 3:
+                if f[2] < 15:
                     # Find nearest valid index
                     nearest_idx = min(valid_indices, key=lambda vi: abs(vi - i))
                     raw_fits[i] = (raw_fits[nearest_idx][0], raw_fits[nearest_idx][1], f[2], f[3])

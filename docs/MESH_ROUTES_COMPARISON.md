@@ -104,15 +104,16 @@ When `scan_type="gaussian_splat"` and `include_mesh=True`, ScanForge trains a hi
 | Metric | Measured Value |
 |---|---|
 | **Input Dataset** | `enhanced_interior_tour_1080p.mp4` (67 calibrated keyframes) |
-| **3DGS Training** | 15,000 steps `splatfacto` via Nerfstudio |
+| **3DGS Training** | 15,000 steps `splatfacto` via Nerfstudio with high-realism flags: `--pipeline.model.use-bilateral-grid True`, `--pipeline.model.camera-optimizer.mode SO3xR3`, `--pipeline.model.rasterize-mode antialiased`, `--train-split-fraction 1.0` |
+| **Planar Seed Augmentation** | Up to 40,000 stratified planar seed points on SIFT-sparse wall/floor planes (total initial points capped $\le 110,000$, peak VRAM $< 3.5$ GB) |
 | **Gaussian Count** | 316,806 cleaned Gaussians (`cleaned_splat.ply`, 75 MB; `model.splat`, 9.7 MB) |
-| **Splat Mesher TSDF** | Rendered expected depth into Open3D `UniformTSDFVolume` (`res=384`, `sdf_trunc=8*voxel`) |
+| **Splat Mesher TSDF** | Rendered expected depth into Open3D `UniformTSDFVolume` (`res=384`, `sdf_trunc=8*voxel`), Sobel gradient edge masking ($|\nabla z|/z > 0.08 \rightarrow 0$), 5x5 median blur, alpha $\ge 0.70$ |
 | **Co-Registration Alignment** | Exact Kabsch/SVD rigid transform to raw COLMAP `sparse/0` poses (max error $8.09 \times 10^{-5}$) |
-| **Texture Coverage** | **100.0%** (185,655 / 185,655 faces textured; 0.0% untextured grey void) |
+| **Texture Coverage** | **100.0%** (185,655 / 185,655 faces textured; 0.0% untextured grey void; 99.97% room pixel coverage in viewport) |
 | **Post-Processing Chain** | SplatMesher → MeshCleanup → PlaneRepair → Decimate → OpenMVSTexture → FloorAlign → FloorPlan → MeshExport |
 | **Final Mesh Geometry** | 102,710 vertices, 185,655 faces |
-| **Manhattan Yaw Snapping** | $\theta_{\text{peak}} = 84.5^\circ$, $\Delta\text{yaw} = +5.5^\circ$; all walls squared to $0^\circ, 90^\circ, 180^\circ, 270^\circ$ |
-| **Floor Leveling** | Floor leveled to $Y = 0.000$, horizontal center at $(0, 0)$ |
+| **Manhattan Yaw Snapping** | $\theta_{\text{peak}} = 84.5^\circ$, $\Delta\text{yaw} = +5.5^\circ$; all walls squared to $0^\circ, 90^\circ, 180^\circ, 270^\circ$ via 90-bin wrap-around padded histogram |
+| **Floor Leveling** | Floor leveled to $Y = 0.000$ (median inlier $Y = +0.000000$, mean $Y = -0.006$m; $|Y_{\text{floor}}| < 0.02$ verified) via bounded 5cm inlier threshold |
 | **PBR Material Defaults** | `doubleSided=True`, `metallicFactor=0.0`, `roughnessFactor=1.0` |
 | **Floor Plan Artifacts** | `floor_plan.svg` (90 KB), `floor_plan.png` (52 KB), 1,560 CAD segments |
 | **All Export Formats** | `.glb` (14 MB), `.fbx` (17 MB), `.usdz` (26 MB), `.stl` (12 MB), `.ply` (9.5 MB), `.xyz` (13 MB), `.obj.zip` (14 MB) |

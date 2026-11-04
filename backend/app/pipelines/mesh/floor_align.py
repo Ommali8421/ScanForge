@@ -216,8 +216,9 @@ def apply_alignment_and_scale_to_mesh(
     # If a verified floor plane exists, use the median of floor inliers.
     # Otherwise (mandatory gravity fallback), level using the 5th-percentile bottom vertices.
     if fn_oriented is not None:
+        thresh = min(0.02 * diag, 0.05)
         dists = np.abs(np.dot(verts, fn_oriented) + fd_oriented)
-        inlier_mask = dists < 0.02 * diag
+        inlier_mask = dists < thresh
         floor_inliers_count = int(np.sum(inlier_mask))
         if floor_inliers_count >= 30:
             Y_floor = float(np.median(V_rot[inlier_mask, up_idx]))

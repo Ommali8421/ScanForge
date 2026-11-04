@@ -123,6 +123,14 @@ class TSDFFusionStage(Stage):
                 continue
 
             depth_np = np.load(str(depth_file)).astype(np.float32)
+
+            # Zero out monocular occlusion-boundary flying pixels via Sobel gradient
+            gx = cv2.Sobel(depth_np, cv2.CV_32F, 1, 0, ksize=3)
+            gy = cv2.Sobel(depth_np, cv2.CV_32F, 0, 1, ksize=3)
+            grad = np.sqrt(gx**2 + gy**2)
+            edge_mask = (grad / np.maximum(depth_np, 1e-4)) > 0.08
+            depth_np[edge_mask] = 0.0
+
             color_bgr = cv2.imread(str(color_file))
             if color_bgr is None:
                 continue

@@ -81,6 +81,19 @@ class SplatfactoStage(Stage):
                 "--pipeline.model.cull-scale-thresh", "0.5",
                 "--pipeline.model.use-scale-regularization", "True",
                 "--pipeline.model.max-gauss-ratio", "5.0",
+                "--pipeline.model.rasterize-mode", "antialiased",
+            ]
+            if attempt == 0:
+                cmd.extend([
+                    "--pipeline.model.use-bilateral-grid", "True",
+                    "--pipeline.model.camera-optimizer.mode", "SO3xR3",
+                ])
+            else:
+                cmd.extend([
+                    "--pipeline.model.camera-optimizer.mode", "off",
+                ])
+
+            cmd.extend([
                 "colmap",
                 "--data", str(data_dir),
                 "--colmap-path", "sparse/0",
@@ -88,7 +101,9 @@ class SplatfactoStage(Stage):
                 "--center-method", "none",
                 "--auto-scale-poses", "False",
                 "--assume-colmap-world-coordinate-convention", "False",
-            ]
+                "--eval-mode", "fraction",
+                "--train-split-fraction", "1.0",
+            ])
             if current_downscale > 1:
                 cmd.extend(["--downscale-factor", str(current_downscale)])
 

@@ -198,7 +198,10 @@ class RoomAnalysisStage(Stage):
 
         bbox_min = np.min(vertices, axis=0)
         bbox_max = np.max(vertices, axis=0)
-        scene_diagonal = float(np.linalg.norm(bbox_max - bbox_min))
+        # Robust scene diagonal using percentiles to prevent extreme SIFT triangulation outliers from inflating scale
+        p_lo = np.percentile(vertices, 0.5, axis=0)
+        p_hi = np.percentile(vertices, 99.5, axis=0)
+        scene_diagonal = float(np.linalg.norm(p_hi - p_lo))
 
         v_heights = vertices @ u_grav
         p10_verts = float(np.percentile(v_heights, 10))

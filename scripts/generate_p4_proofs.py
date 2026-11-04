@@ -9,6 +9,7 @@ Generates:
 
 import os
 import sys
+import shutil
 import json
 import subprocess
 from pathlib import Path
@@ -53,13 +54,13 @@ JOBS = {
     }
 }
 
-def render_blender_meshes():
+def render_blender_meshes(force: bool = False):
     for key, info in JOBS.items():
         glb = info["glb"]
         pfx = key
         ov = WORK_DIR / f"{pfx}_overview.png"
         it = WORK_DIR / f"{pfx}_interior.png"
-        if ov.exists() and it.exists():
+        if not force and ov.exists() and it.exists():
             print(f"[{key}] Already rendered, skipping.")
             continue
         print(f"[{key}] Rendering Blender views for {glb}...")
@@ -73,17 +74,18 @@ def render_blender_meshes():
         else:
             print(f"[{key}] Blender render completed.")
 
-def render_splat_views():
+def render_splat_views(force: bool = False):
     out_splat_sheet = WORK_DIR / "splat_proof.png"
-    if not out_splat_sheet.exists():
-        splat_ply = JOBS["tour_splat_mesh"]["splat"]
-        print(f"Rendering splat views for {splat_ply}...")
-        cmd = [
-            "python3", "/workspace/scripts/render_splat_views.py",
-            splat_ply, str(out_splat_sheet)
-        ]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        print("Splat render finished:", res.returncode)
+    if not force and out_splat_sheet.exists():
+        return
+    splat_ply = JOBS["tour_splat_mesh"]["splat"]
+    print(f"Rendering splat views for {splat_ply}...")
+    cmd = [
+        "python3", "/workspace/scripts/render_splat_views.py",
+        splat_ply, str(out_splat_sheet)
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    print("Splat render finished:", res.returncode)
 
 def get_font(size: int):
     try:
@@ -251,9 +253,10 @@ def composite_splat_mesh_sheet(out_file: Path):
 
 
 def main():
-    print("=== Generating Milestone P4 Proofs & Comparison Sheets ===")
-    render_blender_meshes()
-    render_splat_views()
+    force = "--force" in sys.argv
+    print(f"=== Generating Milestone P4 Proofs & Comparison Sheets (force={force}) ===")
+    render_blender_meshes(force=force)
+    render_splat_views(force=force)
 
     out_house = Path("/data/jobs/p4_proofs/p4_house_route_a_vs_b.png")
     composite_comparison_sheet(
@@ -275,6 +278,12 @@ def main():
 
     out_splat_mesh = Path("/data/jobs/p4_proofs/p4_tour_splat_mesh_inclusive.png")
     composite_splat_mesh_sheet(out_file=out_splat_mesh)
+
+    # Copy individual floor plan assets
+    shutil.copy2("/data/jobs/a78fc585-4120-48b5-8512-17d2b6afa8f2/floor_plan.png", WORK_DIR / "p4_house_floor_plan.png")
+    shutil.copy2("/data/jobs/299db6af-de22-4055-af38-b2c615e076e7/floor_plan.png", WORK_DIR / "p4_tour_floor_plan.png")
+    if Path("/data/jobs/fbaf91b0-9df8-4cf9-a5e4-4cd85e243f12/floor_plan.png").exists():
+        shutil.copy2("/data/jobs/fbaf91b0-9df8-4cf9-a5e4-4cd85e243f12/floor_plan.png", WORK_DIR / "p4_meetingroom_floor_plan.png")
 
     print("=== All Milestone P4 Proof Sheets Generated Successfully! ===")
 

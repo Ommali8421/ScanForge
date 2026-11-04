@@ -253,6 +253,7 @@ def render_splat_views(ply_path: str, output_image_path: str):
                     far_plane=1e6,
                     radius_clip=0.0,
                     eps2d=0.3,
+                    rasterize_mode="antialiased",
                 )
             img_np = (torch.clamp(out[0], 0.0, 1.0).cpu().numpy() * 255.0).astype(np.uint8)
             return Image.fromarray(img_np)
