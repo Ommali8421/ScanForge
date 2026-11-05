@@ -118,14 +118,14 @@ Photogrammetric meshes typically bake lighting and specular highlights directly 
 - ScanForge integrates native `spz` Python/Rust encoding with C-contiguous float32 buffers, compressing 3DGS models to **7.19 MB** while fully preserving Degree 1 & 2 Spherical Harmonics.
 
 ### H. 1-Pixel Finite Difference Step Discontinuity (Sobel Gain Fix)
-- **Sobel 8x Gain Issue**: Standard $3\times 3$ Sobel filters apply an $8\times$ kernel multiplier. Testing relative depth gradient with `sobel_mag / z > 0.08` was inadvertently masking any surface with $> 1\%$ slope, erasing oblique perspective floors and angled hallway walls.
+- **Sobel 8x Gain Issue**: Standard $3\times 3$ Sobel filters apply an $8\times$ kernel multiplier. Testing relative depth gradient with `sobel_mag / z > 0.08` was inadvertently masking any surface with > 1% slope, erasing oblique perspective floors and angled hallway walls.
 - **1-Pixel Finite Differences**: ScanForge replaced Sobel filtering with true 1-pixel finite differences:
 
 $$
-\text{step\_rel} = \frac{\max(|\Delta_x z|, |\Delta_y z|)}{\max(z, 10^{-4})}
+\Delta z_{\text{rel}} = \frac{\max(|\Delta_x z|, |\Delta_y z|)}{\max(z, 10^{-4})}
 $$
 
-- **Selective Masking**: Only genuine step discontinuities ($\text{step\_rel} > 0.12$) are masked, keeping smooth floors and angled walls (slope $< 0.03$) 100% intact.
+- **Selective Masking**: Only genuine step discontinuities where `step_rel > 0.12` (a 12% relative depth jump across a single pixel) are masked, keeping smooth floors and angled walls (slope < 0.03) 100% intact.
 
 ### I. Studio 3D WASD Navigation with Target Co-Translation
 - Standard Three.js `OrbitControls` intercepts keyboard events (`KeyW`, `KeyS`, `KeyA`, `KeyD`), causing vertical screen-space panning and spherical rotation.
