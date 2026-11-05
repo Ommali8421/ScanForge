@@ -1,7 +1,9 @@
 # ScanForge
 
 > **Autonomous, Self-Hostable 3D Reconstruction Studio for Interiors & Architecture**  
-> Turn everyday smartphone video walk-throughs and RGB-D captures into clean, watertight PBR meshes, photorealistic 3D Gaussian Splats, and 2D architectural CAD floor plans.
+> Turn everyday smartphone video walk-throughs and RGB-D captures into clean, watertight PBR meshes, photorealistic 3D Gaussian Splats, and 2D architectural CAD floor plans.  
+>  
+> **Built by**: **Om Mali**, **Neel Patil**, and **Shreyash Olambe**
 
 [![License](https://img.shields.io/badge/license-MIT%20%2F%20AGPL--3.0-blue.svg)](docs/LICENSES.md)
 [![Hardware](https://img.shields.io/badge/Target%20GPU-RTX%204060%20(8%20GB%20VRAM)-green.svg)](AGENTS.md)
@@ -27,6 +29,7 @@
 11. [Quick Start & Operations](#11-quick-start--operations)
 12. [Repository Structure](#12-repository-structure)
 13. [Licensing & Compliance Notices](#13-licensing--compliance-notices)
+14. [Authors & Core Team](#14-authors--core-team)
 
 ---
 
@@ -560,3 +563,14 @@ All third-party components, models, and dependencies are audited in [docs/LICENS
 - **3D Gaussian Splatting**: Uses clean-room Apache-2.0 / MIT implementations (`gsplat` / `nerfstudio`). Original Inria research code carrying non-commercial restrictions is not utilized.
 - **gltfpack**: Licensed under the **MIT License** (Arseny Kapoulkine / meshoptimizer).
 - **Niantic SPZ**: Licensed under the **Apache-2.0 License** (Niantic, Inc.).
+
+---
+
+## 14. Authors & Core Team
+
+ScanForge was developed and engineered by:
+
+1. **Om Mali** ([@Ommali8421](https://github.com/Ommali8421))
+2. **Neel Patil**
+3. **Shreyash Olambe**
+
