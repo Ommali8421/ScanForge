@@ -44,6 +44,29 @@ Reconstructing production-grade 3D assets of interior spaces from video presents
 - **Mesh-Inclusive 3DGS**: Combines 15,000 steps of `splatfacto` with an orthogonal Kabsch/Procrustes camera transform ($8.09 \times 10^{-5}$ error), yielding a photorealistic splat plus a watertight textured mesh with 100% texture coverage (0.0% void) and single-stroke CAD floor plans.
 - **Strict 8 GB VRAM Budget**: Engineered and benchmarked specifically for consumer GPUs (NVIDIA GeForce RTX 4060 8 GB VRAM), executing all stages without memory thrashing or out-of-memory crashes.
 
+### Visual Showcase: Tanks & Temples 3D Reconstructions (RTX 4060 GPU)
+
+<div align="center">
+
+| Ballroom (Tanks & Temples) | Courtroom (Tanks & Temples) |
+|:---:|:---:|
+| <img src="docs/images/showcase_ballroom.jpg" alt="Ballroom 3DGS Reconstruction" width="100%"/> | <img src="docs/images/showcase_courtroom.jpg" alt="Courtroom 3DGS Reconstruction" width="100%"/> |
+| **550,438 Gaussians • Grade A • 287/287 Frames** | **736,325 Gaussians • Grade A • 284/284 Frames** |
+
+| Meetingroom (Tanks & Temples) | Auditorium (Tanks & Temples) |
+|:---:|:---:|
+| <img src="docs/images/showcase_meetingroom.jpg" alt="Meetingroom 3DGS Reconstruction" width="100%"/> | <img src="docs/images/showcase_auditorium.jpg" alt="Auditorium 3DGS Reconstruction" width="100%"/> |
+| **447,264 Gaussians • Grade A • 293/293 Frames** | **391,600 Gaussians • Grade A • 243/249 Frames** |
+
+| Ignatius (Tanks & Temples) | Reference House Walkthrough |
+|:---:|:---:|
+| <img src="docs/images/showcase_ignatius.jpg" alt="Ignatius 3DGS Reconstruction" width="100%"/> | <img src="docs/images/showcase_house_test_30s.jpg" alt="House 3DGS Reconstruction" width="100%"/> |
+| **792,613 Gaussians • Grade A • 87/87 Frames** | **422,235 Gaussians • Grade A • 93/100 Frames** |
+
+*Each 4-view composite demonstrates: (1) Frame-1 Camera Spawn, (2) Walkthrough Perspective, (3) 3/4 Dollhouse Cutaway, and (4) Top-Down Plan View rendered via CUDA gsplat.*
+
+</div>
+
 ---
 
 ## 2. Core Engineering Innovations
@@ -392,12 +415,12 @@ All 5 flagship Tanks & Temples benchmark models plus the reference House walkthr
 
 | Scene | Modality | Job ID | Registered Frames | Gaussians (Grade) | Deliverables (.ply / .splat / .spz) | Runtime | Peak VRAM | Proof Sheet |
 |---|---|---|---|---|---|---|---|---|
-| **Ballroom** (T&T) | `gaussian_splat` | `08016ee0-5a48-4667-99c0-550f46bc717e` | **287 / 287 (100.0%)** | 550,438 (Grade A) | 130.19 MB / 16.80 MB / 10.96 MB | 42.6 min | 2,726 MB (33.3%) | [`outputs/showcase_splat_ballroom.png`](outputs/showcase_splat_ballroom.png) |
-| **Courtroom** (T&T) | `gaussian_splat` | `a7ac5024-8a85-4776-8aa0-8d87469825c1` | **284 / 284 (100.0%)** | 736,325 (Grade A) | 174.15 MB / 22.47 MB / 14.18 MB | 36.8 min | 3,103 MB (37.9%) | [`outputs/showcase_splat_courtroom.png`](outputs/showcase_splat_courtroom.png) |
-| **Meetingroom** (T&T) | `gaussian_splat` | `c49c783c-91d5-42f9-93fb-a1eb95d44a5b` | **293 / 293 (100.0%)** | 447,264 (Grade A) | 105.78 MB / 13.65 MB / 8.78 MB | 29.3 min | 2,379 MB (29.1%) | [`outputs/showcase_splat_meetingroom.png`](outputs/showcase_splat_meetingroom.png) |
-| **Auditorium** (T&T) | `gaussian_splat` | `883990e1-8cfc-4c9e-a8c6-c8bea3c860e0` | **243 / 249 (97.6%)** | 391,600 (Grade A) | 92.62 MB / 11.95 MB / 7.76 MB | 25.0 min | 2,237 MB (27.3%) | [`outputs/showcase_splat_auditorium.png`](outputs/showcase_splat_auditorium.png) |
-| **Ignatius** (T&T) | `gaussian_splat` | `e6a08659-d57a-4662-baee-81b63c4af6be` | **87 / 87 (100.0%)** | 792,613 (Grade A) | 187.46 MB / 24.19 MB / 15.52 MB | 19.4 min | 2,641 MB (32.3%) | [`outputs/showcase_splat_ignatius.png`](outputs/showcase_splat_ignatius.png) |
-| **House** | `gaussian_splat` | `718b1b22-f89b-45d3-a1d3-31fa96268cf4` | **93 / 100 (93.0%)** | 422,235 (Grade A) | 99.86 MB / 12.89 MB / 8.00 MB | 16.7 min | 1,806 MB (22.1%) | [`outputs/showcase_splat_house_test_30s.png`](outputs/showcase_splat_house_test_30s.png) |
+| **Ballroom** (T&T) | `gaussian_splat` | `08016ee0-5a48-4667-99c0-550f46bc717e` | **287 / 287 (100.0%)** | 550,438 (Grade A) | 130.19 MB / 16.80 MB / 10.96 MB | 42.6 min | 2,726 MB (33.3%) | [`showcase_ballroom.jpg`](docs/images/showcase_ballroom.jpg) |
+| **Courtroom** (T&T) | `gaussian_splat` | `a7ac5024-8a85-4776-8aa0-8d87469825c1` | **284 / 284 (100.0%)** | 736,325 (Grade A) | 174.15 MB / 22.47 MB / 14.18 MB | 36.8 min | 3,103 MB (37.9%) | [`showcase_courtroom.jpg`](docs/images/showcase_courtroom.jpg) |
+| **Meetingroom** (T&T) | `gaussian_splat` | `c49c783c-91d5-42f9-93fb-a1eb95d44a5b` | **293 / 293 (100.0%)** | 447,264 (Grade A) | 105.78 MB / 13.65 MB / 8.78 MB | 29.3 min | 2,379 MB (29.1%) | [`showcase_meetingroom.jpg`](docs/images/showcase_meetingroom.jpg) |
+| **Auditorium** (T&T) | `gaussian_splat` | `883990e1-8cfc-4c9e-a8c6-c8bea3c860e0` | **243 / 249 (97.6%)** | 391,600 (Grade A) | 92.62 MB / 11.95 MB / 7.76 MB | 25.0 min | 2,237 MB (27.3%) | [`showcase_auditorium.jpg`](docs/images/showcase_auditorium.jpg) |
+| **Ignatius** (T&T) | `gaussian_splat` | `e6a08659-d57a-4662-baee-81b63c4af6be` | **87 / 87 (100.0%)** | 792,613 (Grade A) | 187.46 MB / 24.19 MB / 15.52 MB | 19.4 min | 2,641 MB (32.3%) | [`showcase_ignatius.jpg`](docs/images/showcase_ignatius.jpg) |
+| **House** | `gaussian_splat` | `718b1b22-f89b-45d3-a1d3-31fa96268cf4` | **93 / 100 (93.0%)** | 422,235 (Grade A) | 99.86 MB / 12.89 MB / 8.00 MB | 16.7 min | 1,806 MB (22.1%) | [`showcase_house_test_30s.jpg`](docs/images/showcase_house_test_30s.jpg) |
 
 > **Audit Invariants**: Every model passes programmatic geometric invariants: upright orientation ($\bar{\mathbf{u}}_y = 1.000$), floor flush ($Y = 0.000$m, $|Y_{\text{floor}}| < 0.02$), origin centering $(0,0)$, spawn camera $Y > 0.15$m with unit forward vector, and delivery of all three formats (`.ply`, `.splat`, `.spz`).
 > *Library Note: The 5 flagship Tanks & Temples reconstructions form the active production library on `http://localhost:3000`. The smoke test run on House was verified and archived (`outputs/showcase_splat_house_test_30s.png`).*
