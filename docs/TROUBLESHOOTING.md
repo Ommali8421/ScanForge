@@ -96,4 +96,24 @@ The frontend container uses Nginx to reverse-proxy `/api/*` requests to the `api
    curl -i http://localhost:3000/api/health
    ```
 
+---
+
+## 7. Worker Process In-Memory Module Caching
+
+**Symptom**: A python code fix or pipeline stage modification was committed to the filesystem, but subsequent job runs in the GPU worker still fail with the old traceback or missing symbol (`NameError`).
+
+**Root Cause**:
+The `scanforge-worker-gpu` container runs a persistent RQ worker process (`python3 -m app.queue.worker`). Once a pipeline module is imported into `sys.modules`, Python does not automatically reload changed files from disk.
+
+**Resolution**:
+1. When modifying Python stage definitions or utility functions, restart the worker container:
+   ```bash
+   docker compose restart worker-gpu
+   ```
+2. Verify the worker is healthy and ready to consume jobs:
+   ```bash
+   docker compose logs --tail 20 worker-gpu
+   ```
+
+
 

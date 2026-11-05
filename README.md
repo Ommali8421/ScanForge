@@ -7,7 +7,7 @@
 [![Hardware](https://img.shields.io/badge/Target%20GPU-RTX%204060%20(8%20GB%20VRAM)-green.svg)](AGENTS.md)
 [![Architecture](https://img.shields.io/badge/CUDA-Ada%20sm__89%20%7C%2012.1-orange.svg)](docs/ARCHITECTURE.md)
 [![Status](https://img.shields.io/badge/Milestone-P5%20Hardened%20%26%20Production--Ready-brightgreen.svg)](progress.md)
-[![Tests](https://img.shields.io/badge/tests-179%2F179%20passing-success.svg)](progress.md)
+[![Tests](https://img.shields.io/badge/tests-184%2F184%20passing-success.svg)](progress.md)
 [![Docker](https://img.shields.io/badge/Docker%20Compose-Mock%20%26%20GPU%20Profiles-blueviolet.svg)](docker-compose.yml)
 
 ---
@@ -386,6 +386,21 @@ Validated strictly one at a time on an NVIDIA RTX 4060 Laptop GPU (8 GB VRAM):
 ### C. Over-Pruning Resolution
 - **House Over-Pruning Analysis**: Reduced below-floor over-pruning from **79,759 faces (22.4%)** down to **0 faces (0.00%)** by ranking floor candidates by RANSAC inlier support (preventing a 1,848-inlier tabletop from overriding the 3,163-inlier ground floor).
 - **Tour Over-Pruning Analysis**: Reduced outside-wall over-pruning from **88,914 faces (12.1%)** down to **0 faces (0.00%)** by replacing single-plane half-space clipping with a trajectory-aligned safety bounding envelope.
+
+### D. Tanks & Temples Production Showcase Benchmark (Wave 1)
+All 5 flagship Tanks & Temples benchmark models plus the reference House walkthrough were reconstructed end-to-end on an NVIDIA RTX 4060 GPU (8 GB VRAM) using the `gaussian_splat` pipeline (`standard` preset: 18,000 steps, antialiased rasterization, bilateral grid, $SO(3)\times\mathbb{R}^3$ camera optimizer, Morton Z-order curve sorting, Degree-2 spherical harmonics).
+
+| Scene | Modality | Job ID | Registered Frames | Gaussians (Grade) | Deliverables (.ply / .splat / .spz) | Runtime | Peak VRAM | Proof Sheet |
+|---|---|---|---|---|---|---|---|---|
+| **Ballroom** (T&T) | `gaussian_splat` | `08016ee0-5a48-4667-99c0-550f46bc717e` | **287 / 287 (100.0%)** | 550,438 (Grade A) | 130.19 MB / 16.80 MB / 10.96 MB | 42.6 min | 2,726 MB (33.3%) | [`outputs/showcase_splat_ballroom.png`](outputs/showcase_splat_ballroom.png) |
+| **Courtroom** (T&T) | `gaussian_splat` | `a7ac5024-8a85-4776-8aa0-8d87469825c1` | **284 / 284 (100.0%)** | 736,325 (Grade A) | 174.15 MB / 22.47 MB / 14.18 MB | 36.8 min | 3,103 MB (37.9%) | [`outputs/showcase_splat_courtroom.png`](outputs/showcase_splat_courtroom.png) |
+| **Meetingroom** (T&T) | `gaussian_splat` | `c49c783c-91d5-42f9-93fb-a1eb95d44a5b` | **293 / 293 (100.0%)** | 447,264 (Grade A) | 105.78 MB / 13.65 MB / 8.78 MB | 29.3 min | 2,379 MB (29.1%) | [`outputs/showcase_splat_meetingroom.png`](outputs/showcase_splat_meetingroom.png) |
+| **Auditorium** (T&T) | `gaussian_splat` | `883990e1-8cfc-4c9e-a8c6-c8bea3c860e0` | **243 / 249 (97.6%)** | 391,600 (Grade A) | 92.62 MB / 11.95 MB / 7.76 MB | 25.0 min | 2,237 MB (27.3%) | [`outputs/showcase_splat_auditorium.png`](outputs/showcase_splat_auditorium.png) |
+| **Ignatius** (T&T) | `gaussian_splat` | `e6a08659-d57a-4662-baee-81b63c4af6be` | **87 / 87 (100.0%)** | 792,613 (Grade A) | 187.46 MB / 24.19 MB / 15.52 MB | 19.4 min | 2,641 MB (32.3%) | [`outputs/showcase_splat_ignatius.png`](outputs/showcase_splat_ignatius.png) |
+| **House** | `gaussian_splat` | `718b1b22-f89b-45d3-a1d3-31fa96268cf4` | **93 / 100 (93.0%)** | 422,235 (Grade A) | 99.86 MB / 12.89 MB / 8.00 MB | 16.7 min | 1,806 MB (22.1%) | [`outputs/showcase_splat_house_test_30s.png`](outputs/showcase_splat_house_test_30s.png) |
+
+> **Audit Invariants**: Every model passes programmatic geometric invariants: upright orientation ($\bar{\mathbf{u}}_y = 1.000$), floor flush ($Y = 0.000$m, $|Y_{\text{floor}}| < 0.02$), origin centering $(0,0)$, spawn camera $Y > 0.15$m with unit forward vector, and delivery of all three formats (`.ply`, `.splat`, `.spz`).
+> *Library Note: The 5 flagship Tanks & Temples reconstructions form the active production library on `http://localhost:3000`. The smoke test run on House was verified and archived (`outputs/showcase_splat_house_test_30s.png`).*
 
 ---
 

@@ -49,7 +49,7 @@ Returns available scan types, quality presets, runtime format availability, limi
     "mesh_routes": ["auto", "photogrammetry", "depth_fusion"],
     "format_matrix": {
       "photo": ["glb", "obj", "ply", "stl", "xyz"],
-      "gaussian_splat": ["ply", "splat"],
+      "gaussian_splat": ["ply", "splat", "spz"],
       "lidar": ["glb", "ply", "xyz"]
     },
     "runtime_converters": {
@@ -75,7 +75,8 @@ Submit a scan job with video or image archive upload.
 - **Pre-flight Storage Guard**: Checks available disk space. If free space is less than `SCANFORGE_MIN_FREE_DISK_GB` (default: 5.0 GB), rejects the upload with `507 Insufficient Storage`.
 - **Content-Type**: `multipart/form-data`
 - **Form Fields**:
-  - `file`: Binary file (`.mp4`, `.mov`, `.zip`)
+  - `file`: Binary file (`.mp4`, `.mov`, `.zip`) — optional if `server_file_path` is specified
+  - `server_file_path`: (Optional string) Absolute server-side filesystem path to a video/archive already present on disk (bypasses Nginx upload buffering)
   - `scan_type`: `photo` | `gaussian_splat` | `lidar`
   - `quality`: `draft` | `standard` | `high` (default: `standard`)
   - `output_formats`: JSON string array, e.g. `["glb", "obj"]`

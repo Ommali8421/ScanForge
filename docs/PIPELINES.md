@@ -118,3 +118,25 @@ Single-pass generation of Gaussian Splatting + watertight textured mesh + archit
    - Rasterizes into $1024 \times 1024$ 2D occupancy grid with morphological closing ($7\times 7$ kernel) closing mesh cracks $< 12\text{cm}$ while preserving open doors.
    - Vectorizes with Douglas-Peucker (`approxPolyDP`) and snaps near-orthogonal segments into crisp architectural CAD blueprints (`floor_plan.svg`, `floor_plan.png`).
 
+---
+
+## 6. Showcase 3DGS Training & Registration Guardrails
+
+### 3DGS Training Architecture (`train_splatfacto.py`)
+- **Optimization Budget**: 18,000 steps (`standard` preset), 25,000 steps (`high`), 8,000 steps (`draft`).
+- **Antialiased Rasterization**: Uses `rasterize-mode antialiased` to eliminate zoom-in erosion spikes and zoom-out blur.
+- **Bilateral Grid Appearance Modeling**: `use-bilateral-grid True` compensates for auto-exposure shifts and dynamic lighting variations across phone camera video frames.
+- **Camera Pose Optimization**: `camera-optimizer.mode SO3xR3` continuously refines camera extrinsics jointly during Gaussian densification.
+- **Floater Pruning & Normalization (`splat_cleanup.py`)**:
+  * LightGaussian multi-view frustum visibility scoring ($N_{\text{vis}} \ge 2$) removes floating mist.
+  * Pancake aspect-ratio preservation ($s_0/s_1 < 0.25, s_2/s_1 \le 4.5$) protects planar wall and floor surflets.
+  * Spatial KDTree Statistical Outlier Removal (SOR: $k=20, \sigma=2.0$).
+- **Morton Curve Ordering & Delivery (`format_converter.py`)**:
+  * 3D Morton Z-order curve coordinate sorting improves cache locality and client-side WebGPU radix sort throughput.
+  * Deliverables: HD spherical harmonics `model.ply`, byte-exact 32-byte `model.splat`, and native Degree-2 compressed `model.spz`.
+
+### SfM Registration Guardrail (`sfm_colmap.py`)
+- **Registration Threshold**: Checks $\frac{\text{registered\_frames}}{\text{total\_frames}} \ge 0.60$ (60% minimum registration ratio).
+- **Failure Classification**: If fewer than 60% of extracted keyframes are registered (typically caused by severe rotational motion blur, rapid panning, or textureless expanses), the stage fails cleanly with `ERR_LOW_SFM_REGISTRATION`, logging detailed diagnostics and rendering an actionable checklist in the UI without crashing the worker process.
+
+

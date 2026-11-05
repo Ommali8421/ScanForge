@@ -28,6 +28,7 @@ Pinned versions for all ScanForge external tools, Docker base images, Python pac
 | FFmpeg | `4.4.2` | `ffmpeg -version` |
 | Blender | `4.1.0` | `blender --version` |
 | gltfpack | `1.3` | `gltfpack -v` |
+| Depth Anything V2 Small | `depth_anything_v2_vits.pth` (~95 MB) | Apache-2.0 offline checkpoint |
 
 ---
 

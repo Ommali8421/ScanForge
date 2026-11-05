@@ -19,6 +19,8 @@
 | **Trimesh** | `mikedh/trimesh` | MIT | **VERIFIED** (2026-10-15) | [`LICENSE.md`](https://github.com/mikedh/trimesh/blob/main/LICENSE.md) — "The MIT License (MIT), Copyright (c) 2023 Michael Dawson-Haggerty" | Permissive mesh processing. |
 | **FastAPI** | `tiangolo/fastapi` | MIT | **VERIFIED** (2026-10-15) | [`LICENSE`](https://github.com/tiangolo/fastapi/blob/master/LICENSE) — "The MIT License (MIT), Copyright (c) 2018 Sebastián Ramírez" | Permissive backend framework. |
 | **@mkkellogg/gaussian-splats-3d** | `mkkellogg/GaussianSplats3D` | MIT | **VERIFIED** (2026-10-15) | [`LICENSE`](https://github.com/mkkellogg/GaussianSplats3D/blob/main/LICENSE) — "The MIT License (MIT), Copyright (c) 2023 Mark Kellogg" | Permissive client-side WebGL/Three.js splat viewer. |
+| **spz** | `nianticlabs/spz` | Apache-2.0 | **VERIFIED** (2026-11-04) | [`LICENSE`](https://github.com/nianticlabs/spz/blob/main/LICENSE) — Full Apache License 2.0 text | Permissive 3D Gaussian Splat compression library for native `.spz` generation. |
+| **gltfpack** | `zeux/meshoptimizer` | MIT | **VERIFIED** (2026-11-04) | [`LICENSE.md`](https://github.com/zeux/meshoptimizer/blob/master/LICENSE.md) — "Copyright (c) 2016-2026 Arseny Kapoulkine" | Permissive geometry/texture optimizer & quantization tool. |
 | **Blender (Headless)** | `blender/blender` | GPL-2.0+ | **VERIFIED** (2026-10-15) | [`COPYING`](https://github.com/blender/blender/blob/main/COPYING) — "Blender uses the GNU General Public License" + `doc/license/GPL-license.txt` | Used as an external CLI subprocess for FBX/USDZ conversions. Subprocess invocation (not linking) generally does not create a derivative work, but consult legal counsel for commercial deployment. |
 
 ---
