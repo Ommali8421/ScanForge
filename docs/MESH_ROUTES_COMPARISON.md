@@ -163,6 +163,8 @@ The production showcase library was regenerated from clean slate on NVIDIA RTX 4
 | **Ignatius** | `e6a08659-d57a-4662-baee-81b63c4af6be` | `gaussian_splat` / `standard` | 87 / 87 (100.0%) | 792,613 (Grade A) | 187.46 MB | 24.19 MB | 15.52 MB | 19.4 min | 2,641 MB (32.3%) |
 | **House** | `718b1b22-f89b-45d3-a1d3-31fa96268cf4` | `gaussian_splat` / `standard` | 93 / 100 (93.0%) | 422,235 (Grade A) | 99.86 MB | 12.89 MB | 8.00 MB | 16.7 min | 1,806 MB (22.1%) |
 
+> *Library Note: The 5 flagship Tanks & Temples reconstructions (`Ballroom`, `Courtroom`, `Meetingroom`, `Auditorium`, `Ignatius`) form the active production library on `http://localhost:3000`. The smoke test run on `House` was verified and archived (`outputs/showcase_splat_house_test_30s.png`).*
+
 ### 7b. Skipped / Failed Ingestions
 
 - **Enhanced Interior Tour (`enhanced_interior_tour_1080p.mp4`)**:

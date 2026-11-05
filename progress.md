@@ -1082,6 +1082,8 @@ All 5 benchmark runs completed end-to-end with 100% success on NVIDIA RTX 4060 (
 | **Ignatius** | `gaussian_splat` | `e6a08659-d57a-4662-baee-81b63c4af6be` | **87 / 87 (100.0%)** | 792,613 (Grade A) | 187.46 MB | 24.19 MB | 15.52 MB | 19.4 min (1,163s) | 2,641 MB (32.3%) | Outside object bounds (dist=9.37m), looking toward center (dot=0.425), unit fwd | `outputs/showcase_splat_ignatius.png` |
 | **House** | `gaussian_splat` | `718b1b22-f89b-45d3-a1d3-31fa96268cf4` | **93 / 100 (93.0%)** | 422,235 (Grade A) | 99.86 MB | 12.89 MB | 8.00 MB | 16.7 min (1,000s) | 1,806 MB (22.1%) | Upright (+Y=1.000), floor flush (Y=0.000m), cam spawn=[4.67, 7.55, 7.95] fwd=[-0.883, -0.149, -0.445] | `outputs/showcase_splat_house_test_30s.png` |
 
+> *Library Note: The 5 flagship Tanks & Temples models (`Ballroom`, `Courtroom`, `Meetingroom`, `Auditorium`, `Ignatius`) comprise the production Jobs Library on `http://localhost:3000`. The smoke benchmark on `House` was verified and archived (`outputs/showcase_splat_house_test_30s.png`) to keep the library exclusively focused on the Tanks & Temples suite.*
+
 ### 4b. Programmatic Invariant Audit Assertions
 
 Every completed showcase job was evaluated by `scripts/audit_and_render_showcase.py` against strict geometric and deliverable invariants:
