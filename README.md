@@ -43,7 +43,7 @@ Reconstructing production-grade 3D assets of interior spaces from video presents
 
 **ScanForge resolves this tension through a unified, cross-modal interior reconstruction engine**:
 - **Dual-Route Architecture**: Automatically chooses between **Route A (Photogrammetry via OpenMVS Delaunay tetrahedralization)** and **Route B (Monocular Depth Fusion via Apache-2.0 Depth Anything V2 Small + Open3D TSDF Fusion)** based on scene texture density.
-- **Zero-Retexturing Coordinate Seam**: All geometric cleanup, planar hole filling, and quadric decimation run strictly in native camera coordinates. Metric scaling (`/calibrate`) and floor leveling ($Y=0.000$) execute as instant ($<0.15$s) post-texture similarity transforms, preserving 4K texture atlases bit-for-bit.
+- **Zero-Retexturing Coordinate Seam**: All geometric cleanup, planar hole filling, and quadric decimation run strictly in native camera coordinates. Metric scaling (`/calibrate`) and floor leveling ($Y=0.000$) execute as instant (< 0.15s) post-texture similarity transforms, preserving 4K texture atlases bit-for-bit.
 - **Mesh-Inclusive 3DGS**: Combines 15,000 steps of `splatfacto` with an orthogonal Kabsch/Procrustes camera transform ($8.09 \times 10^{-5}$ error), yielding a photorealistic splat plus a watertight textured mesh with 100% texture coverage (0.0% void) and single-stroke CAD floor plans.
 - **Strict 8 GB VRAM Budget**: Engineered and benchmarked specifically for consumer GPUs (NVIDIA GeForce RTX 4060 8 GB VRAM), executing all stages without memory thrashing or out-of-memory crashes.
 
@@ -94,7 +94,7 @@ Empirical ScanForge benchmarks on an RTX 4060 demonstrate that **visibility-awar
 Transforming meshes into world coordinates (e.g., leveling the floor to $Y=0.000$ and applying metric scale) *before* UV texturing breaks camera co-registration inside OpenMVS `scene.mvs`. Re-running UV texturing on every user calibration wastes minutes of GPU compute.
 - **ScanForge Solution**: Mesh cleanup, RANSAC room analysis, normal-aware planar hole filling, and quadric decimation run strictly in native SfM coordinates. OpenMVS `TextureMesh` projects the 4K texture atlas against unmodified camera poses.
 - Floor leveling ($Y=0.000$) and metric calibration ($S_{\text{new}} = S_{\text{curr}} \times \frac{d_{\text{real}}}{\|\mathbf{p}_a - \mathbf{p}_b\|}$) are applied *after* texturing as a rigid similarity transform on vertex positions only ($\mathbf{v}' = S \cdot \mathbf{R}(\mathbf{v} - \mathbf{c}) + \mathbf{t}$).
-- Sequential `/calibrate` executes in **$<0.15\text{ seconds}$**, with bitwise identical UV mapping and zero texture degradation.
+- Sequential `/calibrate` executes in **< 0.15 seconds**, with bitwise identical UV mapping and zero texture degradation.
 
 ### D. Single-Run Mesh-Inclusive 3DGS with Kabsch Camera Transform
 In `mesh_inclusive` mode, ScanForge trains a 15,000-step Gaussian Splat with high-realism bilateral grid and camera optimization, then renders splat depth directly into a volumetric TSDF mesh.
@@ -118,15 +118,23 @@ Photogrammetric meshes typically bake lighting and specular highlights directly 
 - ScanForge integrates native `spz` Python/Rust encoding with C-contiguous float32 buffers, compressing 3DGS models to **7.19 MB** while fully preserving Degree 1 & 2 Spherical Harmonics.
 
 ### H. 1-Pixel Finite Difference Step Discontinuity (Sobel Gain Fix)
-- Standard $3\times 3$ Sobel filters apply an $8\times$ kernel multiplier. Testing relative depth gradient with `sobel_mag / z > 0.08` was inadvertently masking any surface with $>1\%$ slope, erasing oblique perspective floors and angled hallway walls.
-- ScanForge replaced Sobel filtering with true **1-pixel finite differences**:
-  $$\text{step\_rel} = \frac{\max(|\Delta_x z|, |\Delta_y z|)}{\max(z, 10^{-4})}$$
-  Only genuine step discontinuities ($\text{step\_rel} > 0.12$) are masked, keeping smooth floors and angled walls ($<0.03$) 100% intact.
+- **Sobel 8x Gain Issue**: Standard $3\times 3$ Sobel filters apply an $8\times$ kernel multiplier. Testing relative depth gradient with `sobel_mag / z > 0.08` was inadvertently masking any surface with $> 1\%$ slope, erasing oblique perspective floors and angled hallway walls.
+- **1-Pixel Finite Differences**: ScanForge replaced Sobel filtering with true 1-pixel finite differences:
+
+$$
+\text{step\_rel} = \frac{\max(|\Delta_x z|, |\Delta_y z|)}{\max(z, 10^{-4})}
+$$
+
+- **Selective Masking**: Only genuine step discontinuities ($\text{step\_rel} > 0.12$) are masked, keeping smooth floors and angled walls (slope $< 0.03$) 100% intact.
 
 ### I. Studio 3D WASD Navigation with Target Co-Translation
 - Standard Three.js `OrbitControls` intercepts keyboard events (`KeyW`, `KeyS`, `KeyA`, `KeyD`), causing vertical screen-space panning and spherical rotation.
 - ScanForge neutralizes OrbitControls key listeners, implements a capturing-phase event listener (`capture: true`), and synchronizes camera and orbit target translation:
-  $$\mathbf{p}_{\text{cam}} \leftarrow \mathbf{p}_{\text{cam}} + \mathbf{\Delta}_{\text{move}}, \quad \mathbf{p}_{\text{target}} \leftarrow \mathbf{p}_{\text{target}} + \mathbf{\Delta}_{\text{move}}$$
+
+$$
+\mathbf{p}_{\text{cam}} \leftarrow \mathbf{p}_{\text{cam}} + \mathbf{\Delta}_{\text{move}}, \quad \mathbf{p}_{\text{target}} \leftarrow \mathbf{p}_{\text{target}} + \mathbf{\Delta}_{\text{move}}
+$$
+
 - Provides smooth first-person camera movement: **W/S** (forward/backward), **A/D** (strafe left/right), **Space** (elevate up), **Ctrl/C** (elevate down), and **Shift** (2.5x speed multiplier).
 
 ---
@@ -284,7 +292,7 @@ sequenceDiagram
 Every pipeline stage computes a SHA-256 hash of its configuration parameters and input files, storing metadata in `.cache_<stage>.json`.
 - When `POST /api/jobs/{id}/resume` is called, the pipeline checks existing outputs against their parameter hashes.
 - Completed upstream stages are verified and skipped in **0.0 seconds**, resuming execution directly from the interrupted stage.
-- When `POST /api/jobs/{id}/calibrate` is invoked, stages 1–10 (SfM, point cloud, meshing, texturing) are retrieved from cache, executing only the post-texture scale and export stages in **$<0.15$ seconds**.
+- When `POST /api/jobs/{id}/calibrate` is invoked, stages 1–10 (SfM, point cloud, meshing, texturing) are retrieved from cache, executing only the post-texture scale and export stages in **< 0.15 seconds**.
 
 ---
 
@@ -368,18 +376,18 @@ Base URL: `http://localhost:3000/api` (proxied through Nginx) or `http://localho
 ### Scan Job Management
 - `POST /api/jobs` — Submit a reconstruction job via `multipart/form-data`.
   - Fields: `file` (video/zip), `scan_type` (`photo` | `gaussian_splat` | `lidar`), `quality` (`draft` | `standard` | `high`), `output_formats` (JSON string array), `options` (JSON string object: `mesh_route`, `include_mesh`, `up_axis`, `units`).
-  - Pre-flight guard: Rejects with **`HTTP 507 Insufficient Storage`** if free disk is $<5.0\text{ GB}$.
+  - Pre-flight guard: Rejects with **`HTTP 507 Insufficient Storage`** if free disk is < 5.0 GB.
 - `GET /api/jobs` — Paginated job list with optional status filtering (`?status=completed&limit=20&offset=0`).
 - `GET /api/jobs/{id}` — Full job details, stage timings, parameters, and error classification.
 - `GET /api/jobs/{id}/events` — Live Server-Sent Events (SSE) streaming real-time stage progress, log messages, and status changes.
 
 ### Lifecycle & Interaction
-- `POST /api/jobs/{id}/cancel` — Triggers process-group `SIGTERM` $\to$ `SIGKILL`, releasing GPU VRAM in $<3.0$s and setting status to `cancelled`.
-- `POST /api/jobs/{id}/resume` — Resets failed/cancelled job and re-enqueues it, skipping cached upstream stages in $0.0$s.
+- `POST /api/jobs/{id}/cancel` — Triggers process-group `SIGTERM` $\to$ `SIGKILL`, releasing GPU VRAM in < 3.0s and setting status to `cancelled`.
+- `POST /api/jobs/{id}/resume` — Resets failed/cancelled job and re-enqueues it, skipping cached upstream stages in 0.0s.
 - `POST /api/jobs/{id}/calibrate` — Rescales mesh and floor plans to metric real-world scale:
   - Payload: `{"point_a": [x,y,z], "point_b": [x,y,z], "real_distance": 2.45}`.
-  - Re-executes post-texture scaling in **$<0.15$s** without re-running photogrammetry or texturing.
-- `POST /api/jobs/{id}/cleanup-scratch` — Purges raw depth maps, dense point clouds, and intermediate logs, reclaiming $>80\%$ disk space while preserving all final deliverables.
+  - Re-executes post-texture scaling in **< 0.15s** without re-running photogrammetry or texturing.
+- `POST /api/jobs/{id}/cleanup-scratch` — Purges raw depth maps, dense point clouds, and intermediate logs, reclaiming > 80% disk space while preserving all final deliverables.
 - `DELETE /api/jobs/{id}` — Permanently removes job record, upload files, and generated artifacts.
 
 ### Deliverables & Reports
