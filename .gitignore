@@ -37,6 +37,7 @@ data/
 uploads/
 storage/
 outputs/
+datasets/
 *.db
 *.sqlite3
 *.mp4

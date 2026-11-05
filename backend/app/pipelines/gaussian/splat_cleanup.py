@@ -17,6 +17,7 @@ from scipy.spatial.transform import Rotation as R
 from plyfile import PlyData, PlyElement
 
 from app.pipelines.base import Stage, StageResult, JobContext
+from app.pipelines.presets import get_preset_config
 from app.utils.logging import logger
 
 
@@ -384,6 +385,24 @@ class SplatCleanupStage(Stage):
             f"[SplatCleanup] Final envelope clipping: retained {num_cleaned:,}/{num_raw:,} "
             f"({num_cleaned/num_raw*100:.1f}%), dropped {num_raw - num_cleaned:,} floaters."
         )
+
+        # 4b. Strict VRAM Safety Gaussian Cap (guarantees staying under 8 GB VRAM budget)
+        quality = ctx.params.get("quality", "standard")
+        preset_cfg = get_preset_config(preset=quality)
+        max_allowed_gaussians = preset_cfg.splat_max_gaussians
+        if num_cleaned > max_allowed_gaussians:
+            ctx.log_cb(
+                f"[SplatCleanup] Gaussian count ({num_cleaned:,}) exceeds preset limit ({max_allowed_gaussians:,}). "
+                f"Pruning lowest-importance surflets to strictly respect 8 GB VRAM budget..."
+            )
+            cand_alphas = alpha[final_indices]
+            cand_pancakes = is_pancake[final_indices]
+            # Prioritize high opacity and planar pancakes
+            scores = cand_alphas + cand_pancakes.astype(np.float32) * 0.50
+            top_order = np.argsort(scores)[::-1][:max_allowed_gaussians]
+            final_indices = final_indices[top_order]
+            num_cleaned = len(final_indices)
+            ctx.log_cb(f"[SplatCleanup] Capped Gaussian count: {num_cleaned:,} retained.")
 
         # 5. Mandatory World-Origin Centering & Floor Grounding
         # Compute horizontal center using robust 5th and 95th percentiles

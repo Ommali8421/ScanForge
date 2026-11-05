@@ -114,7 +114,8 @@ def format_job_response(job: Job) -> JobResponse:
 
 @router.post("", response_model=JobCreateResponse, status_code=202)
 async def create_scan_job(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    input_file_path: Optional[str] = Form(None),
     scan_type: str = Form("photo"),
     quality: str = Form("standard"),
     output_formats: str = Form('["glb", "obj"]'),
@@ -151,8 +152,19 @@ async def create_scan_job(
     import uuid
     job_id = str(uuid.uuid4())
 
-    # Stream upload directly to disk
-    dest_path, sanitized_name, probe_info = await save_uploaded_file(job_id, file)
+    if file is not None and file.filename:
+        # Stream upload directly to disk
+        dest_path, sanitized_name, probe_info = await save_uploaded_file(job_id, file)
+    elif input_file_path:
+        p = Path(input_file_path)
+        if not p.exists():
+            raise HTTPException(status_code=400, detail=f"Server input file not found: {p}")
+        from app.utils.ffprobe import probe_video
+        probe_info = probe_video(p)
+        sanitized_name = p.name
+        dest_path = p
+    else:
+        raise HTTPException(status_code=422, detail="Either file upload or input_file_path is required.")
 
     # Persist job record
     job = create_job(

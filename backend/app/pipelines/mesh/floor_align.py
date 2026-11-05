@@ -563,6 +563,9 @@ class FloorAlignAndScaleStage(Stage):
                 target_sparse = d
                 break
 
+        up_idx = 1 if abs(target_up[1]) > 0.9 else 2
+        horiz_indices = [0, 2] if up_idx == 1 else [0, 1]
+
         if target_sparse:
             import re
             from scipy.spatial.transform import Rotation as R_scipy

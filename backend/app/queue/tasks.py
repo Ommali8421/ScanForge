@@ -88,7 +88,7 @@ def run_pipeline_task(job_id: str):
     )
 
     try:
-        pipeline = pipeline_registry.get_pipeline(job.scan_type)
+        pipeline = pipeline_registry.get_pipeline(job.scan_type, options=job.options)
         stage_results = pipeline.run(ctx)
 
         if cancel_token.is_cancelled():
@@ -139,6 +139,43 @@ def run_pipeline_task(job_id: str):
                                 size_bytes=dest_file.stat().st_size,
                                 file_path=str(dest_file)
                             )
+
+            # Ensure canonical deliverables in workdir are registered as artifacts
+            canonical_names = [
+                "model.ply", "model.splat", "model.spz",
+                "cleaned_splat.ply", "cleaned_splat.splat", "cleaned_splat.spz",
+                "cameras_aligned.json", "quality_report.json",
+                "mesh.glb", "mesh.obj", "mesh.ply",
+                "floor_plan.svg", "floor_plan.png", "camera_path.png"
+            ]
+            for cname in canonical_names:
+                cfile = workdir / cname
+                if cfile.exists():
+                    dest_file = art_dir / cname
+                    if dest_file.resolve() != cfile.resolve() and not dest_file.exists():
+                        shutil.copy2(cfile, dest_file)
+                    suffix = cfile.suffix.lower().lstrip(".")
+                    kind = "model"
+                    if suffix in ("ply", "xyz", "las"):
+                        kind = "pointcloud"
+                    elif suffix in ("png", "jpg", "jpeg", "webp", "svg"):
+                        kind = "image"
+                    elif suffix in ("json", "txt", "log"):
+                        kind = "report"
+                    elif suffix in ("splat", "spz"):
+                        kind = "splat"
+                    elif suffix in ("zip", "tar", "gz"):
+                        kind = "archive"
+                    elif suffix in ("glb", "obj", "fbx", "stl", "usdz"):
+                        kind = "mesh"
+                    add_artifact(
+                        job_id=job_id,
+                        kind=kind,
+                        format_name=suffix,
+                        filename=cname,
+                        size_bytes=dest_file.stat().st_size if dest_file.exists() else cfile.stat().st_size,
+                        file_path=str(dest_file if dest_file.exists() else cfile)
+                    )
 
             # Ensure pipeline.log is registered as an artifact
             if full_log_path.exists():

@@ -61,6 +61,23 @@ def compute_adaptive_keyframe_budget(
     return target_frames, effective_fps
 
 
+def _cap_frame_resolution(frame: np.ndarray, max_edge_limit: int = 1920) -> np.ndarray:
+    """
+    Caps the long edge of the extracted frame at max_edge_limit (default 1920 px, 1080p class).
+    Guarantees 4K (3840x2160) video frames fit the 8 GB VRAM / 15 GB RAM ceiling during SfM,
+    OpenMVS and 3DGS training.
+    Does NOT upscale frames whose long edge is <= max_edge_limit.
+    """
+    h, w = frame.shape[:2]
+    max_edge = max(h, w)
+    if max_edge > max_edge_limit:
+        scale = float(max_edge_limit) / float(max_edge)
+        new_w = int(round(w * scale))
+        new_h = int(round(h * scale))
+        return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    return frame
+
+
 class FrameExtractionStage(Stage):
     name: str = "frame_extraction"
     weight: float = 2.0
@@ -170,6 +187,7 @@ class FrameExtractionStage(Stage):
                 if curr_idx in target_set:
                     ret, frame = cap.retrieve()
                     if ret:
+                        frame = _cap_frame_resolution(frame, max_edge_limit=1920)
                         out_path = frames_dir / f"frame_{saved_count:04d}.jpg"
                         cv2.imwrite(str(out_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
                         saved_count += 1
@@ -339,6 +357,7 @@ class FrameExtractionStage(Stage):
             if curr_idx in kept_indices:
                 ret, frame = cap.retrieve()
                 if ret:
+                    frame = _cap_frame_resolution(frame, max_edge_limit=1920)
                     frame_filename = frames_dir / f"frame_{saved_count:04d}.jpg"
                     cv2.imwrite(str(frame_filename), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
                     saved_count += 1

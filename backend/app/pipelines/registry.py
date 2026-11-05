@@ -3,14 +3,14 @@ Pipeline Registry
 Resolves appropriate Pipeline instance given scan type and active engine mode.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from app.pipelines.base import Pipeline
 from app.pipelines.mock import create_mock_pipeline
 from app.config import settings
 
 
-def create_real_pipeline(scan_type: str) -> Pipeline:
-    """Build real GPU pipeline stages for milestone P2c Phase 1."""
+def create_real_pipeline(scan_type: str, options: Optional[Dict[str, Any]] = None) -> Pipeline:
+    """Build real GPU pipeline stages for milestone P2c Phase 1 and 3DGS."""
     from app.pipelines.common.ingest import IngestStage
     from app.pipelines.common.frame_extraction import FrameExtractionStage
     from app.pipelines.common.sfm_colmap import ColmapSfMStage
@@ -72,18 +72,7 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             SplatExportStage,
             SplatCleanupStage,
             SplatFormatConverterStage,
-            SplatMesherStage,
         )
-        from app.pipelines.mesh import (
-            MeshCleanupStage,
-            PlaneRepairStage,
-            DecimateStage,
-            FloorAlignAndScaleStage,
-            FloorPlanStage,
-            MeshExportStage,
-            QualityReportStage,
-        )
-        from app.pipelines.photo.openmvs import OpenMVSTextureStage
 
         stages.extend([
             RoomAnalysisStage(),
@@ -92,27 +81,48 @@ def create_real_pipeline(scan_type: str) -> Pipeline:
             SplatExportStage(),
             SplatCleanupStage(),
             SplatFormatConverterStage(),
-            SplatMesherStage(),
-            MeshCleanupStage(),
-            PlaneRepairStage(),
-            DecimateStage(),
-            OpenMVSTextureStage(),
-            FloorAlignAndScaleStage(),
-            FloorPlanStage(),
-            MeshExportStage(),
-            QualityReportStage(),
         ])
+
+        # Mesh-inclusive 3DGS stages only included when include_mesh is requested
+        if options and options.get("include_mesh"):
+            from app.pipelines.gaussian import SplatMesherStage
+            from app.pipelines.mesh import (
+                MeshCleanupStage,
+                PlaneRepairStage,
+                DecimateStage,
+                FloorAlignAndScaleStage,
+                FloorPlanStage,
+                MeshExportStage,
+                QualityReportStage,
+            )
+            from app.pipelines.photo.openmvs import OpenMVSTextureStage
+
+            stages.extend([
+                SplatMesherStage(),
+                MeshCleanupStage(),
+                PlaneRepairStage(),
+                DecimateStage(),
+                OpenMVSTextureStage(),
+                FloorAlignAndScaleStage(),
+                FloorPlanStage(),
+                MeshExportStage(),
+                QualityReportStage(),
+            ])
 
     return Pipeline(scan_type=scan_type, stages=stages)
 
 
 class PipelineRegistry:
     @staticmethod
-    def get_pipeline(scan_type: str, engine_mode: str | None = None) -> Pipeline:
+    def get_pipeline(
+        scan_type: str,
+        engine_mode: str | None = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Pipeline:
         mode = engine_mode or settings.SCANFORGE_ENGINE
         if mode == "mock":
             return create_mock_pipeline(scan_type)
-        return create_real_pipeline(scan_type)
+        return create_real_pipeline(scan_type, options=options)
 
 
 pipeline_registry = PipelineRegistry()

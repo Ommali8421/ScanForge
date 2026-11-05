@@ -154,6 +154,10 @@ class SplatFormatConverterStage(Stage):
     weight: float = 0.5
     declared_outputs: List[str] = [
         "cleaned_splat.splat",
+        "model.splat",
+        "model.ply",
+        "cleaned_splat.spz",
+        "model.spz",
         "splat.zip",
     ]
 

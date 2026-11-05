@@ -187,6 +187,9 @@ class PlaneRepairStage(Stage):
         if not input_ply.exists():
             input_ply = ctx.workdir / "scene_dense_mesh.ply"
         if not input_ply.exists():
+            if ctx.params.get("scan_type") in ("gaussian_splat", "3dgs") and not ctx.params.get("options", {}).get("include_mesh"):
+                ctx.log_cb("[PlaneRepair] Mesh-inclusive mode not enabled for 3DGS. Skipping plane repair.")
+                return StageResult(success=True, skipped_cache=True)
             raise FileNotFoundError(f"[PlaneRepair] Cleaned mesh not found at {input_ply}")
 
         analysis_json = ctx.workdir / "room_analysis.json"

@@ -258,12 +258,11 @@ def render_splat_views(ply_path: str, output_image_path: str):
             img_np = (torch.clamp(out[0], 0.0, 1.0).cpu().numpy() * 255.0).astype(np.uint8)
             return Image.fromarray(img_np)
 
-        # 1. Camera A (Interior Walkthrough)
-        print("Rendering View 1: Interior Walkthrough View A...")
+        # 1. Camera A (First-Frame Spawn Camera: Frame 1)
+        print("Rendering View 1: First-Frame Spawn Camera (Frame 1)...")
         if colmap_cams:
-            idx1 = min(int(len(colmap_cams) * 0.25), len(colmap_cams) - 1)
-            cam1 = colmap_cams[idx1]
-            title1 = f"View 1: Interior Walkthrough ({cam1['name']})"
+            cam1 = colmap_cams[0]
+            title1 = f"View 1: First-Frame Spawn Camera ({cam1['name']})"
             img1 = render_gsplat(cam1["w2c"])
         else:
             title1 = "View 1: Interior Eye-Level Walkthrough"
@@ -271,10 +270,10 @@ def render_splat_views(ply_path: str, output_image_path: str):
             w2c1 = make_w2c(eye1, center + np.array([0.0, 0.0, 0.5 * span[2]]))
             img1 = render_gsplat(w2c1, fx_in=1000.0, fy_in=1000.0, cx_in=panel_w/2.0, cy_in=panel_h/2.0)
 
-        # 2. Camera B (Interior Walkthrough)
-        print("Rendering View 2: Interior Walkthrough View B...")
+        # 2. Camera B (Interior Walkthrough View)
+        print("Rendering View 2: Interior Walkthrough View...")
         if colmap_cams and len(colmap_cams) > 1:
-            idx2 = min(int(len(colmap_cams) * 0.70), len(colmap_cams) - 1)
+            idx2 = min(int(len(colmap_cams) * 0.50), len(colmap_cams) - 1)
             cam2 = colmap_cams[idx2]
             title2 = f"View 2: Interior Walkthrough ({cam2['name']})"
             img2 = render_gsplat(cam2["w2c"])

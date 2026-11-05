@@ -196,8 +196,19 @@ def set_job_cancelled(job_id: str):
 
 
 def add_artifact(job_id: str, kind: str, format_name: str, filename: str, size_bytes: int, file_path: str) -> Artifact:
-    """Register a generated artifact in the database."""
+    """Register a generated artifact in the database (idempotent by filename)."""
     with Session(engine) as session:
+        existing = session.exec(
+            select(Artifact).where(Artifact.job_id == job_id, Artifact.filename == filename)
+        ).first()
+        if existing:
+            existing.size_bytes = size_bytes
+            existing.file_path = file_path
+            session.add(existing)
+            session.commit()
+            session.refresh(existing)
+            return existing
+
         art = Artifact(
             job_id=job_id,
             kind=kind,

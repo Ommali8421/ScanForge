@@ -171,6 +171,12 @@ class Pipeline:
 
             if stage.is_cached(ctx):
                 ctx.log_cb(f"[{stage.name}] Stage output found in cache with matching params. Skipping.")
+                cached_outputs = [
+                    ctx.workdir / out_name
+                    for out_name in stage.declared_outputs
+                    if (ctx.workdir / out_name).exists()
+                ]
+                stage_results.append(StageResult(success=True, output_files=cached_outputs, skipped_cache=True))
                 accumulated_weight += stage.weight
                 continue
 

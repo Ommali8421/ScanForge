@@ -74,6 +74,8 @@ services:
     volumes:
       - scanforge-data:/data
       - ./backend:/workspace/backend
+      - ./scripts:/workspace/scripts
+      - ./outputs:/workspace/outputs
     depends_on:
       redis:
         condition: service_healthy

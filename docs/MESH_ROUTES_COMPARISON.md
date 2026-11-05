@@ -145,3 +145,28 @@ When `scan_type="gaussian_splat"` and `include_mesh=True`, ScanForge trains a hi
 | **Fast Web GLB Compression** | `gltfpack -cf -kn -km -vp 14 -vt 12 -vn 8` applied in `exporters.py` to `mesh.glb` and `preview_textured.glb` | Compact 14-bit position and 12-bit UV quantization via `KHR_mesh_quantization` and `EXT_meshopt_compression` with uncompressed fallback (`-cf`) for 100% Blender 4.1 import compatibility. Decoded client-side via Three.js `MeshoptDecoder` |
 | **Compressed .spz Splat Export** | Native `spz.GaussianSplat` Python/Rust encoder in `format_converter.py` using C-contiguous arrays | Emits `cleaned_splat.spz` and `model.spz` with Degree-2 Spherical Harmonics (~11x smaller: 75 MB PLY $\to$ 7.19 MB .spz; 10 MB .splat $\to$ 5.97 MB .spz). Packed into `splat.zip` and exposed in Deliverables Vault |
 | **Collinear Wall Dash Bridging** | Increased collinear gap bridging to 0.45m in `floor_plan.py` along shared 0°/90° wall axes while strictly preserving doorways $\ge 0.80$m | Connects broken dashed wall strokes into continuous architectural CAD lines while keeping doorways unobstructed |
+
+---
+
+## 7. Tanks and Temples Showcase Benchmark (Wave 1 Production Library)
+
+The production showcase library was regenerated from clean slate on NVIDIA RTX 4060 Laptop GPU (8 GB VRAM, Ada arch, compute capability 8.9) under strict single-job concurrency (`concurrency = 1`). Each reconstruction was verified through automated invariant assertions and 4-view offscreen CUDA `gsplat` proof renders.
+
+### 7a. Production Reconstructions
+
+| Scene | Job ID | Modality / Preset | Registered Frames | Gaussians (Grade) | PLY (SH2) | SPLAT (32B) | SPZ (Deg 2) | Runtime | Peak VRAM |
+|---|---|---|---|---|---|---|---|---|---|
+| **Ballroom** | `08016ee0-5a48-4667-99c0-550f46bc717e` | `gaussian_splat` / `standard` | 287 / 287 (100.0%) | 550,438 (Grade A) | 130.19 MB | 16.80 MB | 10.96 MB | 42.6 min | 2,726 MB (33.3%) |
+| **Courtroom** | `a7ac5024-8a85-4776-8aa0-8d87469825c1` | `gaussian_splat` / `standard` | 284 / 284 (100.0%) | 736,325 (Grade A) | 174.15 MB | 22.47 MB | 14.18 MB | 36.8 min | 3,103 MB (37.9%) |
+| **Meetingroom** | `c49c783c-91d5-42f9-93fb-a1eb95d44a5b` | `gaussian_splat` / `standard` | 293 / 293 (100.0%) | 447,264 (Grade A) | 105.78 MB | 13.65 MB | 8.78 MB | 29.3 min | 2,379 MB (29.1%) |
+| **Auditorium** | `883990e1-8cfc-4c9e-a8c6-c8bea3c860e0` | `gaussian_splat` / `standard` | 243 / 249 (97.6%) | 391,600 (Grade A) | 92.62 MB | 11.95 MB | 7.76 MB | 25.0 min | 2,237 MB (27.3%) |
+| **Ignatius** | `e6a08659-d57a-4662-baee-81b63c4af6be` | `gaussian_splat` / `standard` | 87 / 87 (100.0%) | 792,613 (Grade A) | 187.46 MB | 24.19 MB | 15.52 MB | 19.4 min | 2,641 MB (32.3%) |
+| **House** | `718b1b22-f89b-45d3-a1d3-31fa96268cf4` | `gaussian_splat` / `standard` | 93 / 100 (93.0%) | 422,235 (Grade A) | 99.86 MB | 12.89 MB | 8.00 MB | 16.7 min | 1,806 MB (22.1%) |
+
+### 7b. Skipped / Failed Ingestions
+
+- **Enhanced Interior Tour (`enhanced_interior_tour_1080p.mp4`)**:
+  Hit `NameError: name 'up_idx' is not defined` during the post-splat mesh-inclusive floor alignment stage (`floor_align_scale`). Code was patched in `floor_align.py`, but Attempt 2 ran against the in-memory cached module in the worker. Bypassed under the 2-attempt policy. Worker has since been restarted.
+- **Bedroom Walkthrough (`bedroom_vid.mp4`)**:
+  Heavy rotational motion blur and sudden pans caused COLMAP to register 35.0% and 37.0% of frames across two attempts. Dropped by the $\ge 60\%$ registration safety guardrail (`ERR_LOW_SFM_REGISTRATION`).
+
